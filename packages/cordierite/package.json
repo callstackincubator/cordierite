@@ -1,0 +1,53 @@
+{
+  "name": "cordierite",
+  "version": "0.1.0",
+  "description": "Driving React Native tools without in-app debug UI.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "cordierite": "./bin.js"
+  },
+  "keywords": [
+    "cordierite",
+    "react-native",
+    "agent"
+  ],
+  "repository": "https://github.com/callstackincubator/cordierite",
+  "bugs": {
+    "url": "https://github.com/callstackincubator/cordierite/issues"
+  },
+  "author": "Szymon Chmal <szymon@chmal.it> (V3RON)",
+  "license": "MIT",
+  "homepage": "https://github.com/callstackincubator/cordierite/tree/main/packages/cordierite#readme",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "cac": "^6.7.14",
+    "cordierite-shared": "workspace:*",
+    "picocolors": "^1.1.1",
+    "toqr": "^0.1.1",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "~5.9.2"
+  },
+  "files": [
+    "bin.js",
+    "dist"
+  ]
+}

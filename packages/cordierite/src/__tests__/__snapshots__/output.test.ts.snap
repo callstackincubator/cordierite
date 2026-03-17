@@ -1,0 +1,47 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`output rendering human success output stays structured 1`] = `
+"Available Tools
+Tools
+  Name      Description
+  app.echo  Echo a payload on the connected device.
+
+Meta
+  Command: tools
+  Timestamp: 2026-03-17T10:00:00.000Z
+  Duration: 4 ms
+"
+`;
+
+exports[`output rendering host success output includes session, ports, fingerprint, deep link, and ttl 1`] = `
+"Host Ready
+Host
+  Fingerprint   sha256/example
+  Session       HostOutputTestSess1
+  WSS port      8443
+  Control port  41000
+  Deep Link     playground:///?cordierite=abc123
+  TTL           30s
+
+Meta
+  Command: host
+  Timestamp: 2026-03-17T10:00:00.000Z
+  Duration: 5 ms
+"
+`;
+
+exports[`output rendering human errors render on stderr 1`] = `
+"Command Failed
+Error
+  Type     validation_error
+  Message  Bootstrap payload is invalid.
+  Details  {
+  "require_private_ip": true
+}
+
+Meta
+  Command: connect
+  Timestamp: 2026-03-17T10:00:00.000Z
+  Duration: 2 ms
+"
+`;

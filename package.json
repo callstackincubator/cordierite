@@ -1,0 +1,23 @@
+{
+  "name": "cordierite-workspace",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "clean": "turbo run clean",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "showcase": "./showcase-cordierite.sh"
+  },
+  "workspaces": [
+    "packages/*",
+    "playground"
+  ],
+  "devDependencies": {
+    "@types/bun": "latest",
+    "turbo": "^2.8.20"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "packageManager": "bun@1.3.11"
+}

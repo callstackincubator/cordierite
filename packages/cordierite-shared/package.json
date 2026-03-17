@@ -1,0 +1,38 @@
+{
+  "name": "cordierite-shared",
+  "version": "0.1.0",
+  "description": "Shared library for Cordierite.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "keywords": [
+    "cordierite",
+    "react-native"
+  ],
+  "repository": "https://github.com/callstackincubator/cordierite",
+  "bugs": {
+    "url": "https://github.com/callstackincubator/cordierite/issues"
+  },
+  "author": "Szymon Chmal <szymon@chmal.it> (V3RON)",
+  "license": "MIT",
+  "homepage": "https://github.com/callstackincubator/cordierite/tree/main/packages/cordierite-shared#readme",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2"
+  },
+  "files": [
+    "dist"
+  ]
+}

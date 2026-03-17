@@ -1,0 +1,64 @@
+{
+  "name": "react-native-cordierite",
+  "version": "0.1.0",
+  "description": "Expo native client for Cordierite sessions",
+  "main": "build/index.js",
+  "module": "build/index.js",
+  "types": "build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "react-native": "./build/index.js",
+      "import": "./build/index.js",
+      "default": "./build/index.js"
+    },
+    "./package.json": "./package.json",
+    "./app.plugin.js": "./app.plugin.js"
+  },
+  "expo": {
+    "plugin": "./app.plugin.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf build",
+    "lint": "eslint .",
+    "test": "bun test",
+    "prepare": "tsc",
+    "prepublishOnly": "bun run lint && bun test && bun run build"
+  },
+  "keywords": [
+    "react-native",
+    "react-native-cordierite",
+    "cordierite"
+  ],
+  "repository": "https://github.com/callstackincubator/cordierite",
+  "bugs": {
+    "url": "https://github.com/callstackincubator/cordierite/issues"
+  },
+  "author": "Szymon Chmal <szymon@chmal.it> (V3RON)",
+  "license": "MIT",
+  "homepage": "https://github.com/callstackincubator/cordierite#readme",
+  "codegenConfig": {
+    "name": "CordieriteSpec",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "android": {
+      "javaPackageName": "com.callstackincubator.cordierite"
+    }
+  },
+  "dependencies": {
+    "cordierite-shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.1",
+    "eslint": "^8.57.0",
+    "eslint-config-universe": "^15.0.3",
+    "react-native": "0.81.5",
+    "typescript": "~5.9.2",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*"
+  }
+}

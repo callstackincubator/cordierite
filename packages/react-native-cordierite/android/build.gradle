@@ -1,0 +1,89 @@
+def safeExtGet(prop, fallback) {
+  rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
+def resolveReactNativeDirectory() {
+  File standard = file("$rootDir/../node_modules/react-native/")
+  if (standard.exists()) {
+    return standard
+  }
+  File legacy = file("$projectDir/../node_modules/react-native/")
+  if (legacy.exists()) {
+    return legacy
+  }
+  String path = providers.exec {
+    workingDir(rootDir)
+    commandLine("node", "--print", "require.resolve('react-native/package.json')")
+  }.standardOutput.asText.get().trim()
+  return file(path).parentFile
+}
+
+def reactNativeRootDir = resolveReactNativeDirectory()
+
+def isNewArchitectureEnabled() {
+  return project.hasProperty("newArchEnabled") && project.newArchEnabled == "true"
+}
+
+if (isNewArchitectureEnabled()) {
+  apply plugin: "com.facebook.react"
+}
+
+apply plugin: "com.android.library"
+apply plugin: "kotlin-android"
+
+group = "com.callstackincubator.cordierite"
+version = "0.1.0"
+
+android {
+  namespace "com.callstackincubator.cordierite"
+  compileSdk safeExtGet("compileSdkVersion", 35)
+
+  defaultConfig {
+    minSdkVersion safeExtGet("minSdkVersion", 24)
+    targetSdkVersion safeExtGet("targetSdkVersion", 35)
+    versionCode 1
+    versionName "0.1.0"
+    buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
+  }
+
+  buildFeatures {
+    buildConfig true
+  }
+
+  lintOptions {
+    abortOnError false
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = "17"
+  }
+}
+
+repositories {
+  maven {
+    url "${reactNativeRootDir}/android"
+  }
+  google()
+  mavenCentral()
+}
+
+dependencies {
+  implementation "com.facebook.react:react-android"
+  implementation "com.squareup.okhttp3:okhttp:4.12.0"
+}
+
+tasks.register("assertNewArchitectureEnabled") {
+  onlyIf { !isNewArchitectureEnabled() }
+  doFirst {
+    throw new GradleException(
+      "react-native-cordierite requires New Architecture. Set newArchEnabled=true in gradle.properties.",
+    )
+  }
+}
+
+preBuild.dependsOn(assertNewArchitectureEnabled)
