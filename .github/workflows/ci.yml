@@ -50,18 +50,11 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            platform-tools
-            platforms;android-36
-            build-tools;36.0.0
-            ndk;27.1.12297006
-          cache: true
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build workspace packages
+      - name: Build all workspace packages
         run: bun run build
 
       - name: Prebuild Android (Expo)
@@ -73,33 +66,20 @@ jobs:
 
       - name: Setup Gradle (wrapper + dependency cache)
         uses: gradle/actions/setup-gradle@v4
-        with:
-          build-root-directory: playground/android
+
+      - name: Install Android native dependencies (Gradle)
+        working-directory: playground/android
+        run: ./gradlew dependencies --no-daemon
 
       - name: Assemble debug APK
         working-directory: playground/android
         run: ./gradlew assembleDebug --no-daemon
 
   playground-build-ios:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: playground-ios-${{ hashFiles('bun.lock', 'playground/package.json', 'playground/app.json') }}
-          append-timestamp: false
-          max-size: 2G
-
-      - name: Use ccache with Apple Clang (Xcode)
-        run: |
-          echo "CC=ccache $(xcrun -find clang)" >> "$GITHUB_ENV"
-          echo "CXX=ccache $(xcrun -find clang++)" >> "$GITHUB_ENV"
-          echo "CCACHE_BASEDIR=${{ github.workspace }}" >> "$GITHUB_ENV"
-          echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
-          echo "CCACHE_SLOPPINESS=clang_index_store,file_macro,time_macros,include_file_mtime,include_file_ctime" >> "$GITHUB_ENV"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -109,7 +89,7 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build workspace packages
+      - name: Build all workspace packages
         run: bun run build
 
       - name: Prebuild iOS (Expo)
