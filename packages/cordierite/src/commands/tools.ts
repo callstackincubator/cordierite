@@ -1,4 +1,4 @@
-import type { CliResult, ToolDescriptor, ToolsCommandData } from "cordierite-shared";
+import type { CliResult, ToolDescriptor, ToolsCommandData } from "@cordierite/shared";
 
 import { toolError } from "../errors.js";
 import { requestHostControlForSession } from "./remote-control.js";

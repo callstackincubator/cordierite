@@ -81,7 +81,7 @@ tasks.register("assertNewArchitectureEnabled") {
   onlyIf { !isNewArchitectureEnabled() }
   doFirst {
     throw new GradleException(
-      "react-native-cordierite requires New Architecture. Set newArchEnabled=true in gradle.properties.",
+      "@cordierite/react-native requires New Architecture. Set newArchEnabled=true in gradle.properties.",
     )
   }
 }

@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { ToolDescriptor } from "cordierite-shared";
+import type { ToolDescriptor } from "@cordierite/shared";
 
 import { connectionError } from "./errors.js";
 

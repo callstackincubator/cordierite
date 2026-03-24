@@ -11,7 +11,7 @@ The playground is an Expo **development build** that demonstrates Cordierite’s
 - **End-to-end check** that SPKI pins in `app.json` match the host TLS material ([certs](certs/README.md)) while tools run from the **CLI**, not in-app menus.
 - **Safe local defaults**: you can enable **private-LAN-only** bootstrap checks while iterating—same knobs as production, not a statement that Cordierite only works offline or on one subnet.
 - **UI sandbox** (Expo Router) for experimenting with session state and tooling around the client.
-- **No manual bootstrap wiring**: importing `react-native-cordierite` attaches `Linking` listeners; opening the host’s deep link is enough to start `connect` (see package README).
+- **No manual bootstrap wiring**: importing `@cordierite/react-native` attaches `Linking` listeners; opening the host’s deep link is enough to start `connect` (see package README).
 
 ## What you’ll do (examples)
 
@@ -22,7 +22,7 @@ The playground is an Expo **development build** that demonstrates Cordierite’s
 ## Documentation
 
 - [Monorepo README](../README.md)
-- [react-native-cordierite](../packages/react-native-cordierite/README.md)
+- [@cordierite/react-native](../packages/react-native/README.md)
 - [Handshake](../docs/HANDSHAKE.md)
 - [Dev TLS & rotation](certs/README.md)
 
@@ -41,7 +41,7 @@ Ships with [Cordierite][repo] · [Callstack][callstack-readme-with-love].
 
 [cordierite-banner]: https://img.shields.io/badge/Cordierite-callstack%2Fincubator-111827?style=for-the-badge&logo=github&logoColor=white
 [repo]: https://github.com/callstackincubator/cordierite
-[license-badge]: https://img.shields.io/npm/l/react-native-cordierite?style=for-the-badge
+[license-badge]: https://img.shields.io/npm/l/%40cordierite%2Freact-native?style=for-the-badge
 [license]: https://github.com/callstackincubator/cordierite/blob/main/LICENSE
 [prs-welcome-badge]: https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=for-the-badge
 [prs-welcome]: https://github.com/callstackincubator/cordierite/pulls

@@ -1,4 +1,4 @@
-import type { ToolDescriptor } from "cordierite-shared";
+import type { ToolDescriptor } from "@cordierite/shared";
 
 import { toolError } from "./errors.js";
 

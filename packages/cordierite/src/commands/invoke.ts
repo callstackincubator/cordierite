@@ -1,4 +1,4 @@
-import type { CliResult, InvokeCommandData } from "cordierite-shared";
+import type { CliResult, InvokeCommandData } from "@cordierite/shared";
 
 import { parseJsonObject } from "../parse.js";
 import { requestHostControlForSession } from "./remote-control.js";

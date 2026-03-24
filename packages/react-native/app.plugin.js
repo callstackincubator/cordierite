@@ -5,7 +5,7 @@ const {
   withInfoPlist,
 } = require("expo/config-plugins");
 
-const PLUGIN_NAME = "react-native-cordierite";
+const PLUGIN_NAME = "@cordierite/react-native";
 const PLUGIN_VERSION = "0.1.0";
 const ANDROID_PINS_KEY = "com.callstackincubator.cordierite.CLI_PINS";
 const ANDROID_PRIVATE_LAN_KEY =

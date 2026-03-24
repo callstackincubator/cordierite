@@ -1,4 +1,4 @@
-import type { ConnectBootstrapPayload } from "cordierite-shared";
+import type { ConnectBootstrapPayload } from "@cordierite/shared";
 
 import type {
   CordieriteConnectInput,

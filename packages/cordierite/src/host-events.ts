@@ -1,4 +1,4 @@
-import type { CliError, SessionClaimDeviceInfo } from "cordierite-shared";
+import type { CliError, SessionClaimDeviceInfo } from "@cordierite/shared";
 
 export type HostBootstrapEventData = {
   deep_link: string;

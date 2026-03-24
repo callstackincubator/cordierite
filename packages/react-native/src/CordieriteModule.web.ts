@@ -14,7 +14,7 @@ import { logger } from "./logger";
 const unsupported = (what: string): never => {
   logger.warn(`Cordierite native module is not available on web (${what})`);
   throw new Error(
-    "react-native-cordierite is only available on iOS and Android development or production builds."
+    "@cordierite/react-native is only available on iOS and Android development or production builds."
   );
 };
 

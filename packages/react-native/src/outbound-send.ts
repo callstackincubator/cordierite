@@ -1,4 +1,4 @@
-import { isSessionBoundMessage } from "cordierite-shared";
+import { isSessionBoundMessage } from "@cordierite/shared";
 
 import type {
   CordieriteConnectionState,

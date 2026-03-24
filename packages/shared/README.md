@@ -4,7 +4,7 @@
 
 [![MIT license][license-badge]][license] [![PRs Welcome][prs-welcome-badge]][prs-welcome]
 
-**`cordierite-shared`** is **shared code** used by both the **Cordierite CLI** and the **React Native** package (`react-native-cordierite`): **bootstrap, session, message, and transport** types and helpers so host and app stay aligned as the protocol evolves.
+**`@cordierite/shared`** is **shared code** used by both the **Cordierite CLI** and the **React Native** package (`@cordierite/react-native`): **bootstrap, session, message, and transport** types and helpers so host and app stay aligned as the protocol evolves.
 
 ## Made with ❤️ at Callstack
 

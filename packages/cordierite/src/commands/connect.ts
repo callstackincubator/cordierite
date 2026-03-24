@@ -3,7 +3,7 @@ import {
   formatAgentWebSocketUrl,
   type CliResult,
   type ConnectCommandData,
-} from "cordierite-shared";
+} from "@cordierite/shared";
 
 import { parseBootstrapPayload } from "../parse.js";
 import type { CommandContext } from "../runtime.js";

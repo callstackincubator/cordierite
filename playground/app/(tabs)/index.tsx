@@ -9,7 +9,7 @@ import {
   type CordieriteConnectionState,
   type CordieriteErrorEvent,
   type CordieriteMessageEvent,
-} from "react-native-cordierite";
+} from "@cordierite/react-native";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { Layout, Radius } from "@/constants/theme";

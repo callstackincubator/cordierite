@@ -1,4 +1,4 @@
-import type { CliResult } from "cordierite-shared";
+import type { CliResult } from "@cordierite/shared";
 
 import { handleHostCommand } from "../commands/host.js";
 import { getExitCodeForError, toCliError } from "../errors.js";

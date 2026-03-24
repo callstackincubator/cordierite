@@ -1,5 +1,5 @@
 {
-  "name": "react-native-cordierite",
+  "name": "@cordierite/react-native",
   "version": "0.1.0",
   "description": "Expo native client for Cordierite sessions",
   "main": "build/index.js",
@@ -26,7 +26,7 @@
   },
   "keywords": [
     "react-native",
-    "react-native-cordierite",
+    "@cordierite/react-native",
     "cordierite"
   ],
   "repository": "https://github.com/callstackincubator/cordierite",
@@ -35,7 +35,7 @@
   },
   "author": "Szymon Chmal <szymon@chmal.it> (V3RON)",
   "license": "MIT",
-  "homepage": "https://github.com/callstackincubator/cordierite#readme",
+  "homepage": "https://github.com/callstackincubator/cordierite/tree/main/packages/react-native#readme",
   "codegenConfig": {
     "name": "CordieriteSpec",
     "type": "modules",
@@ -45,7 +45,7 @@
     }
   },
   "dependencies": {
-    "cordierite-shared": "workspace:*"
+    "@cordierite/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "~19.1.1",

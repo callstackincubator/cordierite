@@ -1,7 +1,7 @@
 import {
   tryParseConnectBootstrapWireString,
   validateConnectBootstrapPayload,
-} from "cordierite-shared";
+} from "@cordierite/shared";
 
 import { sessionError, validationError } from "./errors.js";
 

@@ -9,7 +9,7 @@ import type {
   ToolDescriptor,
   ToolErrorMessage,
   ToolResultMessage,
-} from "cordierite-shared";
+} from "@cordierite/shared";
 
 /** Mirrors native connection lifecycle; see `cordieriteClient.connect` JSDoc for promise semantics. */
 export type CordieriteConnectionState =

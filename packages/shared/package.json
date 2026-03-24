@@ -1,5 +1,5 @@
 {
-  "name": "cordierite-shared",
+  "name": "@cordierite/shared",
   "version": "0.1.0",
   "description": "Shared library for Cordierite.",
   "type": "module",
@@ -24,7 +24,7 @@
   },
   "author": "Szymon Chmal <szymon@chmal.it> (V3RON)",
   "license": "MIT",
-  "homepage": "https://github.com/callstackincubator/cordierite/tree/main/packages/cordierite-shared#readme",
+  "homepage": "https://github.com/callstackincubator/cordierite/tree/main/packages/shared#readme",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist"

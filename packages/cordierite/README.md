@@ -35,8 +35,8 @@ The package exports **`runCli`**, **`createCli`**, and command helpers from [`sr
 
 ## Related packages
 
-- **[react-native-cordierite](../react-native-cordierite/README.md)** — native app client + Expo plugin.
-- **[cordierite-shared](../cordierite-shared/README.md)** — shared library used by the CLI and React Native integration (dependency of this package).
+- **[@cordierite/react-native](../react-native/README.md)** — native app client + Expo plugin.
+- **[@cordierite/shared](../shared/README.md)** — shared library used by the CLI and React Native integration (dependency of this package).
 
 ## Documentation
 
