@@ -1,12 +1,12 @@
-import type { CliResult, HostCommandData } from "cordierite-shared";
+import type { CliResult } from "cordierite-shared";
 
 import { handleHostCommand } from "../commands/host.js";
 import { getExitCodeForError, toCliError } from "../errors.js";
+import type { HostReporter } from "../host-reporters.js";
 import { renderResult } from "../output.js";
 import {
   createCommandMeta,
   type Clock,
-  type HostDeviceStatusReporter,
 } from "../runtime.js";
 import type { CliIoWriters } from "./types.js";
 
@@ -83,7 +83,7 @@ export const executeHostedCommand = async (
     json: boolean;
     color: boolean;
     clock: Clock;
-    deviceStatus?: HostDeviceStatusReporter;
+    reporter?: HostReporter;
   },
 ): Promise<number> => {
   const startedAt = options.clock.now();
@@ -97,9 +97,10 @@ export const executeHostedCommand = async (
       meta: createCommandMeta(command, startedAt, finishedAt),
     };
 
-    const interactiveHostUi = Boolean(options.deviceStatus && command === "host" && withMeta.ok);
+    const liveReporter = command === "host" ? options.reporter : undefined;
+    const shouldRenderBootstrap = !liveReporter || liveReporter.kind === "plain";
 
-    if (!interactiveHostUi) {
+    if (shouldRenderBootstrap) {
       writeRenderedOutput(
         renderResult(withMeta, {
           command,
@@ -111,15 +112,7 @@ export const executeHostedCommand = async (
       renderedSuccess = true;
     }
 
-    if (interactiveHostUi) {
-      if (!withMeta.ok) {
-        throw new Error("cordierite: interactive host path requires a successful result.");
-      }
-      const { host } = withMeta.data as HostCommandData;
-      if (typeof host.deep_link === "string") {
-        await options.deviceStatus!.printBootstrapQr(host.deep_link, host.ttl_seconds);
-      }
-    }
+    renderedSuccess = true;
 
     let resolved = false;
     const stop = () => {
@@ -140,12 +133,12 @@ export const executeHostedCommand = async (
       resolved = true;
       process.off("SIGINT", stop);
       process.off("SIGTERM", stop);
-      options.deviceStatus?.dispose();
+      options.reporter?.dispose();
     }
 
     return 0;
   } catch (error) {
-    options.deviceStatus?.dispose();
+    options.reporter?.dispose();
 
     const finishedAt = options.clock.now();
     const cliError = toCliError(error);

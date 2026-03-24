@@ -5,9 +5,8 @@ import { sessionError } from "../errors.js";
 import { FIXED_NOW, fixedClock } from "./fixtures.js";
 
 describe("executeHostedCommand", () => {
-  test("interactive host mode passes ttl to the QR reporter", async () => {
-    let qrArgs: { deepLink: string; ttlSeconds: number } | undefined;
-
+  test("host reporter is disposed after hosted command completion", async () => {
+    let disposed = 0;
     const exitCode = await executeHostedCommand(
       "host",
       async () => ({
@@ -42,23 +41,17 @@ describe("executeHostedCommand", () => {
             return true;
           },
         },
-        deviceStatus: {
-          async printBootstrapQr(deepLink, ttlSeconds) {
-            qrArgs = { deepLink, ttlSeconds };
+        reporter: {
+          onEvent() {},
+          dispose() {
+            disposed += 1;
           },
-          onListening() {},
-          onClaimed() {},
-          onClaimedSessionEnded() {},
-          dispose() {},
         },
       },
     );
 
     expect(exitCode).toBe(0);
-    expect(qrArgs).toEqual({
-      deepLink: "playground:///?cordierite=abc123",
-      ttlSeconds: 45,
-    });
+    expect(disposed).toBe(1);
   });
 
   test("json host output stays single-shot when the hosted runtime later fails", async () => {

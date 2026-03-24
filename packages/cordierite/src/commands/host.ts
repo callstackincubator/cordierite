@@ -29,7 +29,8 @@ import {
   type ToolCallMessage,
 } from "cordierite-shared";
 
-import { connectionError, sessionError, toolError, usageError } from "../errors.js";
+import { connectionError, sessionError, toCliError, toolError, usageError } from "../errors.js";
+import type { HostBootstrapEventData } from "../host-events.js";
 import { parseJsonObject } from "../parse.js";
 import type { HostCommandContext } from "../runtime.js";
 import {
@@ -63,7 +64,7 @@ type HostRuntimeOptions = {
   keyPem: string;
   certPem: string;
   clock: HostCommandContext["clock"];
-  deviceStatus?: HostCommandContext["deviceStatus"];
+  hostEvents?: HostCommandContext["hostEvents"];
 };
 
 const padBase64Url = (value: string): string => {
@@ -176,7 +177,7 @@ type StartHostRuntimeResult = {
 };
 
 const startHostRuntime = async (options: HostRuntimeOptions): Promise<StartHostRuntimeResult> => {
-  const { deviceStatus } = options;
+  const { hostEvents } = options;
   let claimed = false;
   let activeSocket: WebSocket | null = null;
   let stopped = false;
@@ -460,7 +461,11 @@ const startHostRuntime = async (options: HostRuntimeOptions): Promise<StartHostR
           }),
         );
         const deviceInfo = parseSessionClaimDeviceFields(claim as unknown as Record<string, unknown>);
-        deviceStatus?.onClaimed(deviceInfo === "invalid" ? undefined : deviceInfo);
+        hostEvents?.emitHostEvent({
+          type: "session_claimed",
+          session_id: options.pendingSession.session_id,
+          device: deviceInfo === "invalid" ? undefined : deviceInfo,
+        });
         void persistState();
         return;
       }
@@ -521,7 +526,10 @@ const startHostRuntime = async (options: HostRuntimeOptions): Promise<StartHostR
         const hadClaimedSession = claimed;
         activeSocket = null;
         if (hadClaimedSession) {
-          deviceStatus?.onClaimedSessionEnded();
+          hostEvents?.emitHostEvent({
+            type: "session_disconnected",
+            session_id: options.pendingSession.session_id,
+          });
         }
         void stopServer();
       }
@@ -594,6 +602,18 @@ const startHostRuntime = async (options: HostRuntimeOptions): Promise<StartHostR
       dropOpenSockets(httpsServer);
       await closeServer(httpsServer);
     } finally {
+      if (error === undefined) {
+        hostEvents?.emitHostEvent({
+          type: "host_stopped",
+          session_id: options.pendingSession.session_id,
+        });
+      } else {
+        hostEvents?.emitHostEvent({
+          type: "host_failed",
+          session_id: options.pendingSession.session_id,
+          error: toCliError(error),
+        });
+      }
       settleCompletion(error);
     }
   };
@@ -645,8 +665,6 @@ const startHostRuntime = async (options: HostRuntimeOptions): Promise<StartHostR
 
       void stopServer(sessionError("Pending session TTL expired before any app connected."));
     }, Math.max(0, options.pendingSession.expires_at * 1000 - options.clock.now().getTime()));
-
-    deviceStatus?.onListening();
     void persistState();
   } catch (error) {
     clearTtlTimer();
@@ -744,25 +762,41 @@ export const handleHostCommand = async (
     certPem,
     keyPem,
     clock: context.clock,
-    deviceStatus: context.deviceStatus,
+    hostEvents: context.hostEvents,
   });
 
   if (options.open) {
-    await openDeepLink(deepLink);
+    try {
+      await openDeepLink(deepLink);
+    } catch (error) {
+      completion.stop();
+      throw error;
+    }
   }
+
+  const hostEventData: HostBootstrapEventData = {
+    deep_link: deepLink,
+    ttl_seconds: ttlSeconds,
+    spki_pin: spkiPin,
+    session_id: pendingSession.session_id,
+    wss_port: port,
+    control_port: controlPort,
+  };
+
+  context.hostEvents?.emitHostEvent({
+    type: "host_started",
+    host: hostEventData,
+  });
+  context.hostEvents?.emitHostEvent({
+    type: "host_listening",
+    session_id: pendingSession.session_id,
+  });
 
   return {
     result: {
       ok: true,
       data: {
-        host: {
-          deep_link: deepLink,
-          ttl_seconds: ttlSeconds,
-          spki_pin: spkiPin,
-          session_id: pendingSession.session_id,
-          wss_port: port,
-          control_port: controlPort,
-        },
+        host: hostEventData,
       },
     },
     completion,

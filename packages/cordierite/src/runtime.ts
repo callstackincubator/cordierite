@@ -1,4 +1,6 @@
-import type { CommandMeta, SessionClaimDeviceInfo } from "cordierite-shared";
+import type { CommandMeta } from "cordierite-shared";
+
+import type { HostEventSink } from "./host-events.js";
 
 export type Clock = {
   now: () => Date;
@@ -8,16 +10,8 @@ export type CommandContext = {
   clock: Clock;
 };
 
-export type HostDeviceStatusReporter = {
-  printBootstrapQr: (deepLink: string, ttlSeconds: number) => Promise<void>;
-  onListening: () => void;
-  onClaimed: (device?: SessionClaimDeviceInfo) => void;
-  onClaimedSessionEnded: () => void;
-  dispose: () => void;
-};
-
 export type HostCommandContext = CommandContext & {
-  deviceStatus?: HostDeviceStatusReporter;
+  hostEvents?: HostEventSink;
 };
 
 export const systemClock: Clock = {

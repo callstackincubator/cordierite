@@ -1,5 +1,10 @@
 import { handleHostCommand } from "../commands/host.js";
-import { createHostDeviceStatusReporter } from "../host-device-status.js";
+import { noopHostEventSink } from "../host-events.js";
+import {
+  createInteractiveHostReporter,
+  createPlainTextHostReporter,
+  type HostReporter,
+} from "../host-reporters.js";
 import type { Clock } from "../runtime.js";
 import { toHostCommandOptions } from "./command-options.js";
 import { executeHostedCommand } from "./runner.js";
@@ -21,23 +26,43 @@ export const runHostSubcommand = async (
   ctx: HostCliContext,
 ): Promise<number> => {
   const { json, color, writers, clock } = ctx;
+  let reporter: HostReporter | undefined;
 
-  const deviceStatus =
-    writers.stdout.isTTY === true && !json
-      ? createHostDeviceStatusReporter({
-          color,
-          write(chunk) {
-            writers.stderr.write(chunk);
-          },
-        })
-      : undefined;
+  if (!json) {
+    reporter =
+      writers.stdout.isTTY === true
+        ? createInteractiveHostReporter({
+            color,
+            writer: {
+              write(chunk) {
+                writers.stderr.write(chunk);
+              },
+            },
+          })
+        : createPlainTextHostReporter({
+            color,
+            writer: {
+              write(chunk) {
+                writers.stderr.write(chunk);
+              },
+            },
+          });
+  }
+
+  const hostEvents = reporter
+    ? {
+        emitHostEvent(event: Parameters<HostReporter["onEvent"]>[0]) {
+          void reporter?.onEvent(event);
+        },
+      }
+    : noopHostEventSink;
 
   return executeHostedCommand(
     "host",
     () =>
       handleHostCommand(toHostCommandOptions(parsedOptions), {
         clock,
-        deviceStatus,
+        hostEvents,
       }),
     {
       json,
@@ -45,7 +70,7 @@ export const runHostSubcommand = async (
       stdout: writers.stdout,
       stderr: writers.stderr,
       clock,
-      deviceStatus,
+      reporter,
     },
   );
 };
