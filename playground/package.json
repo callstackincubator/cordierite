@@ -9,7 +9,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "eslint ."
+    "lint": "node ../node_modules/eslint/bin/eslint.js ."
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
@@ -43,7 +43,7 @@
   "devDependencies": {
     "@types/react": "~19.1.0",
     "typescript": "~5.9.2",
-    "eslint": "^9.25.0",
+    "eslint": "^8.57.1",
     "eslint-config-expo": "~10.0.0"
   },
   "private": true
