@@ -196,7 +196,12 @@ internal class CordieriteConnectionManager(
           .put("device_model", device.model)
           .put("device_os", device.os)
 
-        webSocket.send(claim.toString())
+        if (!webSocket.send(claim.toString())) {
+          failSocketSend(
+            webSocket,
+            "Cordierite session claim could not be sent because the socket is closing.",
+          )
+        }
       }
 
       override fun onMessage(webSocket: WebSocket, text: String) {
@@ -255,7 +260,11 @@ internal class CordieriteConnectionManager(
     }
 
     val socket = webSocket ?: throw IllegalStateException("Cordierite socket is not connected.")
-    socket.send(message)
+    if (!socket.send(message)) {
+      val failureMessage = "Cordierite message could not be sent because the socket is closing."
+      failSocketSend(socket, failureMessage)
+      throw IllegalStateException(failureMessage)
+    }
   }
 
   fun close() {
@@ -344,6 +353,13 @@ internal class CordieriteConnectionManager(
     okHttpClient = null
     activeSessionId = null
     pendingSessionId = null
+  }
+
+  private fun failSocketSend(webSocket: WebSocket, message: String) {
+    state = CordieriteConnectionState.error
+    emitError("send_failed", message)
+    closeEventPending = true
+    webSocket.close(1011, "send_failed")
   }
 
   private fun createSslSocketFactory(trustManager: X509TrustManager): SSLSocketFactory {
