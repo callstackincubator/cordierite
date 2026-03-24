@@ -1,4 +1,4 @@
-import type { CliResult, SessionCommandData, SessionListItem } from "cordierite-shared";
+import type { CliResult, SessionCommandData, SessionListItem } from "@cordierite/shared";
 
 import { usageError } from "../errors.js";
 import {

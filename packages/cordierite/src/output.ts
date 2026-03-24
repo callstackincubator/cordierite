@@ -9,7 +9,7 @@ import type {
   SessionCommandData,
   ToolDescriptor,
   ToolsCommandData,
-} from "cordierite-shared";
+} from "@cordierite/shared";
 
 type ColorPalette = ReturnType<typeof pc.createColors>;
 

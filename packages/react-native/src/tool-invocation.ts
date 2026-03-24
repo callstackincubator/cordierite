@@ -1,4 +1,4 @@
-import { isToolCallMessage } from "cordierite-shared";
+import { isToolCallMessage } from "@cordierite/shared";
 
 import type {
   CordieriteRegisteredTool,

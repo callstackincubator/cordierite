@@ -1,4 +1,4 @@
-import { isConnectBootstrapPayload } from "cordierite-shared";
+import { isConnectBootstrapPayload } from "@cordierite/shared";
 
 import type {
   CordieriteCloseEvent,
@@ -146,13 +146,13 @@ export const createCordieriteClient = (
     },
 
     registerTool<
-      TInputSchema extends import("cordierite-shared").StandardSchemaV1,
-      TOutputSchema extends import("cordierite-shared").StandardSchemaV1
+      TInputSchema extends import("@cordierite/shared").StandardSchemaV1,
+      TOutputSchema extends import("@cordierite/shared").StandardSchemaV1
     >(
       descriptor: CordieriteToolDefinition<TInputSchema, TOutputSchema>,
       handler: CordieriteToolHandler<
-        import("cordierite-shared").StandardSchemaV1.InferOutput<TInputSchema>,
-        import("cordierite-shared").StandardSchemaV1.InferInput<TOutputSchema>
+        import("@cordierite/shared").StandardSchemaV1.InferOutput<TInputSchema>,
+        import("@cordierite/shared").StandardSchemaV1.InferInput<TOutputSchema>
       >
     ) {
       const inputSchema = requireStandardSchema(

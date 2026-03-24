@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { encodeConnectBootstrapWireBinary, type ConnectBootstrapPayload } from "cordierite-shared";
+import { encodeConnectBootstrapWireBinary, type ConnectBootstrapPayload } from "@cordierite/shared";
 
 import { runCli } from "../cli.js";
 

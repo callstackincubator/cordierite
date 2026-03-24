@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
 import type {
   StandardSchemaV1,
   StandardSchemaV1JsonSchema,
-} from "cordierite-shared";
+} from "@cordierite/shared";
+import { describe, expect, test } from "bun:test";
 
 import type { CordieriteConnectionState } from "../Cordierite.types";
 import {

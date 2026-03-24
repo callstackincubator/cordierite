@@ -28,7 +28,7 @@ import {
   type SessionClaimMessage,
   type ToolDescriptor,
   type ToolCallMessage,
-} from "cordierite-shared";
+} from "@cordierite/shared";
 
 import { connectionError, sessionError, toCliError, toolError, usageError } from "../errors.js";
 import type { HostBootstrapEventData } from "../host-events.js";

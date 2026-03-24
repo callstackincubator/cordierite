@@ -20,15 +20,15 @@ The Cordierite **`host`** command serves **TLS** using a PEM cert and key (`--tl
 
 - [Handshake & pin format](../../docs/HANDSHAKE.md)
 - [Playground README](../README.md)
-- [react-native-cordierite](../../packages/react-native-cordierite/README.md)
+- [@cordierite/react-native](../../packages/react-native/README.md)
 
 ## Getting started
 
-Use the playground script **`generate:dev-tls`** (see `playground/package.json`) to regenerate certs when needed, then refresh **`cliPins`** in `app.json` for **`react-native-cordierite`**. Run **`host`** from the monorepo with paths under `playground/certs/`—the CLI runs in **any standard JS runtime** your workspace uses.
+Use the playground script **`generate:dev-tls`** (see `playground/package.json`) to regenerate certs when needed, then refresh **`cliPins`** in `app.json` for **`@cordierite/react-native`**. Run **`host`** from the monorepo with paths under `playground/certs/`—the CLI runs in **any standard JS runtime** your workspace uses.
 
 ## Platform compatibility
 
-Pins are read by **iOS and Android** in `react-native-cordierite`. PEM files are read by the **host process** on your machine.
+Pins are read by **iOS and Android** in `@cordierite/react-native`. PEM files are read by the **host process** on your machine.
 
 ## Authors
 
@@ -36,7 +36,7 @@ Part of [Cordierite][repo] at [Callstack][callstack-readme-with-love].
 
 [cordierite-banner]: https://img.shields.io/badge/Cordierite-callstack%2Fincubator-111827?style=for-the-badge&logo=github&logoColor=white
 [repo]: https://github.com/callstackincubator/cordierite
-[license-badge]: https://img.shields.io/npm/l/react-native-cordierite?style=for-the-badge
+[license-badge]: https://img.shields.io/npm/l/%40cordierite%2Freact-native?style=for-the-badge
 [license]: https://github.com/callstackincubator/cordierite/blob/main/LICENSE
 [prs-welcome-badge]: https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=for-the-badge
 [prs-welcome]: https://github.com/callstackincubator/cordierite/pulls

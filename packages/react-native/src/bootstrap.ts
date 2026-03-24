@@ -2,7 +2,7 @@ import {
   tryParseConnectBootstrapWireString,
   validateConnectBootstrapPayload,
   type ConnectBootstrapPayload,
-} from "cordierite-shared";
+} from "@cordierite/shared";
 
 import { CordieriteBootstrapParseError } from "./Cordierite.types";
 import { logger } from "./logger";

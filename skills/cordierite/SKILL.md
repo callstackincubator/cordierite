@@ -47,7 +47,7 @@ When the user wants to disconnect or stop Cordierite for **that** session: **sto
 The app must register tools before **`cordierite tools`** / **`cordierite invoke`** can do anything useful. Define schemas with **Zod** and register with **`registerTool`**:
 
 ```ts
-import { registerTool } from "react-native-cordierite";
+import { registerTool } from "@cordierite/react-native";
 import { z } from "zod";
 
 const echoInput = z.object({

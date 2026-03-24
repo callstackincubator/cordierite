@@ -1,5 +1,3 @@
-[![Cordierite][cordierite-banner]][repo]
-
 ### Expose app tools securely - no debug menus in the binary
 
 [![MIT license][license-badge]][license] [![npm downloads][npm-downloads-badge]][npm-downloads] [![PRs Welcome][prs-welcome-badge]][prs-welcome]
@@ -24,8 +22,8 @@ Shipping ad-hoc debug UIs in production builds is risky: they leak intent, widen
 | Package | Role |
 | --- | --- |
 | [`cordierite`](packages/cordierite/README.md) | CLI and host tooling |
-| [`cordierite-shared`](packages/cordierite-shared/README.md) | Shared library (CLI + React Native) |
-| [`react-native-cordierite`](packages/react-native-cordierite/README.md) | TurboModule client + optional Expo config plugin |
+| [`@cordierite/shared`](packages/shared/README.md) | Shared library (CLI + React Native) |
+| [`@cordierite/react-native`](packages/react-native/README.md) | TurboModule client + optional Expo config plugin |
 
 Clone the repo and install with your usual workspace workflow. The [playground](playground/README.md) is the reference dev app; [playground/certs](playground/certs/README.md) explains dev TLS and pin rotation.
 
@@ -40,7 +38,6 @@ Clone the repo and install with your usual workspace workflow. The [playground](
 
 Like the project? ⚛️ [Join the team](https://callstack.com/careers/?utm_campaign=Senior_RN&utm_source=github&utm_medium=readme) who does amazing stuff for clients and drives React Native Open Source! 🔥
 
-[cordierite-banner]: https://img.shields.io/badge/Cordierite-callstack%2Fincubator-111827?style=for-the-badge&logo=github&logoColor=white
 [repo]: https://github.com/callstackincubator/cordierite
 [callstack-readme-with-love]: https://callstack.com/?utm_source=github.com&utm_medium=referral&utm_campaign=cordierite&utm_term=readme-with-love
 [license-badge]: https://img.shields.io/npm/l/cordierite?style=for-the-badge

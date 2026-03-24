@@ -22,7 +22,7 @@ This package is the **native client** for Cordierite. Your app **registers tools
 > [!NOTE]
 > Use a **development build** or bare native app. **Expo Go** is not enough—this library ships native code and pinning configuration.
 
-Install with your package manager (`npm`, `yarn`, `pnpm`, …). Add the **`react-native-cordierite`** config plugin to Expo config with **`cliPins`** (required) and optionally **`allowPrivateLanOnly`**; then run your usual **prebuild** so plist and manifest receive the values. For bare React Native, autolink the module and set the equivalent native keys—field names and semantics mirror the plugin (see [app.plugin.js](app.plugin.js)).
+Install with your package manager (`npm`, `yarn`, `pnpm`, …). Add the **`@cordierite/react-native`** config plugin to Expo config with **`cliPins`** (required) and optionally **`allowPrivateLanOnly`**; then run your usual **prebuild** so plist and manifest receive the values. For bare React Native, autolink the module and set the equivalent native keys—field names and semantics mirror the plugin (see [app.plugin.js](app.plugin.js)).
 
 **Bare React Native — native keys**
 
@@ -49,7 +49,7 @@ Empty or missing pins fail at configuration time. Wire **deep links** so the OS 
 **Tools:** call `registerTool(descriptor, handler)` with Standard Schema compatible `input_schema` and `output_schema` values so the host can invoke your tools after the session is active. `zod` v4 works well here and is used in the playground example.
 
 ```ts
-import { registerTool } from "react-native-cordierite";
+import { registerTool } from "@cordierite/react-native";
 import { z } from "zod";
 
 registerTool(

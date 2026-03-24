@@ -1,5 +1,5 @@
+import { encodeConnectBootstrapWireBinary } from "@cordierite/shared";
 import { describe, expect, test } from "bun:test";
-import { encodeConnectBootstrapWireBinary } from "cordierite-shared";
 import { randomBytes } from "node:crypto";
 
 import { CordieriteBootstrapParseError } from "../Cordierite.types";

@@ -30,7 +30,7 @@
     "plugins": [
       "expo-router",
       [
-        "react-native-cordierite",
+        "@cordierite/react-native",
         {
           "cliPins": [
             "sha256/lZAEV6xLTffu0PDlVbDCqmUnmcqmiuve6wK/puWmAD0="

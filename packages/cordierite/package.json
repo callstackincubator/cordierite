@@ -36,7 +36,7 @@
   },
   "dependencies": {
     "cac": "^6.7.14",
-    "cordierite-shared": "workspace:*",
+    "@cordierite/shared": "workspace:*",
     "picocolors": "^1.1.1",
     "toqr": "^0.1.1",
     "ws": "^8.18.3"

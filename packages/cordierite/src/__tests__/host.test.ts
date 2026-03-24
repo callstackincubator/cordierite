@@ -10,7 +10,7 @@ import {
   CONNECT_BOOTSTRAP_WIRE_BINARY_V1,
   toConnectBootstrapPayload,
   tryParseConnectBootstrapWireString,
-} from "cordierite-shared";
+} from "@cordierite/shared";
 
 const padBase64 = (value: string): string => {
   const remainder = value.length % 4;

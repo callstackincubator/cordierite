@@ -1,4 +1,4 @@
-import type { CommandMeta } from "cordierite-shared";
+import type { CommandMeta } from "@cordierite/shared";
 
 import type { HostEventSink } from "./host-events.js";
 

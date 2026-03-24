@@ -3,7 +3,7 @@ import type {
   StandardSchemaV1JsonSchema,
   ToolDescriptor,
   ToolSchemaDescriptor,
-} from "cordierite-shared";
+} from "@cordierite/shared";
 
 import type { CordieriteToolDefinition } from "./Cordierite.types";
 
