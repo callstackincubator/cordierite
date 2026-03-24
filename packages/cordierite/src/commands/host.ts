@@ -11,6 +11,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import {
   canClaimPendingSession,
   formatAgentWebSocketUrl,
+  isSessionBoundMessage,
   isToolErrorMessage,
   isToolRegistryDeltaMessage,
   isToolRegistrySnapshotMessage,
@@ -169,6 +170,26 @@ const sendToolCall = (
   };
 
   websocket.send(JSON.stringify(message));
+};
+
+export const isKnownPostClaimMessage = (message: unknown): boolean => {
+  return (
+    isToolRegistrySnapshotMessage(message) ||
+    isToolRegistryDeltaMessage(message) ||
+    isToolResultMessage(message) ||
+    isToolErrorMessage(message)
+  );
+};
+
+export const hasExpectedPostClaimSession = (
+  message: unknown,
+  sessionId: string,
+): boolean => {
+  if (!isKnownPostClaimMessage(message)) {
+    return true;
+  }
+
+  return isSessionBoundMessage(message) && message.session_id === sessionId;
 };
 
 type StartHostRuntimeResult = {
@@ -467,6 +488,11 @@ const startHostRuntime = async (options: HostRuntimeOptions): Promise<StartHostR
           device: deviceInfo === "invalid" ? undefined : deviceInfo,
         });
         void persistState();
+        return;
+      }
+
+      if (!hasExpectedPostClaimSession(parsed, options.pendingSession.session_id)) {
+        websocket.close(1008, "session_mismatch");
         return;
       }
 

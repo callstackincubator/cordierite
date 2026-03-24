@@ -4,6 +4,7 @@ import {
   createBootstrapDeepLink,
   createPendingSession,
   getSpkiPinFromCertificate,
+  hasExpectedPostClaimSession,
 } from "../commands/host.js";
 import {
   CONNECT_BOOTSTRAP_WIRE_BINARY_V1,
@@ -87,5 +88,51 @@ describe("host helpers", () => {
 
   test("getSpkiPinFromCertificate rejects invalid certificates", () => {
     expect(() => getSpkiPinFromCertificate("not-a-certificate")).toThrow();
+  });
+
+  test("claimed host requires known post-claim frames to match the active session", () => {
+    expect(
+      hasExpectedPostClaimSession(
+        {
+          type: "tool_registry_snapshot",
+          session_id: "session-a",
+          tools: [],
+        },
+        "session-a",
+      ),
+    ).toBe(true);
+
+    expect(
+      hasExpectedPostClaimSession(
+        {
+          type: "tool_registry_snapshot",
+          session_id: "session-b",
+          tools: [],
+        },
+        "session-a",
+      ),
+    ).toBe(false);
+
+    expect(
+      hasExpectedPostClaimSession(
+        {
+          type: "tool_result",
+          session_id: "session-b",
+          id: "call-1",
+          result: { ok: true },
+        },
+        "session-a",
+      ),
+    ).toBe(false);
+
+    expect(
+      hasExpectedPostClaimSession(
+        {
+          type: "custom_message",
+          payload: true,
+        },
+        "session-a",
+      ),
+    ).toBe(true);
   });
 });
