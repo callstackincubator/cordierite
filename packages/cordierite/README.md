@@ -8,7 +8,7 @@ The **`cordierite`** package is the **operator side** of Cordierite: run a **TLS
 
 ## Why use this package
 
-- **Host + session flow**: `host` serves **`wss://`** with your certificate material; the app follows the deep link and claims a **short-lived** pending session.
+- **Host + session flow**: `host` serves **`wss://`** with a certificate generated from your private key and the resolved local IP; the app follows the deep link and claims a **short-lived** pending session.
 - **Tooling from the shell**: `tools` and `invoke` talk to the device-side registry once the session is active—same conceptual surface **automation** uses.
 - **Fits production-minded apps**: the app still only exposes **what you register**; trust boundaries are **pins + TLS** on the client (see [HANDSHAKE.md][handshake]).
 
@@ -17,12 +17,23 @@ The **`cordierite`** package is the **operator side** of Cordierite: run a **TLS
 - **You hold the private key** for the host cert; the app pins the matching **SPKI**—no cleartext control plane, no trust in “just” the deep link or LAN.
 - **Bootstrap payloads** are **hints**; authorization to speak to your host comes from **TLS + pinning**, not from payload secrecy alone.
 
+## Key setup
+
+Generate a host key with:
+
+```bash
+cordierite keygen
+```
+
+The command writes an unencrypted PEM private key (PKCS#8) and prints the exact `sha256/...` SPKI fingerprint your app should place into `cliPins`. Use the generated file with `cordierite host --tls-key ...`.
+
 ## Commands (overview)
 
 | Command | Role |
 | --- | --- |
-| `host` | Start the Cordierite **`wss://`** host (TLS cert/key, scheme, optional open-on-macOS). |
+| `host` | Start the Cordierite **`wss://`** host (generated cert, private key, scheme, optional open-on-macOS). |
 | `connect` | Validate a **base64url binary v1** bootstrap payload. |
+| `keygen` | Interactively generate a host private key and print the app fingerprint for `cliPins`. |
 | `session` | Show the currently active host session. |
 | `tools` | **List** tools on the connected device or **inspect** one by name. |
 | `invoke` | **Invoke** a device tool with JSON input. |

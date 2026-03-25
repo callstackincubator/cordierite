@@ -35,6 +35,18 @@ const binaryPayloadB64 = (p: typeof payload): string =>
   );
 
 describe("bootstrap helpers", () => {
+  test("parseBootstrapPayload accepts loopback when local-only validation is enabled", () => {
+    const token = token32B64Url();
+    const loopbackPayload = { ...payload, ip: "127.0.0.1", token };
+
+    expect(
+      parseBootstrapPayload(binaryPayloadB64(loopbackPayload), {
+        now: FIXED_NOW,
+        requirePrivateIp: true,
+      })
+    ).toEqual(loopbackPayload);
+  });
+
   test("parseBootstrapPayload accepts base64url binary v1", () => {
     const token = token32B64Url();
     const p = { ...payload, token };

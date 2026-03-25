@@ -125,20 +125,38 @@ export type CordieriteRuntimeSchema<
   Output = Input
 > = StandardSchemaV1<Input, Output>;
 
+export type InferToolArgs<TSchema> = TSchema extends CordieriteRuntimeSchema
+  ? StandardSchemaV1.InferOutput<TSchema>
+  : undefined;
+
+export type InferToolResult<TSchema> = TSchema extends CordieriteRuntimeSchema
+  ? StandardSchemaV1.InferInput<TSchema>
+  : void;
+
 export type CordieriteToolDefinition<
-  TInputSchema extends CordieriteRuntimeSchema = CordieriteRuntimeSchema,
-  TOutputSchema extends CordieriteRuntimeSchema = CordieriteRuntimeSchema
+  TInputSchema extends CordieriteRuntimeSchema | undefined = undefined,
+  TOutputSchema extends CordieriteRuntimeSchema | undefined = undefined
 > = {
   name: string;
   description: string;
-  input_schema: TInputSchema;
-  output_schema: TOutputSchema;
+  inputSchema?: TInputSchema;
+  outputSchema?: TOutputSchema;
+};
+
+export type CordieriteToolRegistration<
+  TInputSchema extends CordieriteRuntimeSchema | undefined = undefined,
+  TOutputSchema extends CordieriteRuntimeSchema | undefined = undefined
+> = CordieriteToolDefinition<TInputSchema, TOutputSchema> & {
+  handler: CordieriteToolHandler<
+    InferToolArgs<TInputSchema>,
+    InferToolResult<TOutputSchema>
+  >;
 };
 
 export type CordieriteRegisteredTool = {
   descriptor: ToolDescriptor;
-  inputSchema: CordieriteRuntimeSchema;
-  outputSchema: CordieriteRuntimeSchema;
+  inputSchema?: CordieriteRuntimeSchema;
+  outputSchema?: CordieriteRuntimeSchema;
   handler: CordieriteToolHandler;
 };
 

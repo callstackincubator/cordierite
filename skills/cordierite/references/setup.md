@@ -8,8 +8,8 @@ Use this file when the task is to add Cordierite to a new React Native project.
 2. Install `@cordierite/react-native` in the app.
 3. Register the app tools you want Cordierite to expose.
 4. Configure deep linking so the OS can open your app with the Cordierite bootstrap URL. Importing `@cordierite/react-native` registers listeners (via React Native `Linking`) that parse bootstrap URLs and call `connect` automatically; you do not need a manual `Linking` handler for the default flow.
-5. Generate or provide a TLS certificate and key for the host.
-6. Add the matching `sha256/...` SPKI pin to the app configuration.
+5. Generate or provide a TLS private key for the host. For a new setup, prefer running `cordierite keygen` in an interactive terminal.
+6. Add the matching `sha256/...` SPKI pin to the app configuration. Use the fingerprint printed by `cordierite keygen`. The CLI generates the leaf certificate automatically from that key and the resolved host IP.
 7. Optional: use `addCordieriteErrorListener` to observe bootstrap parse failures or failed auto-`connect` attempts.
 8. Advanced: use the exported `cordieriteClient` for manual `connect`, extra event listeners, or tests.
 
@@ -33,7 +33,7 @@ Use this file when the task is to add Cordierite to a new React Native project.
 
 ## Final check
 
-- The CLI host has a readable cert and key
+- The CLI host has a readable private key
 - The app trusts the host's current pin
 - The app has at least one registered tool
 - The app scheme matches the `host --scheme` value

@@ -1,6 +1,5 @@
 import type {
-  CordieriteToolDefinition,
-  CordieriteToolHandler,
+  CordieriteToolRegistration,
 } from "./Cordierite.types";
 import { cordieriteNativeModule } from "./CordieriteModule";
 import { parseBootstrapPayload, parseBootstrapUrl } from "./bootstrap";
@@ -33,14 +32,8 @@ installCordieriteDeepLinkBootstrap(cordieriteClient);
  * prefer this for typical app code so you do not need to touch the singleton.
  */
 export function registerTool<
-  TInputSchema extends import("@cordierite/shared").StandardSchemaV1,
-  TOutputSchema extends import("@cordierite/shared").StandardSchemaV1
->(
-  descriptor: CordieriteToolDefinition<TInputSchema, TOutputSchema>,
-  handler: CordieriteToolHandler<
-    import("@cordierite/shared").StandardSchemaV1.InferOutput<TInputSchema>,
-    import("@cordierite/shared").StandardSchemaV1.InferInput<TOutputSchema>
-  >
-) {
-  return cordieriteClient.registerTool(descriptor, handler);
+  TInputSchema extends import("@cordierite/shared").StandardSchemaV1 | undefined,
+  TOutputSchema extends import("@cordierite/shared").StandardSchemaV1 | undefined
+>(registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>) {
+  return cordieriteClient.registerTool(registration);
 }

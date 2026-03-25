@@ -25,7 +25,7 @@ Shipping ad-hoc debug UIs in production builds is risky: they leak intent, widen
 | [`@cordierite/shared`](packages/shared/README.md) | Shared library (CLI + React Native) |
 | [`@cordierite/react-native`](packages/react-native/README.md) | TurboModule client + optional Expo config plugin |
 
-Clone the repo and install with your usual workspace workflow. The [playground](playground/README.md) is the reference dev app; [playground/certs](playground/certs/README.md) explains dev TLS and pin rotation.
+Clone the repo and install with your usual workspace workflow. The [playground](playground/README.md) is the reference dev app.
 
 ## Platform compatibility
 

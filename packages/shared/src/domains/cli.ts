@@ -98,3 +98,11 @@ export type HostCommandData = {
     control_port: number;
   };
 };
+
+export type KeygenCommandData = {
+  key: {
+    path: string;
+    spki_pin: string;
+    algorithm: "rsa-2048";
+  };
+};

@@ -2,37 +2,18 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 
 import {
   binEntry,
+  createInteractiveInput,
   createPayload,
   FIXED_NOW,
   packageRoot,
   runCliWithCapture,
 } from "./fixtures.js";
-
-const SAMPLE_HOST_CERT = `-----BEGIN CERTIFICATE-----
-MIIDFTCCAf2gAwIBAgIUJQNMDmx0oMrw6m3y32VPygeoH+EwDQYJKoZIhvcNAQEL
-BQAwGjEYMBYGA1UEAwwPY29yZGllcml0ZS10ZXN0MB4XDTI2MDMyMzA3MjMzNFoX
-DTM2MDMyMDA3MjMzNFowGjEYMBYGA1UEAwwPY29yZGllcml0ZS10ZXN0MIIBIjAN
-BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs9SQeBc/IMmV+/2FE6xvdFAMGsSX
-orZsB3E5mXv3quuF7S7cJ1Bf5EzWgzgVsevpjsQz5VQfuXOT0TXcmrEuCSuiO8Bt
-BHqsLhag9laNKfsMMUu+Cr9SeGYWgqGauT6cMIH6/siyOEEWiEbNY+/Gc08YmvNR
-MNqqa67c5WxONO0XH2NW1DjrKAU9ITruBQo1R3+0escUO9ayzjgkzf6NR4LEOPSg
-sm12psJHrt0Uz+TuKH48/GA/LWTf7nqmyqv/1c84ivkgLBukldLG+laoaJwO8kKp
-/Vhocl+oZy163dxu+vzravyVf3w7e7Qnz4binQ9HHzgS3FHZBK3mfhhlWwIDAQAB
-o1MwUTAdBgNVHQ4EFgQU4Gxp419NKfrUlkCrWyW9oXseykowHwYDVR0jBBgwFoAU
-4Gxp419NKfrUlkCrWyW9oXseykowDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0B
-AQsFAAOCAQEANNAWvdTXHGLeelSNVj7gP5i+0jdRCKQ5eUMEHHwl5U5TqGjqLttK
-9HR9hZmgxQJSvJACUBnZ4UDomCLobZrFlAvVBQvWgu75xtuPB+c739hnXQaXybkv
-G8GzeL2JGhX9/Nuu+w5wYYTowqtqa96nG5cG2lWy1yRpVXYYNJ7v700N4MScuQqk
-ww8CDd4Ops6ytaQ9NtJjVswxUpsmUxJePuHCLd+hRt16bdW+dn+lXhovXXGcjsXx
-sHCpx7My0ZOKmh3CuESIeWc8kE1RFRp9HLRpuV7nOWojLzClad5aKeZvAQwI8l1q
-0N28icz5qYWGVYL/c0JLtEXX66PSqRJWMA==
------END CERTIFICATE-----`;
 
 const SAMPLE_HOST_KEY = `-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCz1JB4Fz8gyZX7
@@ -65,17 +46,12 @@ lagOL4n/IA1cPyxGJgPIWSJ25n2Dukdlnvga0Z+MRlZqZYkq6YMF70+BC/oGfzyN
 
 const createHostTlsFiles = async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "cordierite-host-test-"));
-  const certPath = path.join(directory, "cert.pem");
   const keyPath = path.join(directory, "key.pem");
 
-  await Promise.all([
-    writeFile(certPath, SAMPLE_HOST_CERT, "utf8"),
-    writeFile(keyPath, SAMPLE_HOST_KEY, "utf8"),
-  ]);
+  await writeFile(keyPath, SAMPLE_HOST_KEY, "utf8");
 
   return {
     directory,
-    certPath,
     keyPath,
   };
 };
@@ -290,8 +266,6 @@ describe("CLI integration", () => {
   test("host requires --scheme", async () => {
     const result = await runCliWithCapture([
       "host",
-      "--tls-cert",
-      "x",
       "--tls-key",
       "y",
       "--json",
@@ -316,8 +290,6 @@ describe("CLI integration", () => {
     try {
       const result = await runCliWithCapture([
         "host",
-        "--tls-cert",
-        tlsFiles.certPath,
         "--tls-key",
         tlsFiles.keyPath,
         "--scheme",
@@ -353,6 +325,38 @@ describe("CLI integration", () => {
       ]);
     } finally {
       await rm(tlsFiles.directory, { force: true, recursive: true });
+    }
+  });
+
+  test("keygen --json emits generated key metadata", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "cordierite-keygen-integration-"));
+    const keyPath = path.join(directory, "generated-key.pem");
+
+    try {
+      const result = await runCliWithCapture(
+        ["keygen", "--json"],
+        {
+          stdin: createInteractiveInput(`${keyPath}\n`),
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toContain("Destination path");
+
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed).toMatchObject({
+        ok: true,
+        data: {
+          key: {
+            path: keyPath,
+            algorithm: "rsa-2048",
+          },
+        },
+      });
+      expect(parsed.data.key.spki_pin).toMatch(/^sha256\//u);
+      expect(await readFile(keyPath, "utf8")).toContain("BEGIN PRIVATE KEY");
+    } finally {
+      await rm(directory, { force: true, recursive: true });
     }
   });
 

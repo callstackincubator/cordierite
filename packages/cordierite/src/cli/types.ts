@@ -3,6 +3,8 @@ import type { Clock } from "../runtime.js";
 export type RunCliOptions = {
   stdout?: Pick<typeof process.stdout, "write" | "isTTY">;
   stderr?: Pick<typeof process.stderr, "write">;
+  stdin?: NodeJS.ReadableStream & { isTTY?: boolean };
+  promptOutput?: NodeJS.WritableStream;
   clock?: Clock;
 };
 

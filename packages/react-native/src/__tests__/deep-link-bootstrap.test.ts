@@ -92,6 +92,21 @@ describe("cordierite deep-link bootstrap", () => {
     });
   });
 
+  test("handleCordieriteDeepLinkUrl accepts loopback when local-only validation is enabled", () => {
+    const client = createMockClient("idle");
+    const url = bootstrapUrl({ ...basePayload, ip: "127.0.0.1" });
+    handleCordieriteDeepLinkUrl(client, url, {
+      now: FIXED_NOW,
+      requirePrivateIp: true,
+    });
+    expect(client.connects).toHaveLength(1);
+    expect(client.connects[0]).toMatchObject({
+      ip: "127.0.0.1",
+      port: basePayload.port,
+      sessionId: basePayload.sessionId,
+    });
+  });
+
   test("handleCordieriteDeepLinkUrl skips when already connecting or active", () => {
     for (const state of ["connecting", "active"] as const) {
       const client = createMockClient(state);

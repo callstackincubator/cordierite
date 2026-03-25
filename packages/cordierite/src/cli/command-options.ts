@@ -2,7 +2,6 @@ import type { HostCommandOptions } from "../commands/host.js";
 import { usageError } from "../errors.js";
 
 export const toHostCommandOptions = (parsed: Record<string, unknown>): HostCommandOptions => {
-  const tlsCert = parsed.tlsCert;
   const tlsKey = parsed.tlsKey;
   const ip = parsed.ip;
   const port = parsed.port;
@@ -10,7 +9,6 @@ export const toHostCommandOptions = (parsed: Record<string, unknown>): HostComma
   const scheme = parsed.scheme;
 
   return {
-    tlsCert: typeof tlsCert === "string" ? tlsCert : "",
     tlsKey: typeof tlsKey === "string" ? tlsKey : "",
     ip: typeof ip === "string" ? ip : undefined,
     port: typeof port === "number" ? port : Number(port),

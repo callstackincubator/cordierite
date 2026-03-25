@@ -1,5 +1,6 @@
 import { handleConnectCommand } from "../commands/connect.js";
 import { handleInvokeCommand } from "../commands/invoke.js";
+import { handleKeygenCommand } from "../commands/keygen.js";
 import { handleSessionCommand } from "../commands/session.js";
 import { handleToolsCommand } from "../commands/tools.js";
 import { usageError } from "../errors.js";
@@ -16,6 +17,10 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
     stderr: options.stderr ?? process.stderr,
   };
   const clock = options.clock ?? systemClock;
+  const prompt = {
+    input: options.stdin ?? process.stdin,
+    output: options.promptOutput ?? process.stderr,
+  };
 
   const cli = createCli();
 
@@ -86,6 +91,19 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
               requirePrivateIp: Boolean(parsedOptions.privateIp),
             },
             { clock },
+          ),
+        io,
+      );
+
+    case "keygen":
+      return executeCommand(
+        "keygen",
+        () =>
+          handleKeygenCommand(
+            {},
+            {
+              prompt,
+            },
           ),
         io,
       );

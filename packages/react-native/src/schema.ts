@@ -5,7 +5,10 @@ import type {
   ToolSchemaDescriptor,
 } from "@cordierite/shared";
 
-import type { CordieriteToolDefinition } from "./Cordierite.types";
+import type {
+  CordieriteRuntimeSchema,
+  CordieriteToolDefinition,
+} from "./Cordierite.types";
 
 const JSON_SCHEMA_TARGET = "draft-2020-12";
 const EMPTY_SCHEMA_DESCRIPTOR: ToolSchemaDescriptor = {};
@@ -31,6 +34,12 @@ export const requireStandardSchema = (
   return value as unknown as StandardSchemaV1;
 };
 
+export const requireOptionalStandardSchema = (
+  value: unknown,
+  label: string
+): StandardSchemaV1 | undefined =>
+  value === undefined ? undefined : requireStandardSchema(value, label);
+
 const hasJsonSchemaExporter = (
   schema: StandardSchemaV1
 ): schema is StandardSchemaV1JsonSchema => {
@@ -45,9 +54,13 @@ const hasJsonSchemaExporter = (
 };
 
 export const exportToolSchema = (
-  schema: StandardSchemaV1,
+  schema: StandardSchemaV1 | undefined,
   mode: "input" | "output"
 ): ToolSchemaDescriptor => {
+  if (!schema) {
+    return EMPTY_SCHEMA_DESCRIPTOR;
+  }
+
   if (!hasJsonSchemaExporter(schema)) {
     return EMPTY_SCHEMA_DESCRIPTOR;
   }
@@ -113,10 +126,13 @@ export const validateStandardSchema = async (
 };
 
 export const toToolDescriptor = (
-  definition: CordieriteToolDefinition
+  definition: CordieriteToolDefinition<
+    CordieriteRuntimeSchema | undefined,
+    CordieriteRuntimeSchema | undefined
+  >
 ): ToolDescriptor => ({
   name: definition.name,
   description: definition.description,
-  input_schema: exportToolSchema(definition.input_schema, "input"),
-  output_schema: exportToolSchema(definition.output_schema, "output"),
+  input_schema: exportToolSchema(definition.inputSchema, "input"),
+  output_schema: exportToolSchema(definition.outputSchema, "output"),
 });

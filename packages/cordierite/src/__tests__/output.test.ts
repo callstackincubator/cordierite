@@ -64,6 +64,33 @@ describe("output rendering", () => {
     expect(rendered.stdout).toMatchSnapshot();
   });
 
+  test("keygen success output includes the key path and fingerprint", () => {
+    const rendered = renderResult(
+      {
+        ok: true,
+        data: {
+          key: {
+            path: "/tmp/cordierite-key.pem",
+            spki_pin: "sha256/example",
+            algorithm: "rsa-2048",
+          },
+        },
+        meta: {
+          command: "keygen",
+          timestamp: FIXED_NOW.toISOString(),
+          duration_ms: 3,
+        },
+      },
+      {
+        command: "keygen",
+        json: false,
+        color: false,
+      },
+    );
+
+    expect(rendered.stdout).toMatchSnapshot();
+  });
+
   test("host json output only includes the trimmed host payload", () => {
     const rendered = renderResult(
       {

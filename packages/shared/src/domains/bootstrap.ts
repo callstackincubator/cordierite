@@ -1,6 +1,6 @@
 import type { PendingSessionRecord, UnixTimestampSeconds } from "./session.js";
 import { isExpiredAt } from "./session.js";
-import { isPrivateIpv4Address, isValidPort } from "./transport.js";
+import { isLocalIpv4Address, isValidPort } from "./transport.js";
 
 export type ConnectBootstrapPayload = {
   ip: string;
@@ -184,7 +184,7 @@ export const validateConnectBootstrapPayload = (
   const now = options.now;
   const requirePrivateIp = options.requirePrivateIp ?? false;
 
-  if (requirePrivateIp && !isPrivateIpv4Address(payload.ip)) {
+  if (requirePrivateIp && !isLocalIpv4Address(payload.ip)) {
     return false;
   }
 

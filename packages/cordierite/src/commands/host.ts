@@ -1,4 +1,4 @@
-import { createHash, randomBytes, X509Certificate } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
@@ -31,6 +31,7 @@ import {
 } from "@cordierite/shared";
 
 import { connectionError, sessionError, toCliError, toolError, usageError } from "../errors.js";
+import { generateHostCertificate } from "../host-certificate.js";
 import type { HostBootstrapEventData } from "../host-events.js";
 import { parseJsonObject } from "../parse.js";
 import type { HostCommandContext } from "../runtime.js";
@@ -51,7 +52,6 @@ type HostedCommand = {
 };
 
 export type HostCommandOptions = {
-  tlsCert: string;
   tlsKey: string;
   ip?: string;
   port?: number;
@@ -115,15 +115,17 @@ const detectHostIp = (): string => {
   throw connectionError("Could not determine a local IPv4 address for the Cordierite host.");
 };
 
-export const getSpkiPinFromCertificate = (certificatePem: string): string => {
-  const certificate = new X509Certificate(certificatePem);
-  const spkiDer = certificate.publicKey.export({
-    type: "spki",
-    format: "der",
-  });
-  const digest = createHash("sha256").update(spkiDer).digest("base64");
+export const resolveAdvertisedHostIp = (options: Pick<HostCommandOptions, "ip" | "open">): string => {
+  if (options.ip) {
+    return options.ip;
+  }
 
-  return `sha256/${digest}`;
+  // The iOS simulator shares the host's loopback interface, and generated certs always cover 127.0.0.1.
+  if (options.open) {
+    return "127.0.0.1";
+  }
+
+  return detectHostIp();
 };
 
 export type PendingSessionWithTokenRaw = PendingSessionRecord & { tokenRaw: Uint8Array };
@@ -736,10 +738,6 @@ export const handleHostCommand = async (
   options: HostCommandOptions,
   context: HostCommandContext,
 ): Promise<HostedCommand> => {
-  if (!options.tlsCert) {
-    throw usageError("The host command requires --tls-cert.");
-  }
-
   if (!options.tlsKey) {
     throw usageError("The host command requires --tls-key.");
   }
@@ -760,17 +758,24 @@ export const handleHostCommand = async (
     throw usageError("The host command requires a positive --ttl value.");
   }
 
-  const [certPem, keyPem] = await Promise.all([
-    readFile(options.tlsCert, "utf8"),
-    readFile(options.tlsKey, "utf8"),
-  ]);
+  const keyPem = await readFile(options.tlsKey, "utf8");
 
-  if (certPem.length === 0 || keyPem.length === 0) {
-    throw connectionError("TLS certificate and key files must be readable and non-empty.");
+  if (keyPem.length === 0) {
+    throw connectionError("The Cordierite host private key file must be readable and non-empty.");
   }
 
   const nowUnixSeconds = Math.floor(context.clock.now().getTime() / 1000);
-  const ip = options.ip ?? detectHostIp();
+  const ip = resolveAdvertisedHostIp(options);
+  let certificateMaterial;
+
+  try {
+    certificateMaterial = await generateHostCertificate(keyPem, ip);
+  } catch (error) {
+    throw connectionError("Failed to generate a Cordierite host certificate from --tls-key.", {
+      cause: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   const pendingSession = createPendingSession(
     {
       ip,
@@ -782,10 +787,9 @@ export const handleHostCommand = async (
   const bootstrapPayload = toConnectBootstrapPayload(pendingSession);
   const appScheme = options.scheme;
   const deepLink = createBootstrapDeepLink(bootstrapPayload, appScheme, pendingSession.tokenRaw);
-  const spkiPin = getSpkiPinFromCertificate(certPem);
   const { completion, controlPort } = await startHostRuntime({
     pendingSession,
-    certPem,
+    certPem: certificateMaterial.certPem,
     keyPem,
     clock: context.clock,
     hostEvents: context.hostEvents,
@@ -803,7 +807,7 @@ export const handleHostCommand = async (
   const hostEventData: HostBootstrapEventData = {
     deep_link: deepLink,
     ttl_seconds: ttlSeconds,
-    spki_pin: spkiPin,
+    spki_pin: certificateMaterial.spkiPin,
     session_id: pendingSession.session_id,
     wss_port: port,
     control_port: controlPort,

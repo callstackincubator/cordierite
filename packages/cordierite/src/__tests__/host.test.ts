@@ -1,11 +1,15 @@
+import { generateKeyPairSync } from "node:crypto";
+
 import { describe, expect, test } from "bun:test";
+import { X509Certificate } from "node:crypto";
 
 import {
   createBootstrapDeepLink,
   createPendingSession,
-  getSpkiPinFromCertificate,
   hasExpectedPostClaimSession,
+  resolveAdvertisedHostIp,
 } from "../commands/host.js";
+import { generateHostCertificate } from "../host-certificate.js";
 import {
   CONNECT_BOOTSTRAP_WIRE_BINARY_V1,
   toConnectBootstrapPayload,
@@ -22,17 +26,21 @@ const padBase64 = (value: string): string => {
   return `${value}${"=".repeat(4 - remainder)}`;
 };
 
-const SAMPLE_CERT = `-----BEGIN CERTIFICATE-----
-MIIBszCCAVmgAwIBAgIUDzvN6W8D4ew3Efr2E1VlzDq+W8MwCgYIKoZIzj0EAwIw
-HTEbMBkGA1UEAwwScGFsYW50aXItcG9jLWxvY2FsMB4XDTI2MDMxNzAwMDAwMFoX
-DTM2MDMxNDAwMDAwMFowHTEbMBkGA1UEAwwScGFsYW50aXItcG9jLWxvY2FsMFkw
-EwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5qZlQ5R4+VwMqqA0XQ29u0zJ1A+8y6nJ
-vWJ4hZ8R3kM0s0JlbmT+7i9n0m8vQh4dKxXv4A0pcSxWvXKj1h8H4aNTMFEwHQYD
-VR0OBBYEFM9w3oQ8kM7A2Z8VwU0Y2r7m0lDfMB8GA1UdIwQYMBaAFM9w3oQ8kM7A
-2Z8VwU0Y2r7m0lDfMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIh
-AIqjQwW2u2+9v0n9wQOQW7M2W8lE0wLwZ9rP2kU6v1wWAiEA3N0+H8N6O6Y7g8vV
-8n4vB6z1mYgW3p4Bv7Yc4x1mVwA=
------END CERTIFICATE-----`;
+const createPrivateKeyPem = (type: "ec" | "rsa" = "ec"): string => {
+  const pair =
+    type === "rsa"
+      ? generateKeyPairSync("rsa", {
+          modulusLength: 2048,
+        })
+      : generateKeyPairSync("ec", {
+          namedCurve: "P-256",
+        });
+
+  return pair.privateKey.export({
+    format: "pem",
+    type: "pkcs8",
+  }).toString("utf8");
+};
 
 describe("host helpers", () => {
   test("createPendingSession creates a claimable record", () => {
@@ -53,6 +61,35 @@ describe("host helpers", () => {
     expect(session.session_id.length).toBeGreaterThanOrEqual(16);
     expect(session.token.length).toBeGreaterThan(10);
     expect(session.tokenRaw.length).toBe(32);
+  });
+
+  test("resolveAdvertisedHostIp prefers loopback for simulator-opened sessions", () => {
+    expect(resolveAdvertisedHostIp({ open: true })).toBe("127.0.0.1");
+    expect(resolveAdvertisedHostIp({ open: true, ip: "192.168.1.42" })).toBe("192.168.1.42");
+  });
+
+  test("generateHostCertificate includes loopback SANs", async () => {
+    const generated = await generateHostCertificate(createPrivateKeyPem(), "127.0.0.1");
+    const certificate = new X509Certificate(generated.certPem);
+
+    expect(certificate.subjectAltName).toContain("DNS:localhost");
+    expect(certificate.subjectAltName).toContain("IP Address:127.0.0.1");
+  });
+
+  test("generateHostCertificate includes the explicit advertised LAN IP", async () => {
+    const generated = await generateHostCertificate(createPrivateKeyPem(), "192.168.1.42");
+    const certificate = new X509Certificate(generated.certPem);
+
+    expect(certificate.subjectAltName).toContain("IP Address:127.0.0.1");
+    expect(certificate.subjectAltName).toContain("IP Address:192.168.1.42");
+  });
+
+  test("generateHostCertificate keeps the SPKI pin stable for the same key", async () => {
+    const keyPem = createPrivateKeyPem("rsa");
+    const first = await generateHostCertificate(keyPem, "127.0.0.1");
+    const second = await generateHostCertificate(keyPem, "192.168.1.42");
+
+    expect(first.spkiPin).toBe(second.spkiPin);
   });
 
   test("createBootstrapDeepLink encodes the payload", () => {
@@ -84,10 +121,6 @@ describe("host helpers", () => {
       "utf8",
     );
     expect(bytes.length).toBeLessThan(jsonWireLen);
-  });
-
-  test("getSpkiPinFromCertificate rejects invalid certificates", () => {
-    expect(() => getSpkiPinFromCertificate("not-a-certificate")).toThrow();
   });
 
   test("claimed host requires known post-claim frames to match the active session", () => {

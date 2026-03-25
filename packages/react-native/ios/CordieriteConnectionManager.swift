@@ -167,8 +167,8 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
       throw CordieriteModuleError(message: "Cordierite bootstrap payload has expired.")
     }
 
-    if allowPrivateLanOnly && !isPrivateIpv4Address(options.ip) {
-      throw CordieriteModuleError(message: "Cordierite only allows private LAN IP addresses.")
+    if allowPrivateLanOnly && !isLocalIpv4Address(options.ip) {
+      throw CordieriteModuleError(message: "Cordierite only allows local IPv4 addresses.")
     }
 
     guard let url = URL(string: "wss://\(options.ip):\(options.port)") else {
@@ -358,7 +358,7 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
     state = .active
   }
 
-  private func isPrivateIpv4Address(_ value: String) -> Bool {
+  private func isLocalIpv4Address(_ value: String) -> Bool {
     let parts = value.split(separator: ".")
 
     guard parts.count == 4 else {
@@ -378,7 +378,10 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
     let first = octets[0]
     let second = octets[1]
 
-    return first == 10 || (first == 172 && (16...31).contains(second)) || (first == 192 && second == 168)
+    return first == 127 ||
+      first == 10 ||
+      (first == 172 && (16...31).contains(second)) ||
+      (first == 192 && second == 168)
   }
 
   func urlSession(

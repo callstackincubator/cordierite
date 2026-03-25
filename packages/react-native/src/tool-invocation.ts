@@ -70,10 +70,21 @@ export const createToolMessageHandler = (deps: ToolInvocationDeps) => {
     logger.debug("tool call", rawMessage.name, "id", rawMessage.id);
 
     try {
-      const parsedArgs = await validateStandardSchema(
-        tool.inputSchema,
-        rawMessage.args
-      );
+      const parsedArgs = tool.inputSchema
+        ? await validateStandardSchema(tool.inputSchema, rawMessage.args)
+        : Object.keys(rawMessage.args).length === 0
+          ? {
+              ok: true as const,
+              value: undefined,
+            }
+          : {
+              ok: false as const,
+              issues: [
+                {
+                  message: `Tool "${rawMessage.name}" does not accept input arguments.`,
+                },
+              ],
+            };
 
       if (!parsedArgs.ok) {
         await sendWire(
@@ -94,10 +105,21 @@ export const createToolMessageHandler = (deps: ToolInvocationDeps) => {
       }
 
       const result = await tool.handler(parsedArgs.value, context);
-      const parsedResult = await validateStandardSchema(
-        tool.outputSchema,
-        result
-      );
+      const parsedResult = tool.outputSchema
+        ? await validateStandardSchema(tool.outputSchema, result)
+        : result === undefined
+          ? {
+              ok: true as const,
+              value: null,
+            }
+          : {
+              ok: false as const,
+              issues: [
+                {
+                  message: `Tool "${rawMessage.name}" must not return a result when outputSchema is omitted.`,
+                },
+              ],
+            };
 
       if (!parsedResult.ok) {
         await sendWire(
@@ -107,7 +129,7 @@ export const createToolMessageHandler = (deps: ToolInvocationDeps) => {
             id: rawMessage.id,
             error: {
               type: "tool_output_validation_error",
-              message: `Tool "${rawMessage.name}" returned a result that does not match output_schema.`,
+              message: `Tool "${rawMessage.name}" returned a result that does not match outputSchema.`,
               details: {
                 issues: parsedResult.issues,
               },

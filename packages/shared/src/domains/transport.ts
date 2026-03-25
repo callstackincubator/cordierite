@@ -38,6 +38,26 @@ export const isPrivateIpv4Address = (value: string): boolean => {
   );
 };
 
+export const isLoopbackIpv4Address = (value: string): boolean => {
+  const parts = value.split(".");
+
+  if (parts.length !== 4) {
+    return false;
+  }
+
+  const octets = parts.map((part) => Number(part));
+
+  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+    return false;
+  }
+
+  return octets[0] === 127;
+};
+
+export const isLocalIpv4Address = (value: string): boolean => {
+  return isPrivateIpv4Address(value) || isLoopbackIpv4Address(value);
+};
+
 export const formatAgentWebSocketUrl = (endpoint: AgentEndpoint): string => {
   return `wss://${endpoint.ip}:${endpoint.port}`;
 };

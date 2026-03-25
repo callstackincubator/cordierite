@@ -15,6 +15,9 @@ import { ThemedView } from "@/components/themed-view";
 import { Layout, Radius } from "@/constants/theme";
 import { useThemeColor } from "@/hooks/use-theme-color";
 
+const PLAYGROUND_HOST_COMMAND = "cordierite host --tls-key playground/certs/dev-key.pem --scheme playground";
+const PROJECT_KEYGEN_COMMAND = "cordierite keygen";
+
 function connectionBadgeColor(
   state: CordieriteConnectionState,
   colors: {
@@ -69,32 +72,32 @@ export default function HomeScreen() {
       {
         name: "echo",
         description: "Echoes arguments back from the Expo app.",
-        input_schema: z.object({
+        inputSchema: z.object({
           value: z.unknown(),
         }),
-        output_schema: z.object({
+        outputSchema: z.object({
           echoed: z.unknown(),
         }),
-      },
-      (args) => ({
-        echoed: args.value,
-      }),
+        handler: (args) => ({
+          echoed: args.value,
+        }),
+      }
     );
     const sumRegistration = registerTool(
       {
         name: "sum",
         description: "Adds two numeric values in the Expo app.",
-        input_schema: z.object({
+        inputSchema: z.object({
           a: z.number(),
           b: z.number(),
         }),
-        output_schema: z.object({
+        outputSchema: z.object({
           total: z.number(),
         }),
-      },
-      async (args) => ({
-        total: args.a + args.b,
-      }),
+        handler: async (args) => ({
+          total: args.a + args.b,
+        }),
+      }
     );
 
     return () => {
@@ -154,6 +157,19 @@ export default function HomeScreen() {
         </View>
 
         <View style={cardStyle}>
+          <ThemedText type="overline">Quick start</ThemedText>
+          <View style={monoSurfaceStyle}>
+            <ThemedText type="mono" selectable>
+              {PLAYGROUND_HOST_COMMAND}
+            </ThemedText>
+          </View>
+          <ThemedText type="caption" style={styles.cardHint}>
+            This playground trusts the checked-in dev key. For a real app, run {PROJECT_KEYGEN_COMMAND},
+            copy the printed fingerprint into cliPins, and rebuild the native app.
+          </ThemedText>
+        </View>
+
+        <View style={cardStyle}>
           <ThemedText type="overline">Session</ThemedText>
           <View style={styles.row}>
             <View style={[styles.statusDot, { backgroundColor: dotColor }]} />
@@ -164,6 +180,16 @@ export default function HomeScreen() {
           <ThemedText type="caption" style={styles.cardHint}>
             Open the app via a bootstrap deep link to connect.
           </ThemedText>
+        </View>
+
+        <View style={cardStyle}>
+          <ThemedText type="overline">Registered tools</ThemedText>
+          <View style={monoSurfaceStyle}>
+            <ThemedText type="mono" selectable>
+              {"echo  Echoes arguments back from the Expo app.\n"}
+              {"sum   Adds two numeric values in the Expo app."}
+            </ThemedText>
+          </View>
         </View>
 
         <View style={cardStyle}>

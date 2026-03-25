@@ -18,10 +18,10 @@ Cordierite is a CLI and host workflow for connecting to a Cordierite-enabled Rea
 
 ## Establish a session
 
-Start the host with **`--json`** using the same TLS cert, key, and app URL scheme as the project (see **Setup** if you are wiring Cordierite into an app). If the default listen port is in use, add **`--port <port>`**.
+Start the host with **`--json`** using the same TLS key and app URL scheme as the project (see **Setup** if you are wiring Cordierite into an app). The CLI generates the host certificate automatically from the resolved local IP. If the project does not already have a trusted host key, create one first with **`cordierite keygen`** in an interactive terminal and add the printed fingerprint to the app’s **`cliPins`**. If the default listen port is in use, add **`--port <port>`**.
 
 ```bash
-cordierite host --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem --scheme myapp --json
+cordierite host --tls-key /path/to/key.pem --scheme myapp --json
 ```
 
 **Run `cordierite host` in the background.** It blocks; keep the foreground shell free for `session`, `tools`, and `invoke`.
@@ -62,16 +62,17 @@ registerTool(
   {
     name: "echo",
     description: "Return the input unchanged",
-    input_schema: echoInput,
-    output_schema: echoOutput,
+    inputSchema: echoInput,
+    outputSchema: echoOutput,
+    handler: async (args) => ({ echoed: args.value }),
   },
-  async (args) => ({ echoed: args.value }),
 );
 ```
 
 ## Notes
 
 - Use **`--json`** for structured CLI output in agent flows.
+- **`cordierite keygen`** is the normal setup command for new host keys. It is interactive-only in v1: it writes a PEM private key and prints the exact **`sha256/...`** fingerprint the app should trust.
 - **`tools`** and **`invoke`** always require **`--session-id`** (the value from **`host.session_id`** or **`sessions[].session_id`**).
 - Prefer **`cordierite session --json`** first rather than assuming a session exists.
 - If **`sessions`** is empty or **`tools`** / **`invoke`** fail with connection or session errors, establish a session (host running, deep link opened on the correct device).
@@ -81,4 +82,3 @@ registerTool(
 ## Setup
 
 For project integration guidance, see [setup.md](./references/setup.md).
-

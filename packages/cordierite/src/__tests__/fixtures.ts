@@ -1,4 +1,5 @@
 import path from "node:path";
+import { PassThrough, Writable } from "node:stream";
 
 import { encodeConnectBootstrapWireBinary, type ConnectBootstrapPayload } from "@cordierite/shared";
 
@@ -32,14 +33,62 @@ export const createPayload = (overrides: Partial<ConnectBootstrapPayload> = {}):
   return Buffer.from(bytes).toString("base64url");
 };
 
-export const runCliWithCapture = async (argv: string[]) => {
+export const createInteractiveInput = (
+  text: string,
+): NodeJS.ReadableStream & {
+  isTTY: boolean;
+} => {
+  const input = new PassThrough();
+  const chunks = text.match(/[^\n]*\n|[^\n]+$/gu) ?? [text];
+
+  queueMicrotask(() => {
+    for (const [index, chunk] of chunks.entries()) {
+      setTimeout(() => {
+        input.write(chunk);
+
+        if (index === chunks.length - 1) {
+          input.end();
+        }
+      }, index);
+    }
+
+    if (chunks.length === 0) {
+      input.end();
+    }
+  });
+
+  return Object.assign(input, {
+    isTTY: true,
+  });
+};
+
+type RunCliCaptureOptions = {
+  stdin?: NodeJS.ReadableStream & { isTTY?: boolean };
+  promptOutput?: NodeJS.WritableStream;
+  stdoutIsTTY?: boolean;
+};
+
+export const runCliWithCapture = async (
+  argv: string[],
+  options: RunCliCaptureOptions = {},
+) => {
   let stdout = "";
   let stderr = "";
+  const promptOutput =
+    options.promptOutput ??
+    new Writable({
+      write(chunk, _encoding, callback) {
+        stderr += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+        callback();
+      },
+    });
 
   const exitCode = await runCli(argv, {
     clock: fixedClock,
+    stdin: options.stdin,
+    promptOutput,
     stdout: {
-      isTTY: false,
+      isTTY: options.stdoutIsTTY ?? false,
       write(chunk: string | Uint8Array) {
         stdout += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
         return true;

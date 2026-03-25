@@ -261,10 +261,10 @@ describe("createCordieriteClient", () => {
       {
         name: "echo",
         description: "Echo tool",
-        input_schema: anyObjectSchema,
-        output_schema: anyObjectSchema,
-      },
-      (args) => args
+        inputSchema: anyObjectSchema,
+        outputSchema: anyObjectSchema,
+        handler: (args) => args,
+      }
     );
 
     await client.connect({
@@ -304,12 +304,12 @@ describe("createCordieriteClient", () => {
       {
         name: "sum",
         description: "Sum values",
-        input_schema: sumInputSchema,
-        output_schema: sumOutputSchema,
-      },
-      async (args) => ({
-        total: args.a + args.b,
-      })
+        inputSchema: sumInputSchema,
+        outputSchema: sumOutputSchema,
+        handler: async (args) => ({
+          total: args.a + args.b,
+        }),
+      }
     );
 
     await client.connect({
@@ -403,10 +403,10 @@ describe("createCordieriteClient", () => {
       {
         name: "echo",
         description: "Echo tool",
-        input_schema: anyObjectSchema,
-        output_schema: okResultSchema,
-      },
-      () => ({ ok: true })
+        inputSchema: anyObjectSchema,
+        outputSchema: okResultSchema,
+        handler: () => ({ ok: true }),
+      }
     );
 
     await expect(client.connect(validBootstrap())).rejects.toThrow(
@@ -462,10 +462,10 @@ describe("createCordieriteClient", () => {
       {
         name: "bad",
         description: "Returns circular structure",
-        input_schema: anyObjectSchema,
-        output_schema: anyObjectSchema,
-      },
-      () => circular
+        inputSchema: anyObjectSchema,
+        outputSchema: anyObjectSchema,
+        handler: () => circular,
+      }
     );
 
     await client.connect(validBootstrap());
@@ -506,10 +506,10 @@ describe("createCordieriteClient", () => {
       {
         name: "late",
         description: "Registered after active",
-        input_schema: anyObjectSchema,
-        output_schema: anyObjectSchema,
-      },
-      () => ({})
+        inputSchema: anyObjectSchema,
+        outputSchema: anyObjectSchema,
+        handler: () => ({}),
+      }
     );
     await flushMicrotasks();
 
@@ -536,10 +536,10 @@ describe("createCordieriteClient", () => {
       {
         name: "echo",
         description: "Echo tool",
-        input_schema: anyObjectSchema,
-        output_schema: okResultSchema,
-      },
-      () => ({ ok: true })
+        inputSchema: anyObjectSchema,
+        outputSchema: okResultSchema,
+        handler: () => ({ ok: true }),
+      }
     );
 
     await client.connect(validBootstrap());
@@ -573,12 +573,12 @@ describe("createCordieriteClient", () => {
       {
         name: "sum",
         description: "Sum values",
-        input_schema: sumInputSchema,
-        output_schema: sumOutputSchema,
-      },
-      async (args) => ({
-        total: args.a + args.b,
-      })
+        inputSchema: sumInputSchema,
+        outputSchema: sumOutputSchema,
+        handler: async (args) => ({
+          total: args.a + args.b,
+        }),
+      }
     );
 
     await client.connect(validBootstrap());
@@ -629,12 +629,12 @@ describe("createCordieriteClient", () => {
       {
         name: "wrong-total",
         description: "Returns an invalid output payload",
-        input_schema: anyObjectSchema,
-        output_schema: sumOutputSchema,
-      },
-      async () => ({
-        total: "bad",
-      })
+        inputSchema: anyObjectSchema,
+        outputSchema: sumOutputSchema,
+        handler: async () => ({
+          total: "bad",
+        }),
+      }
     );
 
     await client.connect(validBootstrap());
@@ -662,12 +662,226 @@ describe("createCordieriteClient", () => {
         error: {
           type: "tool_output_validation_error",
           message:
-            'Tool "wrong-total" returned a result that does not match output_schema.',
+            'Tool "wrong-total" returned a result that does not match outputSchema.',
           details: {
             issues: [
               {
                 message: 'Expected "total" to be a number.',
                 path: ["total"],
+              },
+            ],
+          },
+        },
+      })
+    );
+  });
+
+  test("registerTool allows omitted schemas and exports empty descriptors", async () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    client.registerTool({
+      name: "no-schema",
+      description: "No input or output schema",
+      handler: () => {},
+    });
+
+    await client.connect(validBootstrap());
+    nativeModule.state = "active";
+    nativeModule.listeners
+      .get("stateChange")
+      ?.forEach((listener) => listener({ state: "active" }));
+
+    expect(nativeModule.sentMessages).toContain(
+      JSON.stringify({
+        type: "tool_registry_snapshot",
+        session_id: "session-123",
+        tools: [
+          {
+            name: "no-schema",
+            description: "No input or output schema",
+            input_schema: {},
+            output_schema: {},
+          },
+        ],
+      })
+    );
+  });
+
+  test("incoming tool_call passes undefined to handlers without inputSchema", async () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    let receivedArgs: unknown = Symbol("unset");
+
+    client.registerTool({
+      name: "no-input",
+      description: "No input schema",
+      outputSchema: okResultSchema,
+      handler: (args) => {
+        receivedArgs = args;
+        return { ok: true };
+      },
+    });
+
+    await client.connect(validBootstrap());
+    nativeModule.state = "active";
+    nativeModule.listeners.get("message")?.forEach((listener) =>
+      listener({
+        message: {
+          type: "tool_call",
+          session_id: "session-123",
+          id: "call-no-input",
+          name: "no-input",
+          args: {},
+        },
+        rawMessage: "",
+      })
+    );
+
+    await flushMicrotasks();
+
+    expect(receivedArgs).toBeUndefined();
+    expect(nativeModule.sentMessages).toContain(
+      JSON.stringify({
+        type: "tool_result",
+        session_id: "session-123",
+        id: "call-no-input",
+        result: {
+          ok: true,
+        },
+      })
+    );
+  });
+
+  test("incoming tool_call rejects non-empty args when inputSchema is omitted", async () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    client.registerTool({
+      name: "no-input",
+      description: "No input schema",
+      handler: () => {},
+    });
+
+    await client.connect(validBootstrap());
+    nativeModule.state = "active";
+    nativeModule.listeners.get("message")?.forEach((listener) =>
+      listener({
+        message: {
+          type: "tool_call",
+          session_id: "session-123",
+          id: "call-extra-args",
+          name: "no-input",
+          args: {
+            unexpected: true,
+          },
+        },
+        rawMessage: "",
+      })
+    );
+
+    await flushMicrotasks();
+
+    expect(nativeModule.sentMessages).toContain(
+      JSON.stringify({
+        type: "tool_error",
+        session_id: "session-123",
+        id: "call-extra-args",
+        error: {
+          type: "tool_input_validation_error",
+          message: 'Tool "no-input" rejected the provided input.',
+          details: {
+            issues: [
+              {
+                message: 'Tool "no-input" does not accept input arguments.',
+              },
+            ],
+          },
+        },
+      })
+    );
+  });
+
+  test("incoming tool_call allows void results when outputSchema is omitted", async () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    client.registerTool({
+      name: "no-output",
+      description: "No output schema",
+      inputSchema: anyObjectSchema,
+      handler: () => {},
+    });
+
+    await client.connect(validBootstrap());
+    nativeModule.state = "active";
+    nativeModule.listeners.get("message")?.forEach((listener) =>
+      listener({
+        message: {
+          type: "tool_call",
+          session_id: "session-123",
+          id: "call-no-output",
+          name: "no-output",
+          args: {},
+        },
+        rawMessage: "",
+      })
+    );
+
+    await flushMicrotasks();
+
+    expect(nativeModule.sentMessages).toContain(
+      JSON.stringify({
+        type: "tool_result",
+        session_id: "session-123",
+        id: "call-no-output",
+        result: null,
+      })
+    );
+  });
+
+  test("incoming tool_call rejects returned values when outputSchema is omitted", async () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    client.registerTool({
+      name: "no-output",
+      description: "No output schema",
+      handler: () => ({ ok: true }),
+    });
+
+    await client.connect(validBootstrap());
+    nativeModule.state = "active";
+    nativeModule.listeners.get("message")?.forEach((listener) =>
+      listener({
+        message: {
+          type: "tool_call",
+          session_id: "session-123",
+          id: "call-unexpected-output",
+          name: "no-output",
+          args: {},
+        },
+        rawMessage: "",
+      })
+    );
+
+    await flushMicrotasks();
+
+    expect(nativeModule.sentMessages).toContain(
+      JSON.stringify({
+        type: "tool_error",
+        session_id: "session-123",
+        id: "call-unexpected-output",
+        error: {
+          type: "tool_output_validation_error",
+          message:
+            'Tool "no-output" returned a result that does not match outputSchema.',
+          details: {
+            issues: [
+              {
+                message:
+                  'Tool "no-output" must not return a result when outputSchema is omitted.',
               },
             ],
           },

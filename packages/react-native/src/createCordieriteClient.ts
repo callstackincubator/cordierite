@@ -7,8 +7,8 @@ import type {
   CordieriteModuleEvents,
   CordieriteOutboundMessage,
   CordieriteRegisteredTool,
-  CordieriteToolDefinition,
   CordieriteToolHandler,
+  CordieriteToolRegistration,
 } from "./Cordierite.types";
 import type {
   CordieriteNativeModuleLike,
@@ -22,7 +22,7 @@ import {
 import { logger, maskSessionId } from "./logger";
 import { sendOutboundMessage } from "./outbound-send";
 import { createRegistrySync } from "./registry-sync";
-import { requireStandardSchema, toToolDescriptor } from "./schema";
+import { requireOptionalStandardSchema, toToolDescriptor } from "./schema";
 import { createToolMessageHandler } from "./tool-invocation";
 
 export type {
@@ -146,32 +146,37 @@ export const createCordieriteClient = (
     },
 
     registerTool<
-      TInputSchema extends import("@cordierite/shared").StandardSchemaV1,
-      TOutputSchema extends import("@cordierite/shared").StandardSchemaV1
+      TInputSchema extends
+        | import("@cordierite/shared").StandardSchemaV1
+        | undefined,
+      TOutputSchema extends
+        | import("@cordierite/shared").StandardSchemaV1
+        | undefined
     >(
-      descriptor: CordieriteToolDefinition<TInputSchema, TOutputSchema>,
-      handler: CordieriteToolHandler<
-        import("@cordierite/shared").StandardSchemaV1.InferOutput<TInputSchema>,
-        import("@cordierite/shared").StandardSchemaV1.InferInput<TOutputSchema>
-      >
+      registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>
     ) {
-      const inputSchema = requireStandardSchema(
-        descriptor.input_schema,
-        `Tool "${descriptor.name}" input_schema`
+      const inputSchema = requireOptionalStandardSchema(
+        registration.inputSchema,
+        `Tool "${registration.name}" inputSchema`
       );
-      const outputSchema = requireStandardSchema(
-        descriptor.output_schema,
-        `Tool "${descriptor.name}" output_schema`
+      const outputSchema = requireOptionalStandardSchema(
+        registration.outputSchema,
+        `Tool "${registration.name}" outputSchema`
       );
 
-      const normalizedDescriptor = toToolDescriptor(descriptor);
+      const normalizedDescriptor = toToolDescriptor({
+        name: registration.name,
+        description: registration.description,
+        inputSchema,
+        outputSchema,
+      });
 
-      logger.debug("registerTool", descriptor.name);
-      registry.set(descriptor.name, {
+      logger.debug("registerTool", registration.name);
+      registry.set(registration.name, {
         descriptor: normalizedDescriptor,
         inputSchema,
         outputSchema,
-        handler,
+        handler: registration.handler as CordieriteToolHandler,
       });
 
       void syncRegistryDelta({
@@ -183,12 +188,12 @@ export const createCordieriteClient = (
         remove: () => {
           logger.debug(
             "unregisterTool (from registerTool disposer)",
-            descriptor.name
+            registration.name
           );
-          registry.delete(descriptor.name);
+          registry.delete(registration.name);
           void syncRegistryDelta({
             operation: "remove",
-            name: descriptor.name,
+            name: registration.name,
           });
         },
       };

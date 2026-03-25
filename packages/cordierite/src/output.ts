@@ -6,6 +6,7 @@ import type {
   ConnectCommandData,
   HostCommandData,
   InvokeCommandData,
+  KeygenCommandData,
   SessionCommandData,
   ToolDescriptor,
   ToolsCommandData,
@@ -170,6 +171,16 @@ const renderHostData = (colors: ColorPalette, data: HostCommandData): string[] =
   ];
 };
 
+const renderKeygenData = (colors: ColorPalette, data: KeygenCommandData): string[] => {
+  return [
+    colors.green("Key Ready"),
+    ...renderFields("Key", [
+      ["Path", data.key.path],
+      ["Fingerprint", data.key.spki_pin],
+    ]),
+  ];
+};
+
 const renderSuccessData = (
   colors: ColorPalette,
   command: string,
@@ -178,13 +189,16 @@ const renderSuccessData = (
     | ConnectCommandData
     | SessionCommandData
     | ToolsCommandData
-    | InvokeCommandData,
+    | InvokeCommandData
+    | KeygenCommandData,
 ): string[] => {
   switch (command) {
     case "host":
       return renderHostData(colors, data as HostCommandData);
     case "connect":
       return renderConnectData(colors, data as ConnectCommandData);
+    case "keygen":
+      return renderKeygenData(colors, data as KeygenCommandData);
     case "session":
       return renderSessionData(colors, data as SessionCommandData);
     case "tools":

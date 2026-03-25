@@ -160,8 +160,8 @@ internal class CordieriteConnectionManager(
       throw IllegalArgumentException("Cordierite bootstrap payload has expired.")
     }
 
-    if (allowPrivateLanOnly && !isPrivateIpv4Address(options.ip)) {
-      throw IllegalArgumentException("Cordierite only allows private LAN IP addresses.")
+    if (allowPrivateLanOnly && !isLocalIpv4Address(options.ip)) {
+      throw IllegalArgumentException("Cordierite only allows local IPv4 addresses.")
     }
 
     cleanup()
@@ -368,7 +368,7 @@ internal class CordieriteConnectionManager(
     return sslContext.socketFactory
   }
 
-  private fun isPrivateIpv4Address(value: String): Boolean {
+  private fun isLocalIpv4Address(value: String): Boolean {
     val parts = value.split(".")
     if (parts.size != 4) {
       return false
@@ -382,6 +382,6 @@ internal class CordieriteConnectionManager(
     val first = octets[0]
     val second = octets[1]
 
-    return first == 10 || (first == 172 && second in 16..31) || (first == 192 && second == 168)
+    return first == 127 || first == 10 || (first == 172 && second in 16..31) || (first == 192 && second == 168)
   }
 }

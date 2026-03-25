@@ -15,7 +15,7 @@ This package is the **native client** for Cordierite. Your app **registers tools
 ## Security highlights
 
 - **TLS required** for the Cordierite socket; pins are **SHA-256 over SPKI** (`sha256/...`) so only **your** host keys match.
-- **Optional `allowPrivateLanOnly`**: when enabled, bootstrap must target **private IPv4**—a **dev-hardening** switch, not a claim that Cordierite is LAN-only.
+- **Optional `allowPrivateLanOnly`**: when enabled, bootstrap must target a **local IPv4** address (RFC1918 private ranges or `127.0.0.1`)—a **dev-hardening** switch, not a claim that Cordierite is LAN-only.
 
 ## Getting started
 
@@ -24,6 +24,14 @@ This package is the **native client** for Cordierite. Your app **registers tools
 
 Install with your package manager (`npm`, `yarn`, `pnpm`, …). Add the **`@cordierite/react-native`** config plugin to Expo config with **`cliPins`** (required) and optionally **`allowPrivateLanOnly`**; then run your usual **prebuild** so plist and manifest receive the values. For bare React Native, autolink the module and set the equivalent native keys—field names and semantics mirror the plugin (see [app.plugin.js](app.plugin.js)).
 
+Generate a matching host key and pin with:
+
+```bash
+cordierite keygen
+```
+
+Use the printed fingerprint value verbatim in `cliPins`.
+
 **Bare React Native — native keys**
 
 iOS `Info.plist`:
@@ -31,7 +39,7 @@ iOS `Info.plist`:
 | Key | Purpose |
 | --- | ------- |
 | `CordieriteCliPins` | String array of `sha256/...` SPKI pins |
-| `CordieriteAllowPrivateLanOnly` | Boolean; if true, bootstrap host must be private IPv4 |
+| `CordieriteAllowPrivateLanOnly` | Boolean; if true, bootstrap host must be a local IPv4 address |
 
 Android `<application>` meta-data:
 
@@ -46,7 +54,7 @@ Empty or missing pins fail at configuration time. Wire **deep links** so the OS 
 
 **Errors:** use `addCordieriteErrorListener` if you want callbacks when bootstrap parsing or that automatic `connect` fails.
 
-**Tools:** call `registerTool(descriptor, handler)` with Standard Schema compatible `input_schema` and `output_schema` values so the host can invoke your tools after the session is active. `zod` v4 works well here and is used in the playground example.
+**Tools:** call `registerTool({ ... })` with Standard Schema compatible `inputSchema` and `outputSchema` values plus a `handler` so the host can invoke your tools after the session is active. `zod` v4 works well here and is used in the playground example.
 
 ```ts
 import { registerTool } from "@cordierite/react-native";
@@ -56,17 +64,17 @@ registerTool(
   {
     name: "sum",
     description: "Add two numeric values",
-    input_schema: z.object({
+    inputSchema: z.object({
       a: z.number(),
       b: z.number(),
     }),
-    output_schema: z.object({
+    outputSchema: z.object({
       total: z.number(),
     }),
+    handler: async ({ a, b }) => ({
+      total: a + b,
+    }),
   },
-  async ({ a, b }) => ({
-    total: a + b,
-  }),
 );
 ```
 

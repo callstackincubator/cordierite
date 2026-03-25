@@ -16,8 +16,7 @@ export const createCli = () => {
 
   cli
     .command("host", "Start a local Cordierite WSS host for the Expo app.")
-    .option("--tls-cert <path>", "Path to the PEM certificate presented by the host.")
-    .option("--tls-key <path>", "Path to the PEM private key presented by the host.")
+    .option("--tls-key <path>", "Path to the PEM private key used to generate the host certificate.")
     .option("--ip <ip>", "Local IPv4 address to advertise in the bootstrap payload.")
     .option("--port <port>", "Local port to listen on.", {
       default: 8443,
@@ -31,6 +30,8 @@ export const createCli = () => {
     .command("connect")
     .option("--payload <payload>", "Bootstrap payload: base64url binary v1 (`p` query value).")
     .option("--private-ip", "Require a private IPv4 bootstrap endpoint.");
+
+  cli.command("keygen", "Generate a Cordierite host private key and its app fingerprint.");
 
   cli
     .command("session", "List Cordierite host sessions or inspect one with --session-id.")

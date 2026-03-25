@@ -2,6 +2,7 @@ export * from "./cli.js";
 export * from "./commands/connect.js";
 export * from "./commands/host.js";
 export * from "./commands/invoke.js";
+export * from "./commands/keygen.js";
 export * from "./commands/remote-control.js";
 export * from "./commands/session.js";
 export * from "./commands/tools.js";

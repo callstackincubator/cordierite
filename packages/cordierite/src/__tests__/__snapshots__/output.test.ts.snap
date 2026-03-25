@@ -30,6 +30,19 @@ Meta
 "
 `;
 
+exports[`output rendering keygen success output includes the key path and fingerprint 1`] = `
+"Key Ready
+Key
+  Path         /tmp/cordierite-key.pem
+  Fingerprint  sha256/example
+
+Meta
+  Command: keygen
+  Timestamp: 2026-03-17T10:00:00.000Z
+  Duration: 3 ms
+"
+`;
+
 exports[`output rendering human errors render on stderr 1`] = `
 "Command Failed
 Error
