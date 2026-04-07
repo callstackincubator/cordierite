@@ -63,7 +63,15 @@ export const createCordieriteClient = (
     resetSession();
   });
   module.addListener("error", (event) => {
-    logger.warn("connection error", event.code, event.message);
+    logger.warn("connection error", {
+      code: event.code,
+      message: event.message,
+      phase: event.phase,
+      nativeCode: event.nativeCode,
+      closeReason: event.closeReason,
+      isRetryable: event.isRetryable,
+      hint: event.hint,
+    });
     resetSession();
   });
   module.addListener("stateChange", (event) => {

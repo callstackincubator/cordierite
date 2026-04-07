@@ -27,6 +27,11 @@ export type CordieriteMessageEventNative = {
 export type CordieriteErrorEventNative = {
   code: string;
   message: string;
+  phase?: string;
+  nativeCode?: string;
+  closeReason?: string;
+  isRetryable?: boolean;
+  hint?: string;
 };
 
 export type CordieriteCloseEventNative = {

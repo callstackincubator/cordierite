@@ -9,6 +9,31 @@ import { NativeCordierite } from "./NativeCordierite";
 import type { CordieriteNativeModuleLike } from "./client-types";
 import { logger } from "./logger";
 
+const toErrorPhase = (
+  phase: string | undefined
+):
+  | "bootstrap"
+  | "tls"
+  | "connect"
+  | "handshake"
+  | "session"
+  | "transport"
+  | "config"
+  | undefined => {
+  switch (phase) {
+    case "bootstrap":
+    case "tls":
+    case "connect":
+    case "handshake":
+    case "session":
+    case "transport":
+    case "config":
+      return phase;
+    default:
+      return undefined;
+  }
+};
+
 const parseMessagePayload = (rawMessage: string): Record<string, unknown> => {
   const parsed = JSON.parse(rawMessage) as unknown;
   if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -55,6 +80,11 @@ const bridgeListeners: {
       listener({
         code: nativeEvent.code,
         message: nativeEvent.message,
+        phase: toErrorPhase(nativeEvent.phase ?? undefined),
+        nativeCode: nativeEvent.nativeCode ?? undefined,
+        closeReason: nativeEvent.closeReason ?? undefined,
+        isRetryable: nativeEvent.isRetryable ?? undefined,
+        hint: nativeEvent.hint ?? undefined,
       });
     });
     return { remove: () => subscription.remove() };

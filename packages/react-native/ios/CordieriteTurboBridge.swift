@@ -12,7 +12,7 @@ public final class CordieriteTurboBridge: NSObject {
   @objc public func wireEventHandlers(
     stateChange: @escaping (NSString) -> Void,
     messageRaw: @escaping (NSString) -> Void,
-    error: @escaping (NSString, NSString) -> Void,
+    error: @escaping (NSDictionary) -> Void,
     close: @escaping (NSDictionary) -> Void
   ) {
     manager.emitStateChange = { state in
@@ -21,8 +21,24 @@ public final class CordieriteTurboBridge: NSObject {
     manager.emitMessageRaw = { text in
       messageRaw(text as NSString)
     }
-    manager.emitError = { code, message in
-      error(code as NSString, message as NSString)
+    manager.emitError = { (details: CordieriteErrorDetails) in
+      let payload = NSMutableDictionary()
+      payload["code"] = details.code as NSString
+      payload["message"] = details.message as NSString
+      payload["phase"] = details.phase as NSString
+      if let nativeCode = details.nativeCode {
+        payload["nativeCode"] = nativeCode as NSString
+      }
+      if let closeReason = details.closeReason {
+        payload["closeReason"] = closeReason as NSString
+      }
+      if let isRetryable = details.isRetryable {
+        payload["isRetryable"] = NSNumber(value: isRetryable)
+      }
+      if let hint = details.hint {
+        payload["hint"] = hint as NSString
+      }
+      error(payload)
     }
     manager.emitClose = close
   }

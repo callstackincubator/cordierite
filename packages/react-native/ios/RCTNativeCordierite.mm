@@ -32,8 +32,15 @@ RCT_EXPORT_MODULE(Cordierite)
         messageRaw:^(NSString *raw) {
           [weakSelf emitOnMessage:@{@"rawMessage" : raw}];
         }
-        error:^(NSString *code, NSString *message) {
-          [weakSelf emitOnError:@{@"code" : code, @"message" : message}];
+        error:^(NSDictionary *payload) {
+          NSMutableDictionary *out = [NSMutableDictionary dictionaryWithDictionary:payload];
+          if (out[@"code"] == nil) {
+            out[@"code"] = @"connection_failed";
+          }
+          if (out[@"message"] == nil) {
+            out[@"message"] = @"Cordierite connection failed.";
+          }
+          [weakSelf emitOnError:out];
         }
         close:^(NSDictionary *payload) {
           NSMutableDictionary *out = [NSMutableDictionary dictionary];

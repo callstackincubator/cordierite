@@ -1,7 +1,9 @@
 import CryptoKit
 import Foundation
 import Security
-import UIKit
+#if canImport(UIKit)
+  import UIKit
+#endif
 
 private let cliPinsPlistKey = "CordieriteCliPins"
 private let allowPrivateLanOnlyPlistKey = "CordieriteAllowPrivateLanOnly"
@@ -16,6 +18,16 @@ enum CordieriteConnectionState: String {
 
 private struct CordieriteModuleError: Error {
   let message: String
+}
+
+struct CordieriteErrorDetails {
+  let code: String
+  let message: String
+  let phase: String
+  let nativeCode: String?
+  let closeReason: String?
+  let isRetryable: Bool?
+  let hint: String?
 }
 
 /// RCT/JSI often passes numeric fields as `NSNumber`; accept both `Int` and `NSNumber`.
@@ -78,6 +90,7 @@ private struct DefaultSessionClaimDeviceFields {
 }
 
 private func defaultAppleSessionClaimDeviceFields() -> DefaultSessionClaimDeviceFields {
+  #if canImport(UIKit)
   let device = UIDevice.current
   let os = "\(device.systemName) \(device.systemVersion)"
   return DefaultSessionClaimDeviceFields(
@@ -85,8 +98,16 @@ private func defaultAppleSessionClaimDeviceFields() -> DefaultSessionClaimDevice
     model: defaultAppleDeviceModelLabel(device: device),
     os: os,
   )
+  #else
+  return DefaultSessionClaimDeviceFields(
+    manufacturer: "Apple",
+    model: "Unknown Apple device",
+    os: ProcessInfo.processInfo.operatingSystemVersionString,
+  )
+  #endif
 }
 
+#if canImport(UIKit)
 private func defaultAppleDeviceModelLabel(device: UIDevice) -> String {
   #if os(visionOS)
     return "Apple Vision"
@@ -107,6 +128,7 @@ private func defaultAppleDeviceModelLabel(device: UIDevice) -> String {
     }
   #endif
 }
+#endif
 
 private func mergeSessionClaimDeviceFields(
   options: CordieriteConnectOptions,
@@ -123,7 +145,7 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
   var emitStateChange: ((String) -> Void)?
   /// Turbo path: only the raw JSON string; JS parses `message`.
   var emitMessageRaw: ((String) -> Void)?
-  var emitError: ((String, String) -> Void)?
+  var emitError: ((CordieriteErrorDetails) -> Void)?
   var emitClose: ((NSDictionary) -> Void)?
 
   private(set) var state: CordieriteConnectionState = .idle {
@@ -139,6 +161,7 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
   private var configuredPins: Set<String> = []
   private var allowPrivateLanOnly = false
   private var closeEventPending = false
+  private var lastErrorDetails: CordieriteErrorDetails?
 
   func configureFromBundle() throws {
     let info = Bundle.main.infoDictionary ?? [:]
@@ -240,6 +263,12 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
     session = nil
     activeSessionId = nil
     pendingSessionId = nil
+    lastErrorDetails = nil
+  }
+
+  private func publishError(_ details: CordieriteErrorDetails) {
+    lastErrorDetails = details
+    emitError?(details)
   }
 
   private func sendRawObject(_ value: [String: Any], requireActiveSession: Bool) async throws {
@@ -287,7 +316,15 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
       switch result {
       case .failure(let error):
         self.state = .error
-        self.emitError?("receive_failed", error.localizedDescription)
+        if self.lastErrorDetails == nil {
+          self.publishError(
+            self.classifyTransportFailure(
+              code: "receive_failed",
+              message: error.localizedDescription,
+              closeReason: nil
+            )
+          )
+        }
         self.close()
       case .success(let message):
         switch message {
@@ -296,11 +333,31 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
           self.receiveNextMessage()
         case .data:
           self.state = .error
-          self.emitError?("invalid_message", "Binary Cordierite messages are not supported.")
+          self.publishError(
+            CordieriteErrorDetails(
+              code: "invalid_message",
+              message: "Binary Cordierite messages are not supported.",
+              phase: "transport",
+              nativeCode: "binary_not_supported",
+              closeReason: nil,
+              isRetryable: false,
+              hint: nil
+            )
+          )
           self.close()
         @unknown default:
           self.state = .error
-          self.emitError?("invalid_message", "Unsupported Cordierite WebSocket message received.")
+          self.publishError(
+            CordieriteErrorDetails(
+              code: "invalid_message",
+              message: "Unsupported Cordierite WebSocket message received.",
+              phase: "transport",
+              nativeCode: "invalid_message",
+              closeReason: nil,
+              isRetryable: false,
+              hint: nil
+            )
+          )
           self.close()
         }
       }
@@ -313,7 +370,17 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
       let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else {
       state = .error
-      emitError?("invalid_message", "Incoming Cordierite message must be a JSON object.")
+      publishError(
+        CordieriteErrorDetails(
+          code: "invalid_message",
+          message: "Incoming Cordierite message must be a JSON object.",
+          phase: "transport",
+          nativeCode: "invalid_message",
+          closeReason: nil,
+          isRetryable: false,
+          hint: nil
+        )
+      )
       close()
       return
     }
@@ -329,7 +396,17 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
       sessionId == activeSessionId
     else {
       state = .error
-      emitError?("session_mismatch", "Incoming Cordierite message does not match the active session.")
+      publishError(
+        CordieriteErrorDetails(
+          code: "session_mismatch",
+          message: "Incoming Cordierite message does not match the active session.",
+          phase: "session",
+          nativeCode: "session_mismatch",
+          closeReason: nil,
+          isRetryable: false,
+          hint: nil
+        )
+      )
       close()
       return
     }
@@ -348,7 +425,8 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
       status == "ok"
     else {
       state = .error
-      emitError?("invalid_ack", "Cordierite session acknowledgement was invalid.")
+      let closeReason = (message["reason"] as? String)?.isEmpty == false ? message["reason"] as? String : nil
+      publishError(classifyHandshakeCloseReason(closeReason))
       close()
       return
     }
@@ -394,6 +472,17 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
           let certificate = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
           let leaf = certificate.first
     else {
+      publishError(
+        CordieriteErrorDetails(
+          code: "tls_handshake_failed",
+          message: "Cordierite could not evaluate the host TLS certificate.",
+          phase: "tls",
+          nativeCode: "server_trust_unavailable",
+          closeReason: nil,
+          isRetryable: false,
+          hint: "Check the host certificate and trusted pins."
+        )
+      )
       completionHandler(.cancelAuthenticationChallenge, nil)
       return
     }
@@ -402,12 +491,34 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
       let pin = try spkiPin(for: leaf)
 
       guard configuredPins.contains(pin) else {
+        publishError(
+          CordieriteErrorDetails(
+            code: "pin_mismatch",
+            message: "Cordierite host certificate pin mismatch.",
+            phase: "tls",
+            nativeCode: "pin_mismatch",
+            closeReason: nil,
+            isRetryable: false,
+            hint: "Verify cliPins matches the fingerprint from cordierite keygen and rebuild the native app."
+          )
+        )
         completionHandler(.cancelAuthenticationChallenge, nil)
         return
       }
 
       completionHandler(.useCredential, URLCredential(trust: trust))
     } catch {
+      publishError(
+        CordieriteErrorDetails(
+          code: "tls_handshake_failed",
+          message: error.localizedDescription,
+          phase: "tls",
+          nativeCode: "spki_pin_failed",
+          closeReason: nil,
+          isRetryable: false,
+          hint: "Check the host certificate and trusted pins."
+        )
+      )
       completionHandler(.cancelAuthenticationChallenge, nil)
     }
   }
@@ -419,6 +530,11 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
     reason: Data?
   ) {
     let decodedReason = reason.flatMap { String(data: $0, encoding: .utf8) }
+
+    if state == .connecting, let decodedReason {
+      state = .error
+      publishError(classifyHandshakeCloseReason(decodedReason))
+    }
 
     cleanup()
 
@@ -497,5 +613,122 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
     }
 
     return Data([0x80 | UInt8(octets.count)] + octets)
+  }
+
+  private func classifyTransportFailure(
+    code: String,
+    message: String,
+    closeReason: String?
+  ) -> CordieriteErrorDetails {
+    let normalized = message.lowercased()
+
+    if normalized.contains("timed out") || normalized.contains("network connection was lost") {
+      return CordieriteErrorDetails(
+        code: "host_unreachable",
+        message: message,
+        phase: "connect",
+        nativeCode: code,
+        closeReason: closeReason,
+        isRetryable: true,
+        hint: "Check that the host is running and reachable from the app."
+      )
+    }
+
+    if normalized.contains("ssl") || normalized.contains("certificate") || normalized.contains("tls") {
+      return CordieriteErrorDetails(
+        code: "tls_handshake_failed",
+        message: message,
+        phase: "tls",
+        nativeCode: code,
+        closeReason: closeReason,
+        isRetryable: false,
+        hint: "Check the host certificate, trusted pins, and device clock."
+      )
+    }
+
+    return CordieriteErrorDetails(
+      code: code,
+      message: message,
+      phase: "transport",
+      nativeCode: code,
+      closeReason: closeReason,
+      isRetryable: true,
+      hint: nil
+    )
+  }
+
+  private func classifyHandshakeCloseReason(_ closeReason: String?) -> CordieriteErrorDetails {
+    switch closeReason {
+    case "expired_session_claim":
+      return CordieriteErrorDetails(
+        code: "session_claim_expired",
+        message: "Cordierite session claim expired before the app connected.",
+        phase: "handshake",
+        nativeCode: nil,
+        closeReason: closeReason,
+        isRetryable: true,
+        hint: "Restart the host and open the deep link again. Larger apps may need the longer default 60s TTL."
+      )
+    case "wrong_session_id":
+      return CordieriteErrorDetails(
+        code: "session_claim_rejected",
+        message: "Cordierite app claimed a different session id than the host expected.",
+        phase: "handshake",
+        nativeCode: nil,
+        closeReason: closeReason,
+        isRetryable: false,
+        hint: nil
+      )
+    case "wrong_token":
+      return CordieriteErrorDetails(
+        code: "session_claim_rejected",
+        message: "Cordierite app used the wrong session token for this host.",
+        phase: "handshake",
+        nativeCode: nil,
+        closeReason: closeReason,
+        isRetryable: false,
+        hint: nil
+      )
+    case "already_claimed", "single_session_only":
+      return CordieriteErrorDetails(
+        code: "session_claim_rejected",
+        message: "Cordierite host already has an active device connection for this session.",
+        phase: "handshake",
+        nativeCode: nil,
+        closeReason: closeReason,
+        isRetryable: true,
+        hint: nil
+      )
+    case "session_not_claimable":
+      return CordieriteErrorDetails(
+        code: "session_claim_rejected",
+        message: "Cordierite session is no longer claimable.",
+        phase: "handshake",
+        nativeCode: nil,
+        closeReason: closeReason,
+        isRetryable: true,
+        hint: nil
+      )
+    case "expected_session_claim":
+      return CordieriteErrorDetails(
+        code: "invalid_ack",
+        message: "Cordierite host expected a session claim before any other message.",
+        phase: "handshake",
+        nativeCode: nil,
+        closeReason: closeReason,
+        isRetryable: false,
+        hint: nil
+      )
+    default:
+      return CordieriteErrorDetails(
+        code: "invalid_ack",
+        message: "Cordierite session acknowledgement was invalid.",
+        phase: "handshake",
+        nativeCode: nil,
+        closeReason: closeReason,
+        isRetryable: false,
+        hint: nil
+      )
+    }
   }
 }

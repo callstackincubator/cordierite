@@ -41,9 +41,16 @@ import {
   type CordieriteSessionRegistryEntry,
 } from "../session-registry.js";
 
-const DEFAULT_TTL_SECONDS = 30;
+const DEFAULT_TTL_SECONDS = 60;
 const DEFAULT_PORT = 8443;
 const DEFAULT_REMOTE_CALL_TIMEOUT_MS = 10_000;
+
+type SessionClaimRejectionReason =
+  | "expired_session_claim"
+  | "wrong_session_id"
+  | "wrong_token"
+  | "already_claimed"
+  | "session_not_claimable";
 
 type HostedCommand = {
   result: CliResult<HostCommandData>;
@@ -192,6 +199,31 @@ export const hasExpectedPostClaimSession = (
   }
 
   return isSessionBoundMessage(message) && message.session_id === sessionId;
+};
+
+const getSessionClaimRejectionReason = (
+  session: PendingSessionRecord,
+  claim: SessionClaimMessage,
+  claimed: boolean,
+  nowUnixSeconds: number,
+): SessionClaimRejectionReason | null => {
+  if (claimed || session.status !== "pending") {
+    return "already_claimed";
+  }
+
+  if (!canClaimPendingSession(session, nowUnixSeconds)) {
+    return session.expires_at <= nowUnixSeconds ? "expired_session_claim" : "session_not_claimable";
+  }
+
+  if (claim.session_id !== session.session_id) {
+    return "wrong_session_id";
+  }
+
+  if (claim.token !== session.token) {
+    return "wrong_token";
+  }
+
+  return null;
 };
 
 type StartHostRuntimeResult = {
@@ -430,6 +462,11 @@ const startHostRuntime = async (options: HostRuntimeOptions): Promise<StartHostR
 
   websocketServer.on("connection", (websocket) => {
     if (activeSocket && activeSocket !== websocket) {
+      hostEvents?.emitHostEvent({
+        type: "session_rejected",
+        session_id: options.pendingSession.session_id,
+        reason: "single_session_only",
+      });
       websocket.close(1008, "single_session_only");
       return;
     }
@@ -456,20 +493,30 @@ const startHostRuntime = async (options: HostRuntimeOptions): Promise<StartHostR
 
       if (!claimed) {
         if (!isSessionClaimMessage(parsed)) {
+          hostEvents?.emitHostEvent({
+            type: "session_rejected",
+            session_id: options.pendingSession.session_id,
+            reason: "expected_session_claim",
+          });
           websocket.close(1008, "expected_session_claim");
           return;
         }
 
         const claim = parsed as SessionClaimMessage;
-        const claimable = canClaimPendingSession(options.pendingSession);
+        const rejectionReason = getSessionClaimRejectionReason(
+          options.pendingSession,
+          claim,
+          claimed,
+          Math.floor(options.clock.now().getTime() / 1000),
+        );
 
-        if (
-          !claimable ||
-          claimed ||
-          claim.session_id !== options.pendingSession.session_id ||
-          claim.token !== options.pendingSession.token
-        ) {
-          websocket.close(1008, "invalid_session_claim");
+        if (rejectionReason) {
+          hostEvents?.emitHostEvent({
+            type: "session_rejected",
+            session_id: options.pendingSession.session_id,
+            reason: rejectionReason,
+          });
+          websocket.close(1008, rejectionReason);
           return;
         }
 

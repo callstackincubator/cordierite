@@ -24,6 +24,11 @@ export type HostLifecycleEvent =
       device?: SessionClaimDeviceInfo;
     }
   | {
+      type: "session_rejected";
+      session_id: string;
+      reason: string;
+    }
+  | {
       type: "session_disconnected";
       session_id: string;
     }

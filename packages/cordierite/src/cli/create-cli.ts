@@ -22,7 +22,7 @@ export const createCli = () => {
       default: 8443,
     })
     .option("--ttl <seconds>", "How long the pending session stays claimable.", {
-      default: 30,
+      default: 60,
     })
     .option("--scheme <scheme>", "App URL scheme to open (required).")
 

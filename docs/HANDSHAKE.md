@@ -137,7 +137,7 @@ Requirements:
 - `token` must be generated with a cryptographically secure RNG
 - token length should be at least 128 bits, preferably 256 bits
 - token must be single-use
-- token must expire quickly, for example after 30 seconds
+- token must expire quickly, for example after 60 seconds
 - after first successful use, mark it as consumed
 - the agent should reject new pending sessions while one already exists
 

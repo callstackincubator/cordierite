@@ -52,9 +52,30 @@ const ansiClearStatusLines = (previousLineCount: number): string => {
 
 type ConnectionLineState =
   | { phase: "idle" }
-  | { phase: "waiting"; ttlSeconds?: number }
+  | { phase: "waiting"; ttlSeconds?: number; lastRejectedReason?: string }
   | { phase: "connected"; detail?: string }
   | { phase: "disconnected" };
+
+const formatSessionRejectionReason = (reason: string): string => {
+  switch (reason) {
+    case "expired_session_claim":
+      return "session claim expired before the app connected";
+    case "wrong_session_id":
+      return "app claimed a different session id";
+    case "wrong_token":
+      return "app used the wrong session token";
+    case "already_claimed":
+      return "session is already claimed by another app instance";
+    case "session_not_claimable":
+      return "session is no longer claimable";
+    case "expected_session_claim":
+      return "host expected a session claim before any other message";
+    case "single_session_only":
+      return "host already has an active device connection";
+    default:
+      return reason.replaceAll("_", " ");
+  }
+};
 
 export const createInteractiveHostReporter = (
   options: CreateHostReporterOptions,
@@ -87,7 +108,13 @@ export const createInteractiveHostReporter = (
         lineState.ttlSeconds === undefined
           ? ""
           : `\n${colors.dim("TTL:")} ${formatTtlSeconds(lineState.ttlSeconds)}`;
-      paint(`${colors.dim("Device:")} ${colors.yellow("waiting for connection")}${ttlSuffix}`);
+      const rejectionSuffix =
+        lineState.lastRejectedReason === undefined
+          ? ""
+          : `\n${colors.dim("Last rejection:")} ${colors.yellow(lineState.lastRejectedReason)}`;
+      paint(
+        `${colors.dim("Device:")} ${colors.yellow("waiting for connection")}${ttlSuffix}${rejectionSuffix}`,
+      );
       return;
     }
 
@@ -122,6 +149,16 @@ export const createInteractiveHostReporter = (
 
       if (event.type === "host_listening") {
         lineState = { phase: "waiting", ttlSeconds: pendingTtlSeconds };
+        paintFromState();
+        return;
+      }
+
+      if (event.type === "session_rejected") {
+        lineState = {
+          phase: "waiting",
+          ttlSeconds: pendingTtlSeconds,
+          lastRejectedReason: formatSessionRejectionReason(event.reason),
+        };
         paintFromState();
         return;
       }
@@ -172,6 +209,11 @@ export const createPlainTextHostReporter = (
           return;
         case "host_listening":
           options.writer.write("Device: waiting for connection\n");
+          return;
+        case "session_rejected":
+          options.writer.write(
+            `Connection rejected: ${formatSessionRejectionReason(event.reason)}\n`,
+          );
           return;
         case "session_claimed": {
           const detail = formatConnectedDeviceDetail(event);

@@ -85,6 +85,11 @@ export type CordieriteMessageEvent = {
 export type CordieriteErrorEvent = {
   code: string;
   message: string;
+  phase?: "bootstrap" | "tls" | "connect" | "handshake" | "session" | "transport" | "config";
+  nativeCode?: string;
+  closeReason?: string;
+  isRetryable?: boolean;
+  hint?: string;
 };
 
 export type CordieriteCloseEvent = {
