@@ -1,206 +1,105 @@
-# Mobile Agent ↔ App Handshake Protocol
+# Cordierite Handshake And Session Flow
 
 ## Overview
 
-This document describes the recommended way for a React Native app to establish a secure connection to an authorized local agent without pairing and without any app-side confirmation UI.
+Cordierite lets a React Native app connect back to a trusted host over pinned `wss://`, claim a short-lived session, and then exchange tool registry and tool invocation messages on that same connection.
 
-The agent initiates the flow by opening the app via deep link. The app then connects back to the agent over a pinned TLS WebSocket connection.
+This document describes the current protocol and operator flow implemented in the repo today.
 
-This replaces the earlier idea of using plain `ws://` plus custom signed messages. The pinned `wss://` channel is simpler and provides real transport confidentiality and integrity.
+## Security model
 
----
+- The app does **not** trust the deep link by itself.
+- The app does **not** trust the local network, IP address, or URL origin by itself.
+- The app trusts the host only if the presented TLS identity matches an embedded `sha256/...` SPKI pin.
+- The deep link carries bootstrap data for one pending session.
+- The session token is short-lived and single-use.
 
-## Goals
+Today, the app is the TLS client and the Cordierite host is the TLS WebSocket server.
 
-- No pairing flow in the initial version
-- Agent starts the connection
-- No app-side confirmation UI
-- Safe on hostile local Wi-Fi
-- One active session per device
-- Suitable for production use when the trust material is provisioned correctly
-
----
-
-## Non-Goals
-
-- User-mediated trust establishment
-- Support for multiple trusted agent identities
-- Long-lived background sessions
-- Fine-grained tool permissions
-
----
-
-## Security Model
-
-The app trusts exactly one agent identity in the initial version.
-
-That trust is established by embedding a pinned TLS identity in the app:
-
-- either the agent server certificate
-- or, preferably, the certificate's public key / SPKI pin
-
-The agent holds the corresponding private key and terminates a local `wss://` server.
-
-The app does not trust:
-
-- the local IP address
-- the local network
-- the deep link payload by itself
-
-The deep link is only bootstrap data. Authentication is provided by TLS pinning, and session authorization is provided by short-lived one-time session data.
-
----
-
-## Why Not Plain `ws://` With Signed Messages
-
-Using `ws://` with signatures is not enough for this use case:
-
-- A local attacker can still proxy traffic between app and agent.
-- A passive observer can read all traffic.
-- A session key derived from exchanged nonces is not secret if those nonces were sent in clear.
-- The protocol becomes custom cryptography and is easier to get wrong.
-
-For this reason, the transport must be `wss://` with pinning.
-
----
-
-## Transport
-
-- Protocol: WebSocket over TLS
-- Endpoint: `wss://<local-ip>:<port>`
-- Direction: App connects to agent
-
----
-
-## High-Level Flow
+## Current high-level flow
 
 ```text
-Agent starts local WSS server
-Agent creates pending session with one-time token
-Agent opens app using deep link
-App validates deep link shape and freshness
-App connects to agent via WSS
-App verifies pinned TLS identity
-App sends session_id + token
-Agent validates and consumes token
-Session established
+Operator runs `cordierite host`
+Host generates a certificate from the configured private key and advertised IPv4 address
+Host creates one pending session with a short TTL
+Host prints a bootstrap deep link
+App opens the deep link
+App parses the `cordierite` query payload and calls connect
+App verifies the host's TLS identity against embedded SPKI pins
+App sends `session_claim`
+Host validates and consumes the pending session token
+Host sends `session_ack`
+App syncs the registered tool registry
+Operator lists or invokes tools through the host control API via the CLI
 ```
 
----
+## Bootstrap deep link
 
-## Trust Material
-
-### App
-
-The app embeds the trusted agent TLS identity.
-
-Example:
-
-```ts
-const trustedAgentPin = "sha256/base64-spki-pin";
-```
-
-The app must reject the connection if the presented certificate or public key does not match the pinned identity.
-
-### Agent
-
-The agent holds the TLS private key and certificate used by the local `wss://` server.
-
-Example:
-
-```ts
-const tlsKeyPath = "/path/to/agent-key.pem";
-const tlsCertPath = "/path/to/agent-cert.pem";
-```
-
----
-
-## Session Model
-
-Only one pending or active session is allowed per device.
-
-Before opening the deep link, the agent creates a pending session record:
-
-```json
-{
-  "session_id": "abc123",
-  "token": "base64url-random-32-bytes",
-  "ip": "192.168.1.42",
-  "port": 8443,
-  "expires_at": 1710000030,
-  "status": "pending"
-}
-```
-
-Requirements:
-
-- `token` must be generated with a cryptographically secure RNG
-- token length should be at least 128 bits, preferably 256 bits
-- token must be single-use
-- token must expire quickly, for example after 60 seconds
-- after first successful use, mark it as consumed
-- the agent should reject new pending sessions while one already exists
-
----
-
-## Step 1: Deep Link Bootstrap
-
-### Format
+The deep link format is:
 
 ```text
-myapp:///?cordierite=BASE64URL(WIRE)
+<scheme>:///?cordierite=<base64url-binary-v1>
 ```
 
-### Payload
+The `cordierite` query value must be the binary v1 wire payload encoded as base64url without padding.
 
-`WIRE` is base64url without padding. The **default agent encoding** is **binary v1** (shortest QR-friendly form):
+### Binary v1 payload
 
-- `0x01` version
-- 4-byte IPv4 (big-endian `uint32`, dotted-quad semantics)
-- 2-byte port (big-endian `uint16`)
-- 1-byte `sessionId` UTF-8 length, then `sessionId` bytes (1–255)
-- 32 raw token bytes (same octets as the base64url token decodes to)
-- 4-byte `expiresAt` Unix seconds (big-endian `uint32`)
+The current wire format is:
 
-The `cordierite` query value must decode to **binary v1** only (no JSON object or array wire forms).
+- `0x01` version byte
+- 4-byte IPv4 address, big-endian
+- 2-byte port, big-endian
+- 1-byte UTF-8 `sessionId` length, then `sessionId` bytes
+- 32 raw token bytes
+- 4-byte `expiresAt` unix seconds, big-endian
 
-### App Validation Rules
+The React Native client accepts only this binary v1 form.
 
-The app should do lightweight validation before attempting the connection:
+## App-side bootstrap behavior
 
-- reject if `expiresAt` is in the past
-- reject if the payload is missing required fields
-- reject invalid port values
-- optionally reject non-private IP addresses
+Importing `@cordierite/react-native` installs the default deep-link bootstrap handler. That handler:
 
-Important:
+- watches incoming URLs for a `cordierite` query parameter
+- ignores non-Cordierite URLs
+- skips bootstrap if the client is already `connecting` or `active`
+- parses and validates the bootstrap payload
+- calls `connect(...)` on the default Cordierite client
 
-- the deep link is not an authentication mechanism
-- possession of the token does not replace TLS pinning
-- the token only authorizes one short-lived pending session
+By default, the automatic bootstrap path requires a private IPv4 host unless native configuration disables that restriction.
 
----
+If parsing or connect fails, `addCordieriteErrorListener(...)` receives an event with:
 
-## Step 2: App Connects to Agent
+- `phase: "parse" | "connect"`
+- `url`
+- `error`
 
-The app opens a pinned TLS WebSocket connection:
+## Host-side session setup
 
-```ts
-const ws = new WebSocket(`wss://${ip}:${port}`);
-```
+`cordierite host` currently does all of the following:
 
-During the TLS handshake, the app must verify that the server identity matches the embedded pin.
+- reads a PEM private key from `--tls-key`
+- resolves the advertised host IP from `--ip`, or auto-detects one
+- uses `127.0.0.1` as the advertised IP when `--open` is used for simulator flow
+- generates a leaf certificate from the private key and advertised IP
+- creates one pending session with:
+  - `session_id`
+  - `token`
+  - `ip`
+  - `port`
+  - `expires_at`
+  - `status: "pending"`
+- starts the TLS WebSocket host on the advertised port
+- starts a separate local HTTP control server on `127.0.0.1` and an ephemeral port
 
-If pin verification fails:
+Default values today:
 
-- close the connection
-- reject the session
+- `--port`: `8443`
+- `--ttl`: `60` seconds
 
----
+## Session claim message
 
-## Step 3: App Claims the Pending Session
-
-Once the pinned `wss://` connection is established, the app sends a session claim message:
+After the app establishes the pinned `wss://` connection, it sends:
 
 ```json
 {
@@ -210,13 +109,7 @@ Once the pinned `wss://` connection is established, the app sends a session clai
 }
 ```
 
-The app may include optional device metadata (for agent UX / logging). Each value must be a string no longer than 256 characters:
-
-- `device_manufacturer` (e.g. `Apple`, `Google`)
-- `device_model` (e.g. hardware identifier or commercial model name)
-- `device_os` (e.g. `iOS 18.2`, `Android 14`)
-
-Example with device fields:
+The app may also include optional device metadata:
 
 ```json
 {
@@ -229,29 +122,35 @@ Example with device fields:
 }
 ```
 
-The agent validates:
+Current validation rules:
 
-- `session_id` exists
-- optional `device_manufacturer`, `device_model`, and `device_os`, if present, are strings of at most 256 characters (otherwise the claim is rejected)
-- token matches the pending session
-- token has not expired
-- token has not already been consumed
-- no other connection has already claimed the session
+- device fields are optional
+- each device field must be a string
+- each device field must be at most 256 characters
+- invalid device field values cause claim rejection
 
-If validation succeeds:
+## Host claim validation
 
-- mark the token as consumed
-- mark the session as active
+The host accepts the claim only if all of the following are true:
 
-If validation fails:
+- there is not already an active claimed socket
+- the pending session is still claimable
+- the `session_id` matches the pending session
+- the `token` matches the pending session token
+- the token has not expired
 
-- close the connection immediately
+On success, the host:
 
----
+- marks the session as `active`
+- clears the pending-session TTL timer
+- sends a session acknowledgement
+- emits session events for reporting and registry persistence
 
-## Step 4: Session Acknowledgement
+On failure, the host closes the socket with a policy error reason.
 
-On success, the agent responds:
+## Session acknowledgement
+
+On successful claim, the host responds with:
 
 ```json
 {
@@ -261,93 +160,156 @@ On success, the agent responds:
 }
 ```
 
-At this point, the session is established and all further traffic continues over the same pinned TLS channel.
+After that point, all later protocol messages must be bound to the same `session_id`.
 
----
+## Post-claim protocol messages
 
-## Message Security After Handshake
+The current message set is:
 
-No extra message-level signatures are required for the initial implementation.
+### Tool registry snapshot
 
-Rely on the established `wss://` channel for:
+Sent by the app when the session becomes active so the host can see all registered tools.
 
-- confidentiality
-- integrity
-- server authentication
+```json
+{
+  "type": "tool_registry_snapshot",
+  "session_id": "abc123",
+  "tools": []
+}
+```
 
-Each application message should still be bound to the current session:
+### Tool registry delta
+
+Sent by the app when a tool is added or removed after the session is active.
+
+Upsert:
+
+```json
+{
+  "type": "tool_registry_delta",
+  "session_id": "abc123",
+  "operation": "upsert",
+  "tool": {
+    "name": "sum"
+  }
+}
+```
+
+Remove:
+
+```json
+{
+  "type": "tool_registry_delta",
+  "session_id": "abc123",
+  "operation": "remove",
+  "name": "sum"
+}
+```
+
+### Tool call
+
+Sent by the host to the app when the operator uses `cordierite invoke`.
 
 ```json
 {
   "type": "tool_call",
   "session_id": "abc123",
   "id": "call_1",
-  "name": "open_screen",
+  "name": "sum",
   "args": {
-    "screen": "Profile"
+    "a": 2,
+    "b": 3
   }
 }
 ```
 
-The receiver should reject messages whose `session_id` does not match the active session.
+### Tool result
 
----
+Sent by the app when the tool succeeds.
 
-## Failure Handling
+```json
+{
+  "type": "tool_result",
+  "session_id": "abc123",
+  "id": "call_1",
+  "result": {
+    "total": 5
+  }
+}
+```
 
-| Condition | Action |
-|----------|--------|
-| TLS pin mismatch | Close connection |
-| Unknown session | Close connection |
-| Invalid token | Close connection |
-| Expired token | Close connection |
-| Reused token | Close connection |
-| Session already claimed | Close connection |
-| Session mismatch in later messages | Close connection |
+### Tool error
 
----
+Sent by the app when the tool fails.
 
-## Why Keep Session Authorization If We Already Pin TLS
+```json
+{
+  "type": "tool_error",
+  "session_id": "abc123",
+  "id": "call_1",
+  "error": {
+    "type": "tool_execution_error",
+    "message": "Something went wrong"
+  }
+}
+```
 
-TLS pinning proves the app is talking to the real trusted agent endpoint.
+Current tool error types include:
 
-The session token solves a different problem: authorizing one specific bootstrap attempt.
+- `tool_not_found`
+- `tool_input_validation_error`
+- `tool_output_validation_error`
+- `tool_execution_error`
+- `tool_serialization_error`
+- `tool_timeout`
 
-It gives us:
+## Local host control API
 
-- binding between the deep link and the accepted connection
-- replay resistance for stale deep links
-- a clean way to expire or cancel a launch attempt
-- protection against anything that can trigger the app's custom URL scheme
+The CLI does not talk to the app socket directly after startup. Instead, `cordierite host` exposes a local HTTP control API on `127.0.0.1` and stores session metadata in the local session registry.
 
-Even with only one session allowed per device, the token is still useful and cheap to implement.
+Current routes:
 
----
+- `GET /session`
+- `GET /tools`
+- `POST /call`
 
-## Operational Requirements
+The `session`, `tools`, and `invoke` CLI commands read the session registry, locate the correct local control port, and then call this local API.
 
-- The agent should listen only while waiting for the app or while a session is active
-- Pending sessions should expire quickly
-- Active sessions should have a maximum lifetime
-- Closing the active session should also tear down any leftover pending state
-- Agent logs should never print the raw token
+### Current limitation
 
----
+The local host control API is currently unauthenticated. Any process on the same operating system that can reach the local control port may inspect the session or invoke tools on the connected app.
+
+This is a known limitation in the current implementation and should be considered part of the threat model.
+
+## Failure handling
+
+Important failure cases today:
+
+- invalid bootstrap URL or payload: rejected before connect
+- expired bootstrap payload: rejected before connect
+- pin mismatch: TLS connection fails
+- wrong or expired token: socket closed during claim
+- second connection while one is active: rejected
+- post-claim message with the wrong `session_id`: socket closed
+- host TTL expiry before claim: pending session is discarded and host exits with error
+- app disconnect after claim: host tears down runtime state and removes the session registry entry
+
+## Operator flow
+
+Typical operator flow today:
+
+1. Run `cordierite keygen` and add the printed `sha256/...` value to app config.
+2. Rebuild the app so native pin configuration is updated.
+3. Start the host with `cordierite host --tls-key ... --scheme ...`.
+4. Open the printed bootstrap deep link in the app, or use `--open` on the iOS simulator.
+5. Use the returned `session_id` with:
+   - `cordierite session --session-id <id>`
+   - `cordierite tools --session-id <id>`
+   - `cordierite invoke <name> --session-id <id> --input '{...}'`
 
 ## Notes
 
-- Do not trust local network origin as identity
-- Do not treat the deep link payload as authenticated
-- Do not use `ws://` for this protocol
-- Do not derive a session key from public nonces
-- Treat the LAN as hostile
-
----
-
-## Future Improvements
-
-- Support multiple trusted CLI identities and rotation
-- Move from a single pinned identity to a managed trust store
-- Add app authentication if we later need stronger client identity
-- Add per-tool authorization or policy controls
-- Add explicit user approval for sensitive actions
+- The deep link is bootstrap data, not proof of authority.
+- Pinned TLS is the host authentication mechanism.
+- Cordierite currently supports one active claimed session per host runtime.
+- Tool availability is dynamic and comes entirely from what the app registers in JavaScript.

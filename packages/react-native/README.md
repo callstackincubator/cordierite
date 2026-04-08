@@ -22,7 +22,21 @@ This package is the **native client** for Cordierite. Your app **registers tools
 > [!NOTE]
 > Use a **development build** or bare native app. **Expo Go** is not enough—this library ships native code and pinning configuration.
 
-Install with your package manager (`npm`, `yarn`, `pnpm`, …). Add the **`@cordierite/react-native`** config plugin to Expo config with **`cliPins`** (required) and optionally **`allowPrivateLanOnly`**; then run your usual **prebuild** so plist and manifest receive the values. For bare React Native, autolink the module and set the equivalent native keys—field names and semantics mirror the plugin (see [app.plugin.js](app.plugin.js)).
+### 1. Install the package
+
+Install the app-side package and a schema library for tool definitions:
+
+```bash
+npm install @cordierite/react-native zod
+```
+
+Install the CLI separately on the machine that will run the host:
+
+```bash
+npm install cordierite
+```
+
+### 2. Generate a host key and copy the app pin
 
 Generate a matching host key and pin with:
 
@@ -31,6 +45,35 @@ cordierite keygen
 ```
 
 Use the printed fingerprint value verbatim in `cliPins`.
+
+### 3. Configure native pinning and app scheme
+
+#### Expo
+
+Add the **`@cordierite/react-native`** config plugin to Expo config with **`cliPins`** (required) and optionally **`allowPrivateLanOnly`**:
+
+```json
+{
+  "expo": {
+    "scheme": "myapp",
+    "plugins": [
+      [
+        "@cordierite/react-native",
+        {
+          "cliPins": ["sha256/REPLACE_WITH_KEYGEN_OUTPUT"],
+          "allowPrivateLanOnly": true
+        }
+      ]
+    ]
+  }
+}
+```
+
+Then run your normal prebuild / rebuild flow so native config receives those values.
+
+#### Bare React Native
+
+Autolink the module and set the equivalent native keys. Field names and semantics mirror the Expo plugin (see [app.plugin.js](app.plugin.js)).
 
 **Bare React Native — native keys**
 
@@ -48,34 +91,73 @@ Android `<application>` meta-data:
 | `com.callstackincubator.cordierite.CLI_PINS` | JSON array string of pin values |
 | `com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY` | `"true"` / `"false"` |
 
-Empty or missing pins fail at configuration time. Wire **deep links** so the OS can open your app with the host’s bootstrap URL.
+Empty or missing pins fail at configuration time. Wire **deep links** so the OS can open your app with the host’s bootstrap URL, and make sure the app scheme matches the value you will pass to `cordierite host --scheme ...`.
+
+### 4. Import Cordierite in the JS entry point
+
+Import the package in the app entry point so the default bootstrap listener is installed during startup:
+
+```ts
+import "@cordierite/react-native";
+```
+
+This side-effect import installs the default React Native `Linking` listener for Cordierite bootstrap URLs.
 
 **Bootstrap connection:** importing this package registers React Native `Linking` listeners that watch for URLs with a `cordierite` query parameter, parse the binary v1 payload, and call `connect` when the client is idle. You do not need your own `Linking` handler for the default flow.
 
 **Errors:** use `addCordieriteErrorListener` if you want callbacks when bootstrap parsing or that automatic `connect` fails.
 
-**Tools:** call `registerTool({ ... })` with Standard Schema compatible `inputSchema` and `outputSchema` values plus a `handler` so the host can invoke your tools after the session is active. `zod` v4 works well here and is used in the playground example.
+### 5. Define tools in app startup code
+
+Call `registerTool({ ... })` with Standard Schema compatible `inputSchema` and `outputSchema` values plus a `handler` so the host can invoke your tools after the session is active. `zod` v4 works well here and is used in the playground example.
 
 ```ts
+import "@cordierite/react-native";
+import { useEffect } from "react";
 import { registerTool } from "@cordierite/react-native";
 import { z } from "zod";
 
-registerTool(
-  {
-    name: "sum",
-    description: "Add two numeric values",
-    inputSchema: z.object({
-      a: z.number(),
-      b: z.number(),
-    }),
-    outputSchema: z.object({
-      total: z.number(),
-    }),
-    handler: async ({ a, b }) => ({
-      total: a + b,
-    }),
-  },
-);
+export function CordieriteBootstrap() {
+  useEffect(() => {
+    const registration = registerTool({
+      name: "sum",
+      description: "Add two numeric values",
+      inputSchema: z.object({
+        a: z.number(),
+        b: z.number(),
+      }),
+      outputSchema: z.object({
+        total: z.number(),
+      }),
+      handler: async ({ a, b }) => ({
+        total: a + b,
+      }),
+    });
+
+    return () => {
+      registration.remove();
+    };
+  }, []);
+
+  return null;
+}
+```
+
+Mount that component near app startup, or register from another module that loads on startup. The host can only list and invoke tools that your app has already registered.
+
+### 6. Start the host and test the flow
+
+Run the host with the key generated by `cordierite keygen`:
+
+```bash
+cordierite host --tls-key ./dev-key.pem --scheme myapp
+```
+
+Open the printed bootstrap deep link in the app, then inspect and invoke tools with the returned `session_id`:
+
+```bash
+cordierite tools --session-id <session_id>
+cordierite invoke sum --session-id <session_id> --input '{"a":2,"b":3}'
 ```
 
 ## Platform compatibility

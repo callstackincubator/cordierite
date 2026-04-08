@@ -27,6 +27,136 @@ Shipping ad-hoc debug UIs in production builds is risky: they leak intent, widen
 
 Clone the repo and install with your usual workspace workflow. The [playground](playground/README.md) is the reference dev app.
 
+## Getting started
+
+Cordierite has two sides:
+
+- the **host** side, where you run the `cordierite` CLI
+- the **app** side, where your React Native app imports `@cordierite/react-native` and registers tools
+
+### 1. Install the packages
+
+Install the CLI where the operator, test runner, or agent will run it:
+
+```bash
+npm install cordierite
+```
+
+Install the React Native package in your app:
+
+```bash
+npm install @cordierite/react-native zod
+```
+
+### 2. Generate the host key and app pin
+
+Generate a TLS private key for the host:
+
+```bash
+cordierite keygen
+```
+
+The command prints a `sha256/...` SPKI fingerprint. Copy that value into the app configuration as a trusted Cordierite pin.
+
+### 3. Configure the app
+
+For Expo, add the config plugin and the generated pin to `app.json` / `app.config.*`:
+
+```json
+{
+  "expo": {
+    "scheme": "myapp",
+    "plugins": [
+      [
+        "@cordierite/react-native",
+        {
+          "cliPins": ["sha256/REPLACE_WITH_KEYGEN_OUTPUT"],
+          "allowPrivateLanOnly": true
+        }
+      ]
+    ]
+  }
+}
+```
+
+For bare React Native, configure the equivalent native keys:
+
+- iOS `Info.plist`: `CordieriteCliPins` and optionally `CordieriteAllowPrivateLanOnly`
+- Android `<application>` meta-data: `com.callstackincubator.cordierite.CLI_PINS` and optionally `com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY`
+
+Your app also needs a URL scheme, and that scheme must match the one you pass to `cordierite host --scheme ...`.
+
+After changing native configuration, rebuild the app. For Expo, use a **development build** or bare native app. **Expo Go** is not enough.
+
+### 4. Import Cordierite in the JS entry point
+
+Import `@cordierite/react-native` in the app entry point so the package installs its deep-link bootstrap listener as soon as the app starts:
+
+```ts
+import "@cordierite/react-native";
+```
+
+This import should happen in the JS entry file or another module that is guaranteed to load during app startup.
+
+### 5. Define and register tools
+
+Register tools from app startup code. A small example:
+
+```ts
+import "@cordierite/react-native";
+import { useEffect } from "react";
+import { registerTool } from "@cordierite/react-native";
+import { z } from "zod";
+
+export function CordieriteBootstrap() {
+  useEffect(() => {
+    const sumTool = registerTool({
+      name: "sum",
+      description: "Add two numbers inside the app.",
+      inputSchema: z.object({
+        a: z.number(),
+        b: z.number(),
+      }),
+      outputSchema: z.object({
+        total: z.number(),
+      }),
+      handler: async ({ a, b }) => ({
+        total: a + b,
+      }),
+    });
+
+    return () => {
+      sumTool.remove();
+    };
+  }, []);
+
+  return null;
+}
+```
+
+Mount that component near app startup, or register tools from another early-loading module. Cordierite only exposes the tools you register.
+
+### 6. Start the host
+
+Run the host with the private key from `cordierite keygen` and your app scheme:
+
+```bash
+cordierite host --tls-key ./dev-key.pem --scheme myapp
+```
+
+The host prints a bootstrap deep link and session details. Open that deep link in the app. On macOS simulator you can also use `--open`.
+
+### 7. Verify the session and invoke a tool
+
+Once the app claims the session, use the returned `session_id` with the CLI:
+
+```bash
+cordierite tools --session-id <session_id>
+cordierite invoke sum --session-id <session_id> --input '{"a":2,"b":3}'
+```
+
+If setup is correct, the app connects over pinned `wss://`, the host lists the registered tools, and `invoke` returns the tool result.
+
 ## Platform compatibility
 
 - **CLI / host**: any modern **JavaScript runtime** that can run the published package and open TLS sockets.
