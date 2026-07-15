@@ -29,6 +29,22 @@ The playground is an Expo **development build** that demonstrates Cordierite’s
 
 Install dependencies, then start Expo with a **development build** (not Expo Go). Run the Cordierite **host** from the monorepo with the playground private key.
 
+### Generate your own key
+
+This repo no longer ships a committed private key. Generate your own with:
+
+```sh
+cordierite keygen
+```
+
+Paste the printed `sha256/…` pin into `app.json` (`cliPins`), and never commit the
+generated `.pem` file — `*.pem` stays gitignored.
+
+> The key previously committed at `playground/certs/dev-key.pem` must be treated as
+> **compromised** — it was public in git history. It has been deleted from the working
+> tree; rewriting git history to purge it from past commits is a separate, deliberate
+> exercise (out of scope here).
+
 ## Platform compatibility
 
 - **iOS** and **Android** development builds, New Architecture.

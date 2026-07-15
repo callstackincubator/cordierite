@@ -6,7 +6,7 @@ const {
 } = require("expo/config-plugins");
 
 const PLUGIN_NAME = "@cordierite/react-native";
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = require("./package.json").version;
 const ANDROID_PINS_KEY = "com.callstackincubator.cordierite.CLI_PINS";
 const ANDROID_PRIVATE_LAN_KEY =
   "com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY";
