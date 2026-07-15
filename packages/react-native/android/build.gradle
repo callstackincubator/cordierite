@@ -75,6 +75,14 @@ repositories {
 dependencies {
   implementation "com.facebook.react:react-android"
   implementation "com.squareup.okhttp3:okhttp:4.12.0"
+
+  // Pure-logic JVM tests (SPKI pin parity, metadata parsing, protocol-v2 frame shape); no
+  // Robolectric/emulator dependency needed. Run with `./gradlew :cordierite_react-native:testDebugUnitTest`
+  // from playground/android (the autolinked consumer app), or any consumer app that includes this module.
+  testImplementation "junit:junit:4.13.2"
+  // Real org.json implementation: the stub in android.jar throws "not mocked" for every method at
+  // unit-test runtime (same reason expo-modules-core's own tests depend on this).
+  testImplementation "org.json:json:20180813"
 }
 
 tasks.register("assertNewArchitectureEnabled") {

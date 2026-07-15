@@ -80,3 +80,8 @@ same cert → same `sha256/…` string as the CLI), metadata parsing (Boolean, S
 absent), and state-machine transitions with a fake WebSocket. Wire `gradle test` into
 the package's `test` script if the RN gradle setup permits; otherwise document the
 manual emulator runs in the commit body.
+
+> Status: DONE. See commit `task(10): ...` for details, verification, and known gaps
+> (notably: the full connect→kill-daemon and pin-mismatch-rejects-promise emulator smokes were
+> not run — no daemon/emulator in this environment; JVM tests cover pure logic only, not a
+> real socket-driven state machine — see the commit body and the test file's doc comment).
