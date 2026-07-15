@@ -22,6 +22,8 @@ export type CordieriteConfig = {
   linkTtlSeconds: number;
   keepaliveIntervalSeconds: number;
   policy: CordieritePolicyConfig;
+  /** Operator override for advertised-address detection (daemon/address.ts); undefined = auto-detect. */
+  advertisedIp?: string;
 };
 
 const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
@@ -31,6 +33,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
   "linkTtlSeconds",
   "keepaliveIntervalSeconds",
   "policy",
+  "advertisedIp",
 ]);
 
 const KNOWN_POLICY_KEYS = new Set<string>(["default", "destructive"]);
@@ -129,6 +132,10 @@ export const loadConfig = async (
 
   if (parsed.keyPath !== undefined) {
     config.keyPath = requireNonEmptyString(parsed.keyPath, "keyPath");
+  }
+
+  if (parsed.advertisedIp !== undefined) {
+    config.advertisedIp = requireNonEmptyString(parsed.advertisedIp, "advertisedIp");
   }
 
   if (parsed.graceSeconds !== undefined) {

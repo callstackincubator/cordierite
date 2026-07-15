@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { callDaemon, DaemonUnavailableError, openDaemonStream, type SpawnFn } from "../rpc/client.js";
+import { writeTestHostKey } from "./fixtures.js";
 
 const runningDaemons: RunningDaemon[] = [];
 
@@ -17,7 +18,9 @@ afterEach(async () => {
 });
 
 const makeTempStateDir = async (): Promise<string> => {
-  return mkdtemp(path.join(tmpdir(), "cordierite-rpc-client-test-"));
+  const stateDir = await mkdtemp(path.join(tmpdir(), "cordierite-rpc-client-test-"));
+  await writeTestHostKey(path.join(stateDir, "key.pem"));
+  return stateDir;
 };
 
 describe("callDaemon", () => {
