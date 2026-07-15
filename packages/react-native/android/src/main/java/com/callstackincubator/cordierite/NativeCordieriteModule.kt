@@ -64,11 +64,12 @@ class NativeCordieriteModule(
         options: ReadableMap,
         promise: Promise,
     ) {
-        try {
-            manager.connect(options)
-            promise.resolve(null)
-        } catch (e: Exception) {
-            promise.reject("E_CORDIERITE", e.message, e)
+        manager.connect(options) { error ->
+            if (error != null) {
+                promise.reject("E_CORDIERITE", error.message, error)
+            } else {
+                promise.resolve(null)
+            }
         }
     }
 
@@ -76,23 +77,25 @@ class NativeCordieriteModule(
         message: String,
         promise: Promise,
     ) {
-        try {
-            manager.send(message)
-            promise.resolve(null)
-        } catch (e: Exception) {
-            promise.reject("E_CORDIERITE", e.message, e)
+        manager.send(message) { error ->
+            if (error != null) {
+                promise.reject("E_CORDIERITE", error.message, error)
+            } else {
+                promise.resolve(null)
+            }
         }
     }
 
     override fun close(promise: Promise) {
-        manager.close()
-        promise.resolve(null)
+        manager.close {
+            promise.resolve(null)
+        }
     }
 
     override fun getState(): String = manager.getState()
 
     override fun invalidate() {
-        manager.close()
+        manager.close {}
         super.invalidate()
     }
 }
