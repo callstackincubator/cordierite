@@ -1,21 +1,22 @@
 import pc from "picocolors";
-import type { ToolDescriptor } from "@cordierite/shared";
+import { formatAgentWebSocketUrl, type EventNotification, type SessionSummary, type ToolDescriptor } from "@cordierite/shared";
 
 import type {
   CliError,
   CliResult,
   CommandMeta,
-  ConnectCommandData,
   DaemonRunCommandData,
   DaemonStartCommandData,
   DaemonStatusCommandData,
   DaemonStopCommandData,
-  HostCommandData,
   InvokeCommandData,
   KeygenCommandData,
-  SessionCommandData,
+  LinkCommandData,
+  LsCommandData,
+  RevokeCommandData,
   ToolsCommandData,
 } from "./cli/result-types.js";
+import { renderQrToTerminal } from "./qr-terminal.js";
 
 type ColorPalette = ReturnType<typeof pc.createColors>;
 
@@ -23,6 +24,10 @@ export type RenderOptions = {
   command: string;
   json: boolean;
   color: boolean;
+  /** `link`-only: also render the deep link as terminal QR art (never affects `--json` output). */
+  qr?: boolean;
+  /** `tools`-only: render full schemas/annotations for every listed tool, not just name+description. */
+  full?: boolean;
 };
 
 const indentJson = (value: unknown): string => {
@@ -58,10 +63,6 @@ const formatScalar = (value: unknown): string => {
   return indentJson(value);
 };
 
-const formatTtlSeconds = (ttlSeconds: number): string => {
-  return `${ttlSeconds}s`;
-};
-
 const renderFields = (title: string, fields: Array<[label: string, value: unknown]>): string[] => {
   const visibleFields = fields.filter(([, value]) => value !== undefined);
 
@@ -77,7 +78,64 @@ const renderFields = (title: string, fields: Array<[label: string, value: unknow
   ];
 };
 
-const renderToolTable = (tools: ToolDescriptor[]): string[] => {
+/** Humanizes an elapsed duration for `ls`'s "age" column: seconds/minutes/hours/days, coarsest unit
+ * that keeps at least one digit of precision. */
+const formatAge = (fromIso: string, toIso: string): string => {
+  const elapsedMs = Math.max(0, new Date(toIso).getTime() - new Date(fromIso).getTime());
+  const elapsedSeconds = Math.floor(elapsedMs / 1000);
+
+  if (elapsedSeconds < 60) {
+    return `${elapsedSeconds}s`;
+  }
+
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m`;
+  }
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+
+  if (elapsedHours < 24) {
+    return `${elapsedHours}h`;
+  }
+
+  return `${Math.floor(elapsedHours / 24)}d`;
+};
+
+const formatDevice = (device: SessionSummary["device"]): string => {
+  const parts = [device.manufacturer, device.model].filter((part): part is string => Boolean(part));
+  const label = parts.length > 0 ? parts.join(" ") : "unknown device";
+  return device.os ? `${label} (${device.os})` : label;
+};
+
+const renderLsData = (colors: ColorPalette, data: LsCommandData, meta?: CommandMeta): string[] => {
+  if (data.length === 0) {
+    return [colors.dim("Sessions"), "  No Cordierite sessions are registered."];
+  }
+
+  const now = meta?.timestamp ?? new Date().toISOString();
+  const headers = ["Alias", "State", "Device", "Tools", "Age"] as const;
+  const rows = data.map((session) => [
+    session.alias,
+    session.state,
+    formatDevice(session.device),
+    String(session.toolCount),
+    formatAge(session.claimedAt ?? session.createdAt, now),
+  ]);
+
+  const widths = headers.map((header, index) =>
+    Math.max(header.length, ...rows.map((row) => row[index]!.length)),
+  );
+
+  return [
+    colors.green("Sessions"),
+    `  ${headers.map((header, index) => header.padEnd(widths[index]!)).join("  ")}`,
+    ...rows.map((row) => `  ${row.map((cell, index) => cell.padEnd(widths[index]!)).join("  ")}`),
+  ];
+};
+
+const renderToolSummaryTable = (tools: ToolDescriptor[]): string[] => {
   if (tools.length === 0) {
     return ["Tools", "  No tools registered."];
   }
@@ -91,97 +149,61 @@ const renderToolTable = (tools: ToolDescriptor[]): string[] => {
   ];
 };
 
-const renderConnectData = (colors: ColorPalette, data: ConnectCommandData): string[] => {
-  return [
-    colors.green("Connection Ready"),
-    ...renderFields("Bootstrap", [
-      ["Session", data.bootstrap.session_id],
-      ["URL", data.bootstrap.endpoint.url],
-      ["Expires", data.bootstrap.expires_at_iso],
-      ["Claimable", data.bootstrap.can_claim],
-    ]),
-  ];
-};
-
-const renderSessionListItem = (item: SessionCommandData["sessions"][number]): string[] => {
-  return renderFields("Entry", [
-    ["Session", item.session_id],
-    ["State", item.status],
-    ["Control port", item.control_port],
-    ["WSS port", item.wss_port],
-    ["URL", item.endpoint?.url],
-    ["Tools", item.tool_count],
+const renderToolDetail = (colors: ColorPalette, tool: ToolDescriptor): string[] => {
+  return renderFields(colors.green(`Tool: ${tool.name}`), [
+    ["Description", tool.description],
+    ["Input schema", tool.input_schema],
+    ["Output schema", tool.output_schema],
+    ["Annotations", tool.annotations],
   ]);
 };
 
-const renderSessionData = (colors: ColorPalette, data: SessionCommandData): string[] => {
-  const lines: string[] = [];
-
-  if (data.sessions.length === 0) {
-    lines.push(colors.dim("Sessions"), "  No Cordierite host sessions are registered.");
-  } else {
-    lines.push(colors.green("Sessions"));
-    for (const session of data.sessions) {
-      lines.push("");
-      lines.push(...renderSessionListItem(session));
-    }
+const renderToolsData = (colors: ColorPalette, data: ToolsCommandData, full?: boolean): string[] => {
+  if (!Array.isArray(data)) {
+    return renderToolDetail(colors, data);
   }
 
-  if (data.selected) {
-    lines.push("", colors.green("Selected session"), ...renderSessionListItem(data.selected));
+  if (full) {
+    return data.length === 0
+      ? ["Tools", "  No tools registered."]
+      : data.flatMap((tool, index) => [...(index > 0 ? [""] : []), ...renderToolDetail(colors, tool)]);
+  }
+
+  return [colors.green("Tools"), ...renderToolSummaryTable(data).slice(1)];
+};
+
+const renderInvokeData = (colors: ColorPalette, data: InvokeCommandData): string[] => {
+  return [colors.green("Result"), formatScalar(data)];
+};
+
+const renderLinkData = (colors: ColorPalette, data: LinkCommandData, qr?: boolean): string[] => {
+  const lines = [
+    colors.green("Link Created"),
+    ...renderFields("Link", [
+      ["Session", data.sessionId],
+      ["Deep link", data.deepLink],
+      ["Endpoint", formatAgentWebSocketUrl(data.endpoint)],
+      ["Expires", new Date(data.expiresAt * 1000).toISOString()],
+    ]),
+  ];
+
+  if (qr) {
+    lines.push("", "QR", renderQrToTerminal(data.deepLink));
   }
 
   return lines;
 };
 
-const renderToolsData = (colors: ColorPalette, data: ToolsCommandData): string[] => {
-  return [
-    colors.green("Available Tools"),
-    ...renderToolTable(data.tools),
-    ...(!data.selected_tool
-      ? []
-      : [
-          "",
-          ...renderFields("Selected Tool", [
-            ["Name", data.selected_tool.name],
-            ["Description", data.selected_tool.description],
-            ["Input Schema", data.selected_tool.input_schema],
-            ["Output Schema", data.selected_tool.output_schema],
-          ]),
-        ]),
-  ];
-};
-
-const renderInvokeData = (colors: ColorPalette, data: InvokeCommandData): string[] => {
-  return [
-    colors.green("Invocation Complete"),
-    ...renderFields("Result", [
-      ["Tool", data.invocation.tool],
-      ["Payload", data.invocation.result],
-    ]),
-  ];
-};
-
-const renderHostData = (colors: ColorPalette, data: HostCommandData): string[] => {
-  return [
-    colors.green("Host Ready"),
-    ...renderFields("Host", [
-      ["Fingerprint", data.host.spki_pin],
-      ["Session", data.host.session_id],
-      ["WSS port", data.host.wss_port],
-      ["Control port", data.host.control_port],
-      ["Deep Link", data.host.deep_link],
-      ["TTL", formatTtlSeconds(data.host.ttl_seconds)],
-    ]),
-  ];
+const renderRevokeData = (colors: ColorPalette, _data: RevokeCommandData): string[] => {
+  return [colors.green("Session Revoked")];
 };
 
 const renderKeygenData = (colors: ColorPalette, data: KeygenCommandData): string[] => {
   return [
     colors.green("Key Ready"),
     ...renderFields("Key", [
-      ["Path", data.key.path],
-      ["Fingerprint", data.key.spki_pin],
+      ["Path", data.path],
+      ["Fingerprint", data.pin],
     ]),
   ];
 };
@@ -232,31 +254,23 @@ const renderDaemonStatusData = (colors: ColorPalette, data: DaemonStatusCommandD
 const renderSuccessData = (
   colors: ColorPalette,
   command: string,
-  data:
-    | HostCommandData
-    | ConnectCommandData
-    | SessionCommandData
-    | ToolsCommandData
-    | InvokeCommandData
-    | KeygenCommandData
-    | DaemonRunCommandData
-    | DaemonStartCommandData
-    | DaemonStopCommandData
-    | DaemonStatusCommandData,
+  data: unknown,
+  options: RenderOptions,
+  meta?: CommandMeta,
 ): string[] => {
   switch (command) {
-    case "host":
-      return renderHostData(colors, data as HostCommandData);
-    case "connect":
-      return renderConnectData(colors, data as ConnectCommandData);
     case "keygen":
       return renderKeygenData(colors, data as KeygenCommandData);
-    case "session":
-      return renderSessionData(colors, data as SessionCommandData);
+    case "link":
+      return renderLinkData(colors, data as LinkCommandData, options.qr);
+    case "ls":
+      return renderLsData(colors, data as LsCommandData, meta);
     case "tools":
-      return renderToolsData(colors, data as ToolsCommandData);
+      return renderToolsData(colors, data as ToolsCommandData, options.full);
     case "invoke":
       return renderInvokeData(colors, data as InvokeCommandData);
+    case "revoke":
+      return renderRevokeData(colors, data as RevokeCommandData);
     case "daemon run":
       return renderDaemonRunData(colors, data as DaemonRunCommandData);
     case "daemon start":
@@ -304,7 +318,7 @@ export const renderResult = (
   }
 
   const lines = [
-    ...renderSuccessData(colors, options.command, result.data as never),
+    ...renderSuccessData(colors, options.command, result.data, options, result.meta),
     "",
     ...renderMetaLines(result.meta),
   ].filter((line, index, collection) => {
@@ -318,4 +332,21 @@ export const renderResult = (
   return {
     stdout: `${lines.join("\n")}\n`,
   };
+};
+
+/** Renders one `cordierite events` line: NDJSON under `--json`, a compact human line otherwise. */
+export const renderEventLine = (
+  event: EventNotification,
+  options: { json: boolean; color: boolean },
+): string => {
+  if (options.json) {
+    return JSON.stringify(event);
+  }
+
+  const colors = pc.createColors(options.color);
+  const timestamp = new Date(event.ts).toISOString();
+  const target = event.alias ?? event.sessionId;
+  const dataSuffix = event.data === undefined ? "" : ` ${indentJson(event.data)}`;
+
+  return `${colors.dim(timestamp)} ${colors.green(event.kind)}${target ? ` ${target}` : ""}${dataSuffix}`;
 };

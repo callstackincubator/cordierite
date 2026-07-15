@@ -1,7 +1,7 @@
 import type { CliResult } from "./result-types.js";
 
 import { getExitCodeForError, toCliError } from "../errors.js";
-import { renderResult } from "../output.js";
+import { renderResult, type RenderOptions } from "../output.js";
 import { createCommandMeta, type Clock, type CliIoWriters } from "./types.js";
 
 /**
@@ -43,13 +43,20 @@ const writeRenderedOutput = (
 export const executeCommand = async (
   command: string,
   handler: () => CliResult<unknown> | Promise<CliResult<unknown>>,
-  options: CliIoWriters & {
-    json: boolean;
-    color: boolean;
-    clock: Clock;
-  },
+  options: CliIoWriters &
+    Pick<RenderOptions, "json" | "color"> &
+    Partial<Pick<RenderOptions, "qr" | "full">> & {
+      clock: Clock;
+    },
 ): Promise<number> => {
   const startedAt = options.clock.now();
+  const renderOptions: RenderOptions = {
+    command,
+    json: options.json,
+    color: options.color,
+    qr: options.qr,
+    full: options.full,
+  };
 
   try {
     const result = await handler();
@@ -59,14 +66,7 @@ export const executeCommand = async (
       meta: createCommandMeta(command, startedAt, finishedAt),
     };
 
-    writeRenderedOutput(
-      renderResult(withMeta, {
-        command,
-        json: options.json,
-        color: options.color,
-      }),
-      options,
-    );
+    writeRenderedOutput(renderResult(withMeta, renderOptions), options);
 
     return 0;
   } catch (error) {
@@ -78,16 +78,9 @@ export const executeCommand = async (
       meta: createCommandMeta(command, startedAt, finishedAt),
     };
 
-    writeRenderedOutput(
-      renderResult(result, {
-        command,
-        json: options.json,
-        color: options.color,
-      }),
-      options,
-    );
+    writeRenderedOutput(renderResult(result, renderOptions), options);
 
-    return getExitCodeForError(cliError);
+    return getExitCodeForError(error);
   }
 };
 
@@ -112,7 +105,10 @@ export const executeHostedCommand = async (
       meta: createCommandMeta(command, startedAt, finishedAt),
     };
 
-    const liveReporter = command === "host" ? options.reporter : undefined;
+    // A live reporter (e.g. `events`'s streaming NDJSON/human lines) renders its own output as it
+    // goes; only the absence of a reporter (or an explicit "plain" one) falls back to the default
+    // one-shot `renderResult` bootstrap rendering.
+    const liveReporter = options.reporter;
     const shouldRenderBootstrap = !liveReporter || liveReporter.kind === "plain";
 
     if (shouldRenderBootstrap) {
@@ -162,8 +158,12 @@ export const executeHostedCommand = async (
     };
 
     if (renderedSuccess && options.json) {
-      options.stderr.write(`${cliError.message}\n`);
-      return getExitCodeForError(cliError);
+      // The single-JSON-object-on-stdout contract was already fulfilled by the bootstrap render
+      // above; a failure that happens later (e.g. during a long-running `completion`) must still
+      // be a JSON object, just on stderr instead — bare text here was v1's defect (leaked
+      // unparseable output onto stderr in `--json` mode).
+      options.stderr.write(`${JSON.stringify(result)}\n`);
+      return getExitCodeForError(error);
     }
 
     writeRenderedOutput(
@@ -175,6 +175,6 @@ export const executeHostedCommand = async (
       options,
     );
 
-    return getExitCodeForError(cliError);
+    return getExitCodeForError(error);
   }
 };

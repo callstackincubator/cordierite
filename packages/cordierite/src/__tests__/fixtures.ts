@@ -1,7 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { PassThrough, Writable } from "node:stream";
 
 import { runCli } from "../cli.js";
 
@@ -28,38 +27,7 @@ export const writeTestHostKey = async (keyPath: string): Promise<void> => {
   await writeFile(keyPath, pem, { encoding: "utf8", mode: 0o600 });
 };
 
-export const createInteractiveInput = (
-  text: string,
-): NodeJS.ReadableStream & {
-  isTTY: boolean;
-} => {
-  const input = new PassThrough();
-  const chunks = text.match(/[^\n]*\n|[^\n]+$/gu) ?? [text];
-
-  queueMicrotask(() => {
-    for (const [index, chunk] of chunks.entries()) {
-      setTimeout(() => {
-        input.write(chunk);
-
-        if (index === chunks.length - 1) {
-          input.end();
-        }
-      }, index);
-    }
-
-    if (chunks.length === 0) {
-      input.end();
-    }
-  });
-
-  return Object.assign(input, {
-    isTTY: true,
-  });
-};
-
 type RunCliCaptureOptions = {
-  stdin?: NodeJS.ReadableStream & { isTTY?: boolean };
-  promptOutput?: NodeJS.WritableStream;
   stdoutIsTTY?: boolean;
 };
 
@@ -69,19 +37,9 @@ export const runCliWithCapture = async (
 ) => {
   let stdout = "";
   let stderr = "";
-  const promptOutput =
-    options.promptOutput ??
-    new Writable({
-      write(chunk, _encoding, callback) {
-        stderr += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-        callback();
-      },
-    });
 
   const exitCode = await runCli(argv, {
     clock: fixedClock,
-    stdin: options.stdin,
-    promptOutput,
     stdout: {
       isTTY: options.stdoutIsTTY ?? false,
       write(chunk: string | Uint8Array) {

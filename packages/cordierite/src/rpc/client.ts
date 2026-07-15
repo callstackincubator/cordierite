@@ -306,6 +306,10 @@ export type DaemonStream = {
   call: <TResult>(method: string, params?: unknown) => Promise<TResult>;
   /** Subscribes to server→client `"event"` notifications; returns an unsubscribe function. */
   onNotification: (callback: (payload: unknown) => void) => () => void;
+  /** Fires once when the underlying socket closes (daemon gone, stop(), etc.); returns an
+   * unsubscribe function. Lets long-lived stream consumers (e.g. `cordierite events`) end
+   * gracefully instead of hanging once the connection is no longer usable. */
+  onClose: (callback: () => void) => () => void;
   close: () => void;
 };
 
@@ -362,6 +366,7 @@ export const openDaemonStream = async (
   });
 
   const notificationListeners = new Set<(payload: unknown) => void>();
+  const closeListeners = new Set<() => void>();
   const pendingCalls = new Map<
     number,
     { resolve: (value: unknown) => void; reject: (error: unknown) => void; timeout: NodeJS.Timeout }
@@ -427,6 +432,10 @@ export const openDaemonStream = async (
     }
 
     pendingCalls.clear();
+
+    for (const listener of closeListeners) {
+      listener();
+    }
   });
 
   return {
@@ -453,6 +462,12 @@ export const openDaemonStream = async (
       notificationListeners.add(callback);
       return () => {
         notificationListeners.delete(callback);
+      };
+    },
+    onClose: (callback) => {
+      closeListeners.add(callback);
+      return () => {
+        closeListeners.delete(callback);
       };
     },
     close: () => {

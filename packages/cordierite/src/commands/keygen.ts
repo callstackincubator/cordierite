@@ -1,95 +1,27 @@
+/**
+ * `cordierite keygen` (ARCHITECTURE.md §10): fully non-interactive — v1's TTY-only prompt flow made
+ * it unusable in CI/agent contexts, and neither ARCHITECTURE.md nor the v2 command table describe
+ * any interactive mode, so it is not carried forward. Default output is `<state-dir>/key.pem`,
+ * the same path the daemon's TLS listener loads by default (ARCHITECTURE.md §3).
+ */
+
 import { generateKeyPairSync } from "node:crypto";
-import { dirname, resolve } from "node:path";
-import { rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 
 import type { CliResult, KeygenCommandData } from "../cli/result-types.js";
 
-import { internalError, usageError } from "../errors.js";
-import { createPromptSession, ensureInteractivePromptInput, type PromptIo } from "../prompts.js";
+import { getStateDirPaths } from "../daemon/state-dir.js";
+import { usageError } from "../errors.js";
 import { getSpkiPinFromPrivateKeyPem } from "../spki-pin.js";
 
-const DEFAULT_KEY_PATH = "./cordierite-key.pem";
+export type KeygenCommandOptions = {
+  out?: string;
+  force?: boolean;
+};
 
 export type KeygenCommandContext = {
-  prompt: PromptIo;
-};
-
-const emitPromptMessage = (output: NodeJS.WritableStream, message: string): void => {
-  output.write(`${message}\n`);
-};
-
-const resolveKeyOutputPath = async (
-  prompts: ReturnType<typeof createPromptSession>,
-  output: NodeJS.WritableStream,
-): Promise<string> => {
-  while (true) {
-    const answer = await prompts.question(`Destination path [${DEFAULT_KEY_PATH}]: `);
-    const normalizedAnswer = answer.trim();
-    const selectedPath = answer === "" ? DEFAULT_KEY_PATH : normalizedAnswer;
-
-    if (selectedPath.length === 0) {
-      emitPromptMessage(output, "Please enter a path.");
-      continue;
-    }
-
-    const absolutePath = resolve(selectedPath);
-    const parentDirectory = dirname(absolutePath);
-
-    try {
-      const directoryStats = await stat(parentDirectory);
-
-      if (!directoryStats.isDirectory()) {
-        emitPromptMessage(output, `Parent path is not a directory: ${parentDirectory}`);
-        continue;
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        emitPromptMessage(output, `Directory does not exist: ${parentDirectory}`);
-        continue;
-      }
-
-      throw internalError("Unable to validate the destination path for the Cordierite key.", {
-        cause: error,
-        path: absolutePath,
-      });
-    }
-
-    let existingPathStats: Awaited<ReturnType<typeof stat>>;
-
-    try {
-      existingPathStats = await stat(absolutePath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return absolutePath;
-      }
-
-      throw internalError("Unable to inspect the destination path for the Cordierite key.", {
-        cause: error,
-        path: absolutePath,
-      });
-    }
-
-    if (existingPathStats.isDirectory()) {
-      emitPromptMessage(output, `Destination path is a directory: ${absolutePath}`);
-      continue;
-    }
-
-    while (true) {
-      const overwrite = (await prompts.question(`File exists. Overwrite ${absolutePath}? [y/N]: `))
-        .trim()
-        .toLowerCase();
-
-      if (overwrite === "" || overwrite === "n" || overwrite === "no") {
-        throw usageError("Key generation cancelled because the destination file already exists.");
-      }
-
-      if (overwrite === "y" || overwrite === "yes") {
-        return absolutePath;
-      }
-
-      emitPromptMessage(output, "Please answer yes or no.");
-    }
-  }
+  stateDir: string;
 };
 
 const generatePrivateKeyPem = (): string => {
@@ -109,6 +41,8 @@ const generatePrivateKeyPem = (): string => {
 const writePrivateKeyAtomically = async (path: string, keyPem: string): Promise<void> => {
   const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
 
+  await mkdir(dirname(path), { recursive: true });
+
   try {
     await writeFile(temporaryPath, keyPem, {
       encoding: "utf8",
@@ -118,40 +52,44 @@ const writePrivateKeyAtomically = async (path: string, keyPem: string): Promise<
     await rename(temporaryPath, path);
   } catch (error) {
     await rm(temporaryPath, { force: true }).catch(() => {});
-
-    throw internalError("Failed to write the Cordierite private key.", {
-      cause: error,
-      path,
-    });
+    throw error;
   }
 };
 
 export const handleKeygenCommand = async (
-  _options: Record<string, never>,
+  options: KeygenCommandOptions,
   context: KeygenCommandContext,
 ): Promise<CliResult<KeygenCommandData>> => {
-  ensureInteractivePromptInput("keygen", context.prompt.input);
+  const outputPath = options.out ?? getStateDirPaths(context.stateDir).keyPath;
 
-  const prompts = createPromptSession(context.prompt);
+  if (!options.force) {
+    let exists = true;
 
-  try {
-    const outputPath = await resolveKeyOutputPath(prompts, context.prompt.output);
-    const keyPem = generatePrivateKeyPem();
-    const spkiPin = getSpkiPinFromPrivateKeyPem(keyPem);
+    try {
+      await stat(outputPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
 
-    await writePrivateKeyAtomically(outputPath, keyPem);
+      exists = false;
+    }
 
-    return {
-      ok: true,
-      data: {
-        key: {
-          path: outputPath,
-          spki_pin: spkiPin,
-          algorithm: "rsa-2048",
-        },
-      },
-    };
-  } finally {
-    prompts.close();
+    if (exists) {
+      throw usageError(`Refusing to overwrite an existing key at "${outputPath}" without --force.`);
+    }
   }
+
+  const keyPem = generatePrivateKeyPem();
+  const pin = getSpkiPinFromPrivateKeyPem(keyPem);
+
+  await writePrivateKeyAtomically(outputPath, keyPem);
+
+  return {
+    ok: true,
+    data: {
+      path: outputPath,
+      pin,
+    },
+  };
 };
