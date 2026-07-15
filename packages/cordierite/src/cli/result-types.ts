@@ -1,23 +1,30 @@
 /**
- * CLI command-result types.
- *
- * These lived in `@cordierite/shared`'s v1 `cli.ts` module. `@cordierite/shared` is now the v2
- * wire-protocol package only (task 02 of the v2 refactor; see `docs/ARCHITECTURE.md` §13) and no
- * longer exports CLI-output-specific shapes, so they live here instead, next to the renderer/CLI
- * code that is their only consumer. Task 06 (CLI v2) owns redesigning the CLI surface and its
- * command-result shapes; until then this preserves the current `keygen` command output unchanged.
+ * CLI command-result types (ARCHITECTURE.md §10). Task 06 (CLI v2) replaces the v1 shapes that
+ * used to live here (`host`/`connect`/`session` — all removed from the v2 command surface) with
+ * the thin-client shapes for the v2 command table.
  */
 
+import type { AgentEndpoint, EventNotification, SessionSummary, ToolDescriptor } from "@cordierite/shared";
+
+/**
+ * CLI-domain error classes, used only to pick a sysexits-style exit code (see `errors.ts`).
+ * `CliError.type` itself is *not* restricted to this union: RPC/app-originated failures preserve
+ * the daemon's wire `ErrorType` verbatim in `type` (ARCHITECTURE.md §5 — "never re-wrapped"), while
+ * CLI-originated failures (bad flags, JSON parse errors, ...) use one of these names directly.
+ */
 export type CliErrorType =
   | "usage_error"
   | "validation_error"
   | "connection_error"
   | "session_error"
   | "tool_error"
+  | "permission_error"
   | "internal_error";
 
 export type CliError = {
-  type: CliErrorType;
+  /** A `CliErrorType` for CLI-originated failures, or the verbatim daemon/app `ErrorType` for
+   * RPC-originated ones (e.g. `tool_execution_error`) — never re-wrapped under a generic type. */
+  type: string;
   message: string;
   details?: unknown;
 };
@@ -42,71 +49,34 @@ export type CliFailureResult = {
 
 export type CliResult<TData> = CliSuccessResult<TData> | CliFailureResult;
 
-export type ConnectCommandData = {
-  bootstrap: {
-    session_id: string;
-    endpoint: {
-      ip: string;
-      port: number;
-      url: string;
-    };
-    expires_at: number;
-    expires_at_iso: string;
-    can_claim: boolean;
-  };
-};
-
-export type SessionListItem = {
-  /** Opaque host session id (base64url alphabet; not the WSS port). */
-  session_id: string;
-  status: "pending" | "active" | "none";
-  control_port: number;
-  wss_port: number;
-  endpoint?: {
-    ip: string;
-    port: number;
-    url: string;
-  };
-  tool_count: number;
-};
-
-export type SessionCommandData = {
-  sessions: SessionListItem[];
-  /** Present when `cordierite session --session-id <id>` was used */
-  selected?: SessionListItem;
-};
-
-export type ToolsCommandData = {
-  tools: import("@cordierite/shared").ToolDescriptor[];
-  selected_tool?: import("@cordierite/shared").ToolDescriptor;
-};
-
-export type InvokeCommandData = {
-  invocation: {
-    tool: string;
-    result: unknown;
-  };
-};
-
-export type HostCommandData = {
-  host: {
-    deep_link: string;
-    ttl_seconds: number;
-    spki_pin: string;
-    /** Opaque session id (base64url-style); use with `--session-id`. */
-    session_id: string;
-    wss_port: number;
-    control_port: number;
-  };
-};
-
 export type KeygenCommandData = {
-  key: {
-    path: string;
-    spki_pin: string;
-    algorithm: "rsa-2048";
-  };
+  path: string;
+  pin: string;
 };
+
+export type LinkCommandData = {
+  sessionId: string;
+  deepLink: string;
+  endpoint: AgentEndpoint;
+  /** Unix seconds. */
+  expiresAt: number;
+};
+
+/** `cordierite ls`: `sessions.list` passthrough, verbatim (ARCHITECTURE.md §10: "--json passthrough"). */
+export type LsCommandData = SessionSummary[];
+
+/** `cordierite tools`: the full list, or a single descriptor when a tool name resolved to a detail lookup. */
+export type ToolsCommandData = ToolDescriptor[] | ToolDescriptor;
+
+/** `cordierite invoke`: the tool's raw result payload, printed as-is. */
+export type InvokeCommandData = unknown;
+
+export type RevokeCommandData = {
+  ok: true;
+};
+
+/** A single `cordierite events` line, in both human and NDJSON (`--json`) rendering. */
+export type EventsCommandLine = EventNotification;
 
 export type DaemonRunCommandData = {
   daemon: {

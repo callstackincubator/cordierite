@@ -1,177 +1,83 @@
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { PassThrough, Writable } from "node:stream";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 
 import { describe, expect, test } from "bun:test";
 
 import { handleKeygenCommand } from "../commands/keygen.js";
 
-const createPromptOutput = (sink: { text: string }): NodeJS.WritableStream => {
-  return new Writable({
-    write(chunk, _encoding, callback) {
-      sink.text += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-      callback();
-    },
-  });
-};
-
-const waitForText = async (sink: { text: string }, text: string): Promise<void> => {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (sink.text.includes(text)) {
-      return;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-
-  throw new Error(`Timed out waiting for prompt text: ${text}`);
-};
-
-const createInput = (
-  text: string,
-  isTTY: boolean,
-): NodeJS.ReadableStream & {
-  isTTY: boolean;
-} => {
-  const input = new PassThrough();
-  const chunks = text.match(/[^\n]*\n|[^\n]+$/gu) ?? [text];
-
-  queueMicrotask(() => {
-    for (const [index, chunk] of chunks.entries()) {
-      setTimeout(() => {
-        input.write(chunk);
-
-        if (index === chunks.length - 1) {
-          input.end();
-        }
-      }, index);
-    }
-
-    if (chunks.length === 0) {
-      input.end();
-    }
-  });
-
-  return Object.assign(input, {
-    isTTY,
-  });
-};
-
 describe("keygen command", () => {
-  test("writes a private key and returns its fingerprint", async () => {
+  test("writes a private key at --out and returns its path and fingerprint", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "cordierite-keygen-"));
     const keyPath = path.join(directory, "host-key.pem");
-    const output = { text: "" };
 
     try {
-      const result = await handleKeygenCommand(
-        {},
-        {
-          prompt: {
-            input: createInput(`${keyPath}\n`, true),
-            output: createPromptOutput(output),
-          },
-        },
-      );
+      const result = await handleKeygenCommand({ out: keyPath }, { stateDir: directory });
 
       expect(result).toMatchObject({
         ok: true,
         data: {
-          key: {
-            path: keyPath,
-            algorithm: "rsa-2048",
-          },
+          path: keyPath,
         },
       });
-      expect(result.ok && result.data.key.spki_pin).toMatch(/^sha256\//u);
+      expect(result.ok && result.data.pin).toMatch(/^sha256\//u);
       expect(await readFile(keyPath, "utf8")).toContain("BEGIN PRIVATE KEY");
-      expect(output.text).toContain("Destination path");
+      expect((await stat(keyPath)).mode & 0o777).toBe(0o600);
     } finally {
       await rm(directory, { force: true, recursive: true });
     }
   });
 
-  test("fails cleanly when stdin is not interactive", async () => {
-    await expect(
-      handleKeygenCommand(
-        {},
-        {
-          prompt: {
-            input: createInput("", false),
-            output: createPromptOutput({ text: "" }),
-          },
-        },
-      ),
-    ).rejects.toMatchObject({
-      type: "usage_error",
-      message: "The keygen command requires an interactive TTY on stdin.",
-    });
-  });
-
-  test("cancels when overwrite is declined", async () => {
+  test("defaults to <state-dir>/key.pem when --out is omitted", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "cordierite-keygen-"));
-    const keyPath = path.join(directory, "existing-key.pem");
-    const output = { text: "" };
 
     try {
-      await writeFile(keyPath, "already-here", "utf8");
-      const input = Object.assign(new PassThrough(), {
-        isTTY: true,
-      });
-      const pending = handleKeygenCommand(
-        {},
-        {
-          prompt: {
-            input,
-            output: createPromptOutput(output),
-          },
-        },
-      );
+      const result = await handleKeygenCommand({}, { stateDir: directory });
 
-      input.write(`${keyPath}\n`);
-      await waitForText(output, "Overwrite");
-      input.write("no\n");
-      input.end();
+      expect(result.ok && result.data.path).toBe(path.join(directory, "key.pem"));
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
+  });
 
-      await expect(
-        pending,
-      ).rejects.toMatchObject({
+  test("refuses to overwrite an existing key without --force", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "cordierite-keygen-"));
+    const keyPath = path.join(directory, "host-key.pem");
+
+    try {
+      await handleKeygenCommand({ out: keyPath }, { stateDir: directory });
+
+      await expect(handleKeygenCommand({ out: keyPath }, { stateDir: directory })).rejects.toMatchObject({
         type: "usage_error",
-        message: "Key generation cancelled because the destination file already exists.",
       });
     } finally {
       await rm(directory, { force: true, recursive: true });
     }
   });
 
-  test("re-prompts for blank and invalid paths", async () => {
+  test("overwrites an existing key with --force", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "cordierite-keygen-"));
-    const missingDirectory = path.join(directory, "missing");
-    const keyPath = path.join(directory, "final-key.pem");
-    const output = { text: "" };
+    const keyPath = path.join(directory, "host-key.pem");
 
     try {
-      const result = await handleKeygenCommand(
-        {},
-        {
-          prompt: {
-            input: createInput(`   \n${path.join(missingDirectory, "key.pem")}\n${keyPath}\n`, true),
-            output: createPromptOutput(output),
-          },
-        },
-      );
+      const first = await handleKeygenCommand({ out: keyPath }, { stateDir: directory });
+      const second = await handleKeygenCommand({ out: keyPath, force: true }, { stateDir: directory });
 
-      expect(result).toMatchObject({
-        ok: true,
-        data: {
-          key: {
-            path: keyPath,
-          },
-        },
-      });
-      expect(output.text).toContain("Please enter a path.");
-      expect(output.text).toContain(`Directory does not exist: ${missingDirectory}`);
+      expect(first.ok && second.ok && first.data.pin).not.toBe(second.ok && second.data.pin);
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
+  });
+
+  test("creates missing parent directories for --out", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "cordierite-keygen-"));
+    const keyPath = path.join(directory, "nested", "deeper", "host-key.pem");
+
+    try {
+      const result = await handleKeygenCommand({ out: keyPath }, { stateDir: directory });
+
+      expect(result.ok).toBe(true);
+      expect(await readFile(keyPath, "utf8")).toContain("BEGIN PRIVATE KEY");
     } finally {
       await rm(directory, { force: true, recursive: true });
     }

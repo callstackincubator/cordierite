@@ -24,6 +24,14 @@ export type CordieriteConfig = {
   policy: CordieritePolicyConfig;
   /** Operator override for advertised-address detection (daemon/address.ts); undefined = auto-detect. */
   advertisedIp?: string;
+  /**
+   * Deep-link URI scheme used to compose `cordierite link`'s output (ARCHITECTURE.md §10: "taken
+   * from the flag, else `config.json`, else the CLI errors with a clear message"). Not part of the
+   * `config.json` shape enumerated in ARCHITECTURE.md §3 (which only covers daemon-side settings),
+   * but `config.json` is explicitly "all fields optional" there and this is the natural home for a
+   * CLI-side setting an operator wants to set once rather than pass with every `link` invocation.
+   */
+  scheme?: string;
 };
 
 const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
@@ -34,6 +42,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
   "keepaliveIntervalSeconds",
   "policy",
   "advertisedIp",
+  "scheme",
 ]);
 
 const KNOWN_POLICY_KEYS = new Set<string>(["default", "destructive"]);
@@ -136,6 +145,10 @@ export const loadConfig = async (
 
   if (parsed.advertisedIp !== undefined) {
     config.advertisedIp = requireNonEmptyString(parsed.advertisedIp, "advertisedIp");
+  }
+
+  if (parsed.scheme !== undefined) {
+    config.scheme = requireNonEmptyString(parsed.scheme, "scheme");
   }
 
   if (parsed.graceSeconds !== undefined) {

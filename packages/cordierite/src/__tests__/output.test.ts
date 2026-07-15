@@ -1,22 +1,46 @@
 import { describe, expect, test } from "bun:test";
 
-import { renderResult } from "../output.js";
+import { renderEventLine, renderResult } from "../output.js";
 import { FIXED_NOW } from "./fixtures.js";
 
 describe("output rendering", () => {
-  test("human success output stays structured", () => {
+  test("tools list output stays structured", () => {
+    const rendered = renderResult(
+      {
+        ok: true,
+        data: [
+          {
+            name: "echo",
+            description: "Echo a payload on the connected device.",
+            input_schema: {},
+            output_schema: { echoed: "unknown" },
+          },
+        ],
+        meta: {
+          command: "tools",
+          timestamp: FIXED_NOW.toISOString(),
+          duration_ms: 4,
+        },
+      },
+      {
+        command: "tools",
+        json: false,
+        color: false,
+      },
+    );
+
+    expect(rendered.stdout).toMatchSnapshot();
+  });
+
+  test("tools detail output renders full schema/annotations", () => {
     const rendered = renderResult(
       {
         ok: true,
         data: {
-          tools: [
-            {
-              name: "app.echo",
-              description: "Echo a payload on the connected device.",
-              input_schema: {},
-              output_schema: { echoed: "unknown" },
-            },
-          ],
+          name: "echo",
+          description: "Echo a payload on the connected device.",
+          input_schema: { type: "object" },
+          annotations: { readOnlyHint: true },
         },
         meta: {
           command: "tools",
@@ -34,28 +58,116 @@ describe("output rendering", () => {
     expect(rendered.stdout).toMatchSnapshot();
   });
 
-  test("host success output includes session, ports, fingerprint, deep link, and ttl", () => {
+  test("link human output includes the deep link and expiry", () => {
     const rendered = renderResult(
       {
         ok: true,
         data: {
-          host: {
-            deep_link: "playground:///?cordierite=abc123",
-            ttl_seconds: 30,
-            spki_pin: "sha256/example",
-            session_id: "HostOutputTestSess1",
-            wss_port: 8443,
-            control_port: 41_000,
-          },
+          sessionId: "LinkOutputTestSess1",
+          deepLink: "playground:///?cordierite=abc123",
+          endpoint: { family: 4, address: "192.168.1.10", port: 8443 },
+          expiresAt: Math.floor(FIXED_NOW.getTime() / 1000) + 30,
         },
         meta: {
-          command: "host",
+          command: "link",
           timestamp: FIXED_NOW.toISOString(),
           duration_ms: 5,
         },
       },
       {
-        command: "host",
+        command: "link",
+        json: false,
+        color: false,
+      },
+    );
+
+    expect(rendered.stdout).toMatchSnapshot();
+  });
+
+  test("link json output only includes the trimmed link payload (no QR)", () => {
+    const rendered = renderResult(
+      {
+        ok: true,
+        data: {
+          sessionId: "LinkOutputTestSess1",
+          deepLink: "playground:///?cordierite=abc123",
+          endpoint: { family: 4, address: "192.168.1.10", port: 8443 },
+          expiresAt: Math.floor(FIXED_NOW.getTime() / 1000) + 30,
+        },
+        meta: {
+          command: "link",
+          timestamp: FIXED_NOW.toISOString(),
+          duration_ms: 5,
+        },
+      },
+      {
+        command: "link",
+        json: true,
+        color: false,
+        qr: true,
+      },
+    );
+
+    expect(JSON.parse(rendered.stdout ?? "")).toEqual({
+      ok: true,
+      data: {
+        sessionId: "LinkOutputTestSess1",
+        deepLink: "playground:///?cordierite=abc123",
+        endpoint: { family: 4, address: "192.168.1.10", port: 8443 },
+        expiresAt: Math.floor(FIXED_NOW.getTime() / 1000) + 30,
+      },
+      meta: {
+        command: "link",
+        timestamp: FIXED_NOW.toISOString(),
+        duration_ms: 5,
+      },
+    });
+  });
+
+  test("ls human output includes alias, state, device, tools, and age", () => {
+    const rendered = renderResult(
+      {
+        ok: true,
+        data: [
+          {
+            sessionId: "LsOutputTestSess001",
+            alias: "pixel-8",
+            state: "active",
+            device: { manufacturer: "Google", model: "Pixel 8", os: "Android 14" },
+            createdAt: new Date(FIXED_NOW.getTime() - 65_000).toISOString(),
+            claimedAt: new Date(FIXED_NOW.getTime() - 65_000).toISOString(),
+            toolCount: 3,
+          },
+        ],
+        meta: {
+          command: "ls",
+          timestamp: FIXED_NOW.toISOString(),
+          duration_ms: 2,
+        },
+      },
+      {
+        command: "ls",
+        json: false,
+        color: false,
+      },
+    );
+
+    expect(rendered.stdout).toMatchSnapshot();
+  });
+
+  test("ls human output handles an empty session list", () => {
+    const rendered = renderResult(
+      {
+        ok: true,
+        data: [],
+        meta: {
+          command: "ls",
+          timestamp: FIXED_NOW.toISOString(),
+          duration_ms: 1,
+        },
+      },
+      {
+        command: "ls",
         json: false,
         color: false,
       },
@@ -69,11 +181,8 @@ describe("output rendering", () => {
       {
         ok: true,
         data: {
-          key: {
-            path: "/tmp/cordierite-key.pem",
-            spki_pin: "sha256/example",
-            algorithm: "rsa-2048",
-          },
+          path: "/tmp/cordierite-key.pem",
+          pin: "sha256/example",
         },
         meta: {
           command: "keygen",
@@ -91,51 +200,25 @@ describe("output rendering", () => {
     expect(rendered.stdout).toMatchSnapshot();
   });
 
-  test("host json output only includes the trimmed host payload", () => {
+  test("invoke human output prints the raw tool result", () => {
     const rendered = renderResult(
       {
         ok: true,
-        data: {
-          host: {
-            deep_link: "playground:///?cordierite=abc123",
-            ttl_seconds: 30,
-            spki_pin: "sha256/example",
-            session_id: "HostOutputTestSess1",
-            wss_port: 8443,
-            control_port: 41_000,
-          },
-        },
+        data: { echoed: "hello" },
         meta: {
-          command: "host",
+          command: "invoke",
           timestamp: FIXED_NOW.toISOString(),
-          duration_ms: 5,
+          duration_ms: 6,
         },
       },
       {
-        command: "host",
-        json: true,
+        command: "invoke",
+        json: false,
         color: false,
       },
     );
 
-    expect(JSON.parse(rendered.stdout ?? "")).toEqual({
-      ok: true,
-      data: {
-        host: {
-          deep_link: "playground:///?cordierite=abc123",
-          ttl_seconds: 30,
-          spki_pin: "sha256/example",
-          session_id: "HostOutputTestSess1",
-          wss_port: 8443,
-          control_port: 41_000,
-        },
-      },
-      meta: {
-        command: "host",
-        timestamp: FIXED_NOW.toISOString(),
-        duration_ms: 5,
-      },
-    });
+    expect(rendered.stdout).toMatchSnapshot();
   });
 
   test("human errors render on stderr", () => {
@@ -143,25 +226,68 @@ describe("output rendering", () => {
       {
         ok: false,
         error: {
-          type: "validation_error",
-          message: "Bootstrap payload is invalid.",
+          type: "tool_execution_error",
+          message: "The tool handler threw.",
           details: {
-            require_private_ip: true,
+            hint: "test",
           },
         },
         meta: {
-          command: "connect",
+          command: "invoke",
           timestamp: FIXED_NOW.toISOString(),
           duration_ms: 2,
         },
       },
       {
-        command: "connect",
+        command: "invoke",
         json: false,
         color: false,
       },
     );
 
     expect(rendered.stderr).toMatchSnapshot();
+  });
+
+  test("json errors preserve the wire error type verbatim", () => {
+    const rendered = renderResult(
+      {
+        ok: false,
+        error: {
+          type: "tool_execution_error",
+          message: "The tool handler threw.",
+        },
+        meta: {
+          command: "invoke",
+          timestamp: FIXED_NOW.toISOString(),
+          duration_ms: 2,
+        },
+      },
+      {
+        command: "invoke",
+        json: true,
+        color: false,
+      },
+    );
+
+    expect(JSON.parse(rendered.stdout ?? "").error.type).toBe("tool_execution_error");
+  });
+});
+
+describe("renderEventLine", () => {
+  test("NDJSON mode emits parseable, verbatim JSON", () => {
+    const event = { kind: "session_claimed" as const, sessionId: "s1", alias: "pixel-8", ts: 1_700_000_000_000, data: {} };
+    const line = renderEventLine(event, { json: true, color: false });
+
+    expect(JSON.parse(line)).toEqual(event);
+  });
+
+  test("human mode includes the kind and alias", () => {
+    const line = renderEventLine(
+      { kind: "tools_changed", sessionId: "s1", alias: "pixel-8", ts: 1_700_000_000_000, data: { toolCount: 2 } },
+      { json: false, color: false },
+    );
+
+    expect(line).toContain("tools_changed");
+    expect(line).toContain("pixel-8");
   });
 });
