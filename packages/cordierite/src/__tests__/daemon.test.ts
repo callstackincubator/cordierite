@@ -87,6 +87,9 @@ describe("daemon lifecycle", () => {
     const paths = getStateDirPaths(stateDir);
     expect((await stat(paths.root)).mode & 0o777).toBe(0o700);
     expect((await stat(paths.socketPath)).mode & 0o777).toBe(0o600);
+    // `audit/` must be tightened explicitly: `mkdir` honors the process umask, which on a common
+    // 0o022 umask would otherwise leave it drwxr-xr-x (ARCHITECTURE.md §3: mode 0700).
+    expect((await stat(paths.auditDir)).mode & 0o777).toBe(0o700);
 
     const socket = await connectRaw(paths.socketPath);
     const reader = createLineReader(socket);

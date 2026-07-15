@@ -93,13 +93,25 @@ export const createPendingLinkRegistry = (options: PendingLinkRegistryOptions): 
       const expiresAt = new Date(createdAt.getTime() + ttlSeconds * 1000);
       const endpoint = options.getEndpoint();
 
-      // Deliberately does not delete the record: a claim attempt arriving just after the timer
-      // fires must still see the (now-expired) link and be told "expired" rather than "unknown" —
-      // the distinction the rejection matrix requires. `handleClaim`'s own `expiresAt` check
-      // discards the record (and reports `link_expired`) the next time anything touches it;
-      // `disposeAll` clears every outstanding record (and its timer) on daemon shutdown.
+      // Deliberately does not delete the record the instant the TTL fires: a claim attempt arriving
+      // just after must still see the (now-expired) link and be told "expired" rather than
+      // "unknown" — the distinction the rejection matrix requires. `handleClaim`'s own `expiresAt`
+      // check discards the record (and reports `link_expired`) the moment anything touches it.
+      // But the record must not live forever if nobody ever touches it again: a second timer frees
+      // it after an equal further grace window (late claims within that window still see
+      // `link_expired`; a long-lived daemon with many unclaimed links does not leak memory
+      // unboundedly). `disposeAll` clears whichever timer (TTL or free) is still outstanding on
+      // daemon shutdown.
       const timer = options.timers.setTimeout(() => {
-        options.eventBus.emit({ kind: "session_expired", sessionId, data: { reason: "link_ttl_expired" } });
+        // `link_expired` is its own event kind, distinct from `session_expired` (reserved for the
+        // SUSPENDED -> EXPIRED grace-window transition of a *claimed* session — ARCHITECTURE.md §6).
+        options.eventBus.emit({ kind: "link_expired", sessionId, data: { reason: "link_ttl_expired" } });
+
+        const record = records.get(sessionId);
+
+        if (record) {
+          record.timer = options.timers.setTimeout(() => discard(sessionId), ttlSeconds * 1000);
+        }
       }, ttlSeconds * 1000);
 
       const link: PendingLink = { sessionId, token, createdAt, expiresAt };

@@ -98,13 +98,21 @@ export type ToolsCallParams = SessionSelectorParams & {
   timeoutMs?: number;
 };
 
-export type ToolsCallResult = { result: unknown };
+export type ToolsCallResult = {
+  result: unknown;
+  /** The `tool_call`/`tool_call_progress`/`tool_call_finished` correlation id (ARCHITECTURE.md
+   * §7's `call_…` id), exposed so a caller with several in-flight `tools.call`s (e.g. the MCP
+   * server proxying concurrent `tools/call` requests) can match its own call to the progress events
+   * it sees on `events.subscribe` without guessing from data shape. */
+  callId: string;
+};
 
 // --- events.subscribe ---
 
 export type EventKind =
   | "daemon_started"
   | "link_created"
+  | "link_expired"
   | "session_claimed"
   | "session_suspended"
   | "session_resumed"
@@ -113,6 +121,7 @@ export type EventKind =
   | "tools_changed"
   | "app_event"
   | "tool_call_started"
+  | "tool_call_progress"
   | "tool_call_finished";
 
 export type EventsSubscribeParams = {

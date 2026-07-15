@@ -314,7 +314,7 @@ describe("tools.list / tools.call: round trip", () => {
       args: { text: "hello" },
     });
 
-    expect(result).toEqual({ result: { echoed: "hello" } });
+    expect(result).toEqual({ result: { echoed: "hello" }, callId: expect.any(String) });
 
     app.socket.close();
   });
@@ -456,9 +456,9 @@ describe("tools.call: concurrency", () => {
     app.socket.send(JSON.stringify({ type: "tool_result", session_id: app.sessionId, id: byName("b"), result: "b-result" }));
 
     const [resultA, resultB, resultC] = await Promise.all([callA, callB, callC]);
-    expect(resultA).toEqual({ result: "a-result" });
-    expect(resultB).toEqual({ result: "b-result" });
-    expect(resultC).toEqual({ result: "c-result" });
+    expect(resultA).toEqual({ result: "a-result", callId: expect.any(String) });
+    expect(resultB).toEqual({ result: "b-result", callId: expect.any(String) });
+    expect(resultC).toEqual({ result: "c-result", callId: expect.any(String) });
 
     app.socket.close();
   });
@@ -524,7 +524,7 @@ describe("tools.call: suspend mid-call", () => {
       name: "echo",
       args: {},
     });
-    expect(result).toEqual({ result: "ok-after-resume" });
+    expect(result).toEqual({ result: "ok-after-resume", callId: expect.any(String) });
 
     resumedSocket.close();
   }, 10_000);

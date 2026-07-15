@@ -294,13 +294,13 @@ describe("session engine: rejection matrix (daemon and other sessions survive ev
     expect((status as { pid: number }).pid).toBe(process.pid);
   });
 
-  test("6th failed claim attempt invalidates the link (already_claimed / claim_attempts_exceeded)", async () => {
+  test("5th failed claim attempt invalidates the link (already_claimed / claim_attempts_exceeded)", async () => {
     const { daemon, port } = await startTestDaemon();
     const link = await createLinkAndDecode(daemon, port);
 
     let lastClose: { code: number; reason: string } | undefined;
 
-    for (let attempt = 0; attempt < 6; attempt += 1) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       const socket = await connectClient(port);
       const closed = nextClose(socket);
       socket.send(
@@ -329,8 +329,10 @@ describe("session engine: rejection matrix (daemon and other sessions survive ev
     const { daemon, port } = await startTestDaemon();
     const link = await createLinkAndDecode(daemon, port, 1);
 
-    // Deterministically wait for the TTL's own expiry event rather than sleeping blind.
-    await waitForEvent(daemon, "session_expired");
+    // Deterministically wait for the TTL's own expiry event rather than sleeping blind. `link_expired`
+    // is its own EventKind, distinct from `session_expired` (reserved for a claimed session's
+    // SUSPENDED -> EXPIRED grace-window transition — ARCHITECTURE.md §5/§6).
+    await waitForEvent(daemon, "link_expired");
 
     const socket = await connectClient(port);
     const closed = nextClose(socket);
