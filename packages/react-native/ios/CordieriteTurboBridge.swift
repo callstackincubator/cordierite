@@ -1,8 +1,12 @@
 import Foundation
 
 /// Bridges Swift connection logic to Objective-C++ (`RCTNativeCordierite`).
+///
+/// `@unchecked Sendable`: the only stored state is `manager`, an actor reference (itself
+/// `Sendable`); this class has no other mutable state, so capturing `self` in the `Task {}`
+/// blocks below is sound.
 @objc(CordieriteTurboBridge)
-public final class CordieriteTurboBridge: NSObject {
+public final class CordieriteTurboBridge: NSObject, @unchecked Sendable {
   private let manager = CordieriteConnectionManager()
 
   @objc public override init() {
@@ -45,17 +49,27 @@ public final class CordieriteTurboBridge: NSObject {
 
   @objc public func connect(
     options: NSDictionary,
-    resolve: @escaping (Any?) -> Void,
-    reject: @escaping (String, String, Error?) -> Void
+    resolve: @escaping @Sendable (Any?) -> Void,
+    reject: @escaping @Sendable (String, String, Error?) -> Void
   ) {
+    // Parsed synchronously, before any actor hop: `CordieriteConnectOptions` is `Sendable`, so
+    // this is the only value that needs to cross into the connection manager's actor.
     guard let dict = options as? [String: Any] else {
       reject("E_CORDIERITE", "Invalid connect options.", nil)
       return
     }
 
+    let parsedOptions: CordieriteConnectOptions
+    do {
+      parsedOptions = try CordieriteConnectOptions(dict)
+    } catch {
+      reject("E_CORDIERITE", error.localizedDescription, error)
+      return
+    }
+
     Task {
       do {
-        try await self.manager.connect(options: dict)
+        try await self.manager.connect(options: parsedOptions)
         resolve(nil)
       } catch {
         reject("E_CORDIERITE", error.localizedDescription, error)
@@ -65,12 +79,13 @@ public final class CordieriteTurboBridge: NSObject {
 
   @objc public func send(
     message: NSString,
-    resolve: @escaping (Any?) -> Void,
-    reject: @escaping (String, String, Error?) -> Void
+    resolve: @escaping @Sendable (Any?) -> Void,
+    reject: @escaping @Sendable (String, String, Error?) -> Void
   ) {
+    let message = message as String
     Task {
       do {
-        try await self.manager.send(message: message as String)
+        try await self.manager.send(message: message)
         resolve(nil)
       } catch {
         reject("E_CORDIERITE", error.localizedDescription, error)
@@ -79,14 +94,25 @@ public final class CordieriteTurboBridge: NSObject {
   }
 
   @objc public func close(
-    resolve: @escaping (Any?) -> Void,
-    reject: @escaping (String, String, Error?) -> Void
+    resolve: @escaping @Sendable (Any?) -> Void,
+    reject: @escaping @Sendable (String, String, Error?) -> Void
   ) {
-    manager.close()
-    resolve(nil)
+    Task {
+      await self.manager.close()
+      resolve(nil)
+    }
   }
 
   @objc public func getState() -> NSString {
-    (manager.state.rawValue as NSString)
+    (manager.currentStateSnapshot() as NSString)
+  }
+
+  /// TurboModule invalidation entry point (see `RCTNativeCordierite.invalidate`). Cancels the
+  /// socket, invalidates the URLSession, and drops event callbacks so a Metro reload fully
+  /// releases the transport instead of leaving a wedged "connecting or active" state.
+  @objc public func invalidate() {
+    Task {
+      await self.manager.invalidate()
+    }
   }
 }

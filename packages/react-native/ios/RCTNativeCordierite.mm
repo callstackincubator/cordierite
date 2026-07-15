@@ -1,5 +1,6 @@
 #import <CordieriteSpec/CordieriteSpec.h>
 #import <React/RCTBridgeModule.h>
+#import <React/RCTInvalidating.h>
 
 #if __has_include("Cordierite-Swift.h")
 #import "Cordierite-Swift.h"
@@ -11,7 +12,7 @@
 
 using namespace facebook::react;
 
-@interface RCTNativeCordierite : NativeCordieriteSpecBase <NativeCordieriteSpec> {
+@interface RCTNativeCordierite : NativeCordieriteSpecBase <NativeCordieriteSpec, RCTInvalidating> {
   CordieriteTurboBridge *_swift;
 }
 @end
@@ -85,6 +86,10 @@ RCT_EXPORT_MODULE(Cordierite)
   if (deviceOs != nil) {
     opts[@"deviceOs"] = deviceOs;
   }
+  NSString *resumeToken = options.resumeToken();
+  if (resumeToken != nil) {
+    opts[@"resumeToken"] = resumeToken;
+  }
 
   [_swift connectWithOptions:opts resolve:resolve reject:reject];
 }
@@ -102,6 +107,13 @@ RCT_EXPORT_MODULE(Cordierite)
 - (NSString *)getState
 {
   return (NSString *)[_swift getState];
+}
+
+#pragma mark - RCTInvalidating
+
+- (void)invalidate
+{
+  [_swift invalidate];
 }
 
 @end

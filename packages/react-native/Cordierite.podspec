@@ -19,14 +19,25 @@ Pod::Spec.new do |s|
   s.static_framework = true
 
   s.source_files = 'ios/**/*.{m,mm,swift}'
+  s.exclude_files = 'ios/CordieriteTests/**/*'
 
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
+    # All connection state lives behind a single actor (see CordieriteConnectionManager); keep
+    # it that way by failing the build on any new concurrency violation.
+    'OTHER_SWIFT_FLAGS' => '-strict-concurrency=complete',
   }
 
   if defined?(install_modules_dependencies)
     install_modules_dependencies(s)
   else
     s.dependency 'React-Core'
+  end
+
+  s.test_spec 'Tests' do |test_spec|
+    # Pure-logic tests (actor state transitions, SPKI pin parity with
+    # packages/cordierite/src/spki-pin.ts) that need only Foundation/Security, not React Native.
+    test_spec.source_files = 'ios/CordieriteTests/**/*.swift'
+    test_spec.requires_app_host = true
   end
 end

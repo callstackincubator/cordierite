@@ -7,6 +7,7 @@ import Security
 
 private let cliPinsPlistKey = "CordieriteCliPins"
 private let allowPrivateLanOnlyPlistKey = "CordieriteAllowPrivateLanOnly"
+private let protocolVersion = 2
 
 enum CordieriteConnectionState: String {
   case idle
@@ -20,7 +21,7 @@ private struct CordieriteModuleError: Error {
   let message: String
 }
 
-struct CordieriteErrorDetails {
+struct CordieriteErrorDetails: Sendable {
   let code: String
   let message: String
   let phase: String
@@ -42,22 +43,30 @@ private func cordieriteIntFromBridge(_ value: Any?) -> Int? {
   }
 }
 
-private struct CordieriteConnectOptions {
+/// Sendable by construction (every field is a value type): parsed synchronously in
+/// `CordieriteTurboBridge` from the loosely-typed JS options bag before it ever crosses onto the
+/// actor, so `connect(options:)` never has to send a non-`Sendable` `[String: Any]`/`NSDictionary`
+/// across an isolation boundary.
+struct CordieriteConnectOptions: Sendable {
   let ip: String
   let port: Int
   let sessionId: String
-  let token: String
+  /// Claim token. Required unless `resumeToken` is present (protocol v2 `session_resume`).
+  let token: String?
+  /// When present, `connect` sends `session_resume` as the first frame instead of `session_claim`.
+  let resumeToken: String?
   let expiresAt: Int
   let deviceManufacturer: String?
   let deviceModel: String?
   let deviceOs: String?
 
   init(_ value: [String: Any]) throws {
+    // NOTE: intentionally not actor-isolated — called synchronously from the TurboModule bridge
+    // before any actor hop, so parsing failures reject the JS promise immediately.
     guard
       let ip = value["ip"] as? String,
       let port = cordieriteIntFromBridge(value["port"]),
       let sessionId = value["sessionId"] as? String,
-      let token = value["token"] as? String,
       let expiresAt = cordieriteIntFromBridge(value["expiresAt"])
     else {
       throw CordieriteModuleError(message: "Invalid Cordierite connect options.")
@@ -66,7 +75,6 @@ private struct CordieriteConnectOptions {
     self.ip = ip
     self.port = port
     self.sessionId = sessionId
-    self.token = token
     self.expiresAt = expiresAt
 
     func optionalString(_ key: String) -> String? {
@@ -75,6 +83,13 @@ private struct CordieriteConnectOptions {
       }
       let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
       return trimmed.isEmpty ? nil : trimmed
+    }
+
+    self.token = optionalString("token")
+    self.resumeToken = optionalString("resumeToken")
+
+    guard self.token != nil || self.resumeToken != nil else {
+      throw CordieriteModuleError(message: "Cordierite connect requires either token or resumeToken.")
     }
 
     self.deviceManufacturer = optionalString("deviceManufacturer")
@@ -89,6 +104,9 @@ private struct DefaultSessionClaimDeviceFields {
   let os: String
 }
 
+/// `UIDevice` properties are `@MainActor`-isolated; this is only ever called from `connect()`,
+/// which can freely `await` onto the main actor for this one-shot, non-blocking read.
+@MainActor
 private func defaultAppleSessionClaimDeviceFields() -> DefaultSessionClaimDeviceFields {
   #if canImport(UIKit)
   let device = UIDevice.current
@@ -108,6 +126,7 @@ private func defaultAppleSessionClaimDeviceFields() -> DefaultSessionClaimDevice
 }
 
 #if canImport(UIKit)
+@MainActor
 private func defaultAppleDeviceModelLabel(device: UIDevice) -> String {
   #if os(visionOS)
     return "Apple Vision"
@@ -121,7 +140,7 @@ private func defaultAppleDeviceModelLabel(device: UIDevice) -> String {
       return "Apple TV"
     case .mac:
       return "Mac"
-    case .unspecified:
+    case .carPlay, .vision, .unspecified:
       return device.model
     @unknown default:
       return device.model
@@ -141,27 +160,52 @@ private func mergeSessionClaimDeviceFields(
   )
 }
 
-final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSocketDelegate {
-  var emitStateChange: ((String) -> Void)?
+/// All connection state is actor-isolated: every mutation and read goes through this actor's
+/// serial executor, so two rapid `connect()` calls, delegate callbacks arriving on URLSession's
+/// delegate queue, and JS-thread calls can never race. Actors may inherit from `NSObject`
+/// (and only from `NSObject`) specifically so they can satisfy `@objc` delegate protocols like
+/// `URLSessionWebSocketDelegate`; the delegate methods below are `nonisolated` (URLSession calls
+/// them synchronously from its own queue) and hop back onto the actor via `Task` before touching
+/// any state.
+actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSocketDelegate {
+  /// Event callbacks are wired once, synchronously, immediately after construction (see
+  /// `CordieriteTurboBridge.wireEventHandlers`) and before any JS call can reach `connect`.
+  /// `nonisolated(unsafe)` lets the bridge assign them from outside the actor without an `await`,
+  /// matching the existing synchronous wiring contract; `invalidate()` clears them so a
+  /// straggling delegate callback can never call back into a torn-down bridge.
+  nonisolated(unsafe) var emitStateChange: ((String) -> Void)?
   /// Turbo path: only the raw JSON string; JS parses `message`.
-  var emitMessageRaw: ((String) -> Void)?
-  var emitError: ((CordieriteErrorDetails) -> Void)?
-  var emitClose: ((NSDictionary) -> Void)?
+  nonisolated(unsafe) var emitMessageRaw: ((String) -> Void)?
+  nonisolated(unsafe) var emitError: ((CordieriteErrorDetails) -> Void)?
+  nonisolated(unsafe) var emitClose: ((NSDictionary) -> Void)?
 
   private(set) var state: CordieriteConnectionState = .idle {
     didSet {
+      stateSnapshot = state.rawValue
       emitStateChange?(state.rawValue)
     }
   }
+
+  /// Mirrors `state.rawValue` so `getState()` (a synchronous TurboModule method) can be answered
+  /// without hopping onto the actor. Written only from within actor-isolated code, immediately
+  /// after `state` changes, so it is never stale by more than the time it takes to observe it —
+  /// in particular it is never `"active"` once a teardown path has run.
+  nonisolated(unsafe) private(set) var stateSnapshot = CordieriteConnectionState.idle.rawValue
 
   private var session: URLSession?
   private var socketTask: URLSessionWebSocketTask?
   private var activeSessionId: String?
   private var pendingSessionId: String?
-  private var configuredPins: Set<String> = []
-  private var allowPrivateLanOnly = false
+  /// Written once per `connect()` (inside `configureFromBundle`, before the socket exists) and
+  /// read from the `nonisolated` TLS challenge delegate callback, which must respond
+  /// synchronously and therefore cannot hop onto the actor. Never mutated concurrently with a
+  /// read: no challenge can arrive before `configureFromBundle` has run.
+  nonisolated(unsafe) private var configuredPins: Set<String> = []
+  private var allowPrivateLanOnly = true
   private var closeEventPending = false
   private var lastErrorDetails: CordieriteErrorDetails?
+  private var keepaliveTask: Task<Void, Never>?
+  private var pingFailureCount = 0
 
   func configureFromBundle() throws {
     let info = Bundle.main.infoDictionary ?? [:]
@@ -172,12 +216,11 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
     }
 
     configuredPins = Set(pins)
-    allowPrivateLanOnly = info[allowPrivateLanOnlyPlistKey] as? Bool ?? false
+    // Fail closed: absent the plist key, only local/LAN addresses are allowed.
+    allowPrivateLanOnly = info[allowPrivateLanOnlyPlistKey] as? Bool ?? true
   }
 
-  func connect(options rawOptions: [String: Any]) async throws {
-    let options = try CordieriteConnectOptions(rawOptions)
-
+  func connect(options: CordieriteConnectOptions) async throws {
     if state == .connecting || state == .active {
       throw CordieriteModuleError(message: "A Cordierite session is already connecting or active.")
     }
@@ -198,6 +241,17 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
       throw CordieriteModuleError(message: "Failed to create a Cordierite WebSocket URL.")
     }
 
+    // Resume needs no claim token, so validate up front (still before any `await`) rather than
+    // discovering a missing token only after the socket already exists.
+    if options.resumeToken == nil && options.token == nil {
+      throw CordieriteModuleError(message: "Cordierite connect requires a claim token.")
+    }
+
+    // Everything above this point, and everything through `state = .connecting` below, is
+    // synchronous: two rapid `connect()` calls can only interleave at an `await`, and the first
+    // `await` is `sendRawObject` at the very end — by which point `state` is already
+    // `.connecting`, so a second call's guard at the top of this function deterministically
+    // throws `already_connecting` instead of racing to create a second socket.
     cleanup()
 
     pendingSessionId = options.sessionId
@@ -213,17 +267,34 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
     task.resume()
     receiveNextMessage()
 
-    let device = mergeSessionClaimDeviceFields(options: options, defaults: defaultAppleSessionClaimDeviceFields())
-    let claim: [String: Any] = [
-      "type": "session_claim",
-      "session_id": options.sessionId,
-      "token": options.token,
-      "device_manufacturer": device.manufacturer,
-      "device_model": device.model,
-      "device_os": device.os,
-    ]
+    let firstFrame: [String: Any]
 
-    try await sendRawObject(claim, requireActiveSession: false)
+    if let resumeToken = options.resumeToken {
+      firstFrame = [
+        "type": "session_resume",
+        "protocol_version": protocolVersion,
+        "session_id": options.sessionId,
+        "resume_token": resumeToken,
+      ]
+    } else {
+      guard let token = options.token else {
+        // Unreachable: validated above, before any `await`.
+        throw CordieriteModuleError(message: "Cordierite connect requires a claim token.")
+      }
+
+      let device = mergeSessionClaimDeviceFields(options: options, defaults: await defaultAppleSessionClaimDeviceFields())
+      firstFrame = [
+        "type": "session_claim",
+        "protocol_version": protocolVersion,
+        "session_id": options.sessionId,
+        "token": token,
+        "device_manufacturer": device.manufacturer,
+        "device_model": device.model,
+        "device_os": device.os,
+      ]
+    }
+
+    try await sendRawObject(firstFrame, requireActiveSession: false)
   }
 
   func send(message: String) async throws {
@@ -245,7 +316,7 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
     try await sendText(message)
   }
 
-  func close() {
+  func close() async {
     guard let socketTask else {
       cleanup()
       state = .closed
@@ -257,7 +328,33 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
     socketTask.cancel(with: .normalClosure, reason: nil)
   }
 
+  /// TurboModule invalidation: called by React Native when the bridge is torn down (e.g. a Metro
+  /// reload). Cancels the socket with close code 1001, invalidates the URLSession, clears all
+  /// state, and drops the event callbacks so no straggling delegate callback can reach into a
+  /// dead bridge. Deliberately synchronous within the actor turn (no awaited network round trip)
+  /// so the socket is released promptly and the daemon observes the disconnect and suspends the
+  /// session.
+  func invalidate() {
+    closeEventPending = false
+    socketTask?.cancel(with: .goingAway, reason: nil)
+    cleanup()
+    state = .closed
+    emitStateChange = nil
+    emitMessageRaw = nil
+    emitError = nil
+    emitClose = nil
+  }
+
+  /// Synchronous, non-isolated read of the current state for the TurboModule's `getState()`,
+  /// which is a synchronous ObjC method and cannot `await` onto the actor.
+  nonisolated func currentStateSnapshot() -> String {
+    stateSnapshot
+  }
+
   private func cleanup() {
+    keepaliveTask?.cancel()
+    keepaliveTask = nil
+    pingFailureCount = 0
     socketTask = nil
     session?.invalidateAndCancel()
     session = nil
@@ -308,63 +405,82 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
       return
     }
 
-    socketTask.receive { [weak self] result in
+    let expectedTask = socketTask
+
+    Task { [weak self] in
       guard let self else {
         return
       }
 
-      switch result {
-      case .failure(let error):
-        self.state = .error
-        if self.lastErrorDetails == nil {
-          self.publishError(
-            self.classifyTransportFailure(
-              code: "receive_failed",
-              message: error.localizedDescription,
-              closeReason: nil
-            )
-          )
-        }
-        self.close()
-      case .success(let message):
-        switch message {
-        case .string(let text):
-          self.handleIncomingText(text)
-          self.receiveNextMessage()
-        case .data:
-          self.state = .error
-          self.publishError(
-            CordieriteErrorDetails(
-              code: "invalid_message",
-              message: "Binary Cordierite messages are not supported.",
-              phase: "transport",
-              nativeCode: "binary_not_supported",
-              closeReason: nil,
-              isRetryable: false,
-              hint: nil
-            )
-          )
-          self.close()
-        @unknown default:
-          self.state = .error
-          self.publishError(
-            CordieriteErrorDetails(
-              code: "invalid_message",
-              message: "Unsupported Cordierite WebSocket message received.",
-              phase: "transport",
-              nativeCode: "invalid_message",
-              closeReason: nil,
-              isRetryable: false,
-              hint: nil
-            )
-          )
-          self.close()
-        }
+      do {
+        let message = try await expectedTask.receive()
+        await self.handleReceivedMessage(message, from: expectedTask)
+      } catch {
+        await self.handleReceiveFailure(error, from: expectedTask)
       }
     }
   }
 
-  private func handleIncomingText(_ text: String) {
+  private func handleReceivedMessage(_ message: URLSessionWebSocketTask.Message, from task: URLSessionWebSocketTask) async {
+    guard task === socketTask else {
+      // Stale read loop from a socket that has since been replaced or torn down.
+      return
+    }
+
+    switch message {
+    case .string(let text):
+      await handleIncomingText(text)
+      receiveNextMessage()
+    case .data:
+      state = .error
+      publishError(
+        CordieriteErrorDetails(
+          code: "invalid_message",
+          message: "Binary Cordierite messages are not supported.",
+          phase: "transport",
+          nativeCode: "binary_not_supported",
+          closeReason: nil,
+          isRetryable: false,
+          hint: nil
+        )
+      )
+      await close()
+    @unknown default:
+      state = .error
+      publishError(
+        CordieriteErrorDetails(
+          code: "invalid_message",
+          message: "Unsupported Cordierite WebSocket message received.",
+          phase: "transport",
+          nativeCode: "invalid_message",
+          closeReason: nil,
+          isRetryable: false,
+          hint: nil
+        )
+      )
+      await close()
+    }
+  }
+
+  private func handleReceiveFailure(_ error: Error, from task: URLSessionWebSocketTask) async {
+    guard task === socketTask else {
+      return
+    }
+
+    state = .error
+    if lastErrorDetails == nil {
+      publishError(
+        classifyTransportFailure(
+          code: "receive_failed",
+          message: error.localizedDescription,
+          closeReason: nil
+        )
+      )
+    }
+    await close()
+  }
+
+  private func handleIncomingText(_ text: String) async {
     guard
       let data = text.data(using: .utf8),
       let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -381,12 +497,12 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
           hint: nil
         )
       )
-      close()
+      await close()
       return
     }
 
     if state == .connecting {
-      handleSessionAck(parsed)
+      await handleSessionAck(parsed)
       return
     }
 
@@ -407,14 +523,14 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
           hint: nil
         )
       )
-      close()
+      await close()
       return
     }
 
     emitMessageRaw?(text)
   }
 
-  private func handleSessionAck(_ message: [String: Any]) {
+  private func handleSessionAck(_ message: [String: Any]) async {
     guard
       let pendingSessionId,
       let type = message["type"] as? String,
@@ -427,13 +543,68 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
       state = .error
       let closeReason = (message["reason"] as? String)?.isEmpty == false ? message["reason"] as? String : nil
       publishError(classifyHandshakeCloseReason(closeReason))
-      close()
+      await close()
       return
     }
 
     activeSessionId = pendingSessionId
     self.pendingSessionId = nil
     state = .active
+
+    if let intervalSeconds = cordieriteIntFromBridge(message["keepalive_interval_s"]), intervalSeconds > 0 {
+      scheduleKeepalive(intervalSeconds: intervalSeconds)
+    }
+  }
+
+  private func scheduleKeepalive(intervalSeconds: Int) {
+    keepaliveTask?.cancel()
+    pingFailureCount = 0
+
+    keepaliveTask = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: UInt64(intervalSeconds) * 1_000_000_000)
+        if Task.isCancelled {
+          return
+        }
+        await self?.sendPing()
+      }
+    }
+  }
+
+  /// Sends a protocol-level WebSocket ping. Two consecutive failures are treated as transport
+  /// death: the socket is cancelled, which drives the same `didCompleteWithError`/`didCloseWith`
+  /// teardown path (and its single-close-event dedupe) as any other abrupt disconnect.
+  private func sendPing() async {
+    guard let socketTask, state == .active else {
+      return
+    }
+
+    do {
+      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        socketTask.sendPing { error in
+          if let error {
+            continuation.resume(throwing: error)
+            return
+          }
+
+          continuation.resume()
+        }
+      }
+      pingFailureCount = 0
+    } catch {
+      pingFailureCount += 1
+
+      if pingFailureCount >= 2 {
+        publishError(
+          classifyTransportFailure(
+            code: "keepalive_ping_failed",
+            message: error.localizedDescription,
+            closeReason: nil
+          )
+        )
+        socketTask.cancel(with: .abnormalClosure, reason: nil)
+      }
+    }
   }
 
   private func isLocalIpv4Address(_ value: String) -> Bool {
@@ -462,17 +633,31 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
       (first == 192 && second == 168)
   }
 
-  func urlSession(
+  /// Deliberately `nonisolated` and fully synchronous (no `Task`/actor hop): `completionHandler`
+  /// is not `@Sendable`-typed by the SDK, so it cannot cross into the actor, and the TLS
+  /// handshake should not wait on an extra hop anyway. All the state this needs
+  /// (`configuredPins`) is a `nonisolated(unsafe)` snapshot written before any socket exists;
+  /// error reporting is dispatched separately via a fire-and-forget `Task` that only carries the
+  /// `Sendable` `CordieriteErrorDetails`.
+  nonisolated func urlSession(
     _ session: URLSession,
     didReceive challenge: URLAuthenticationChallenge,
     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
   ) {
-    guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-          let trust = challenge.protectionSpace.serverTrust,
-          let certificate = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
-          let leaf = certificate.first
+    guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust else {
+      // Non-TLS-server-trust challenges (e.g. client certificate, HTTP auth) are not something
+      // Cordierite pins against; defer to the platform's normal handling instead of failing the
+      // connection with a bogus TLS error.
+      completionHandler(.performDefaultHandling, nil)
+      return
+    }
+
+    guard
+      let trust = challenge.protectionSpace.serverTrust,
+      let certificate = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+      let leaf = certificate.first
     else {
-      publishError(
+      reportError(
         CordieriteErrorDetails(
           code: "tls_handshake_failed",
           message: "Cordierite could not evaluate the host TLS certificate.",
@@ -491,7 +676,7 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
       let pin = try spkiPin(for: leaf)
 
       guard configuredPins.contains(pin) else {
-        publishError(
+        reportError(
           CordieriteErrorDetails(
             code: "pin_mismatch",
             message: "Cordierite host certificate pin mismatch.",
@@ -508,7 +693,7 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
 
       completionHandler(.useCredential, URLCredential(trust: trust))
     } catch {
-      publishError(
+      reportError(
         CordieriteErrorDetails(
           code: "tls_handshake_failed",
           message: error.localizedDescription,
@@ -523,17 +708,81 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
     }
   }
 
-  func urlSession(
+  /// Fire-and-forget error report from a `nonisolated` context: hops onto the actor to update
+  /// `lastErrorDetails` and invoke `emitError`, without making the (synchronous) caller wait.
+  nonisolated private func reportError(_ details: CordieriteErrorDetails) {
+    Task {
+      await self.publishError(details)
+    }
+  }
+
+  nonisolated func urlSession(
     _ session: URLSession,
     webSocketTask: URLSessionWebSocketTask,
     didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
     reason: Data?
   ) {
+    Task {
+      await self.handleSocketClosed(task: webSocketTask, closeCode: closeCode, reason: reason)
+    }
+  }
+
+  /// `didCompleteWithError` fires for every task completion, including a normal close (with
+  /// `error == nil`, shortly after `didCloseWith`) and abrupt transport death (network drop,
+  /// process kill on the other end) where `didCloseWith` never fires at all. Both paths funnel
+  /// into `finishTransportTeardown`, which is guarded by `closeEventPending` so exactly one
+  /// `close` event is ever emitted no matter which delegate callback (or both) fire.
+  nonisolated func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    didCompleteWithError error: Error?
+  ) {
+    Task {
+      await self.handleTaskCompleted(task: task, error: error)
+    }
+  }
+
+  private func handleSocketClosed(
+    task: URLSessionWebSocketTask,
+    closeCode: URLSessionWebSocketTask.CloseCode,
+    reason: Data?
+  ) async {
+    guard task === socketTask else {
+      return
+    }
+
     let decodedReason = reason.flatMap { String(data: $0, encoding: .utf8) }
 
     if state == .connecting, let decodedReason {
       state = .error
       publishError(classifyHandshakeCloseReason(decodedReason))
+    }
+
+    finishTransportTeardown(emitCode: Int(closeCode.rawValue), emitReason: decodedReason)
+  }
+
+  private func handleTaskCompleted(task: URLSessionTask, error: Error?) async {
+    guard task === socketTask else {
+      return
+    }
+
+    if let error, lastErrorDetails == nil, state != .error {
+      publishError(
+        classifyTransportFailure(
+          code: "transport_task_completed",
+          message: error.localizedDescription,
+          closeReason: nil
+        )
+      )
+    }
+
+    finishTransportTeardown(emitCode: nil, emitReason: nil)
+  }
+
+  private func finishTransportTeardown(emitCode: Int?, emitReason: String?) {
+    guard closeEventPending else {
+      // Already handled by the other delegate path (or by an explicit close()/invalidate()).
+      return
     }
 
     cleanup()
@@ -542,19 +791,19 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
       state = .closed
     }
 
-    if closeEventPending {
-      let payload = NSMutableDictionary()
-      payload["code"] = Int(closeCode.rawValue)
-      if let decodedReason {
-        payload["reason"] = decodedReason
-      }
-      emitClose?(payload)
-      closeEventPending = false
+    let payload = NSMutableDictionary()
+    if let emitCode {
+      payload["code"] = emitCode
     }
+    if let emitReason {
+      payload["reason"] = emitReason
+    }
+    emitClose?(payload)
+    closeEventPending = false
   }
 
   /// SPKI DER hash; pin strings must match Android `PinningTrustManager` for the same leaf certificate.
-  private func spkiPin(for certificate: SecCertificate) throws -> String {
+  nonisolated func spkiPin(for certificate: SecCertificate) throws -> String {
     guard let publicKey = SecCertificateCopyKey(certificate),
           let rawPublicKey = SecKeyCopyExternalRepresentation(publicKey, nil) as Data?
     else {
@@ -595,11 +844,11 @@ final class CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessio
     return "sha256/\(Data(digest).base64EncodedString())"
   }
 
-  private func asn1(tag: UInt8, value: Data) -> Data {
+  nonisolated private func asn1(tag: UInt8, value: Data) -> Data {
     Data([tag]) + derLength(value.count) + value
   }
 
-  private func derLength(_ length: Int) -> Data {
+  nonisolated private func derLength(_ length: Int) -> Data {
     if length < 128 {
       return Data([UInt8(length)])
     }
