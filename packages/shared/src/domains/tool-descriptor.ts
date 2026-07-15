@@ -1,0 +1,87 @@
+/** Draft 2020-12 JSON Schema object; internals are never validated, only that it is a JSON object. */
+export type ToolSchemaDescriptor = Record<string, unknown>;
+
+/** `[a-zA-Z0-9_-]{1,64}` (ARCHITECTURE.md §7). */
+export const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
+export const MAX_TOOL_DESCRIPTION_LENGTH = 4096;
+
+export type ToolAnnotations = {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+};
+
+const TOOL_ANNOTATION_KEYS = ["readOnlyHint", "destructiveHint", "idempotentHint"] as const;
+
+export type ToolDescriptor = {
+  /** Required, unique per session, `[a-zA-Z0-9_-]{1,64}`. */
+  name: string;
+  description: string;
+  input_schema?: ToolSchemaDescriptor;
+  output_schema?: ToolSchemaDescriptor;
+  annotations?: ToolAnnotations;
+};
+
+const isJsonObject = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+};
+
+const isValidOptionalSchema = (value: unknown): boolean => {
+  return value === undefined || isJsonObject(value);
+};
+
+const isValidAnnotations = (value: unknown): value is ToolAnnotations | undefined => {
+  if (value === undefined) {
+    return true;
+  }
+
+  if (!isJsonObject(value)) {
+    return false;
+  }
+
+  for (const key of Object.keys(value)) {
+    if (!(TOOL_ANNOTATION_KEYS as readonly string[]).includes(key)) {
+      return false;
+    }
+  }
+
+  return TOOL_ANNOTATION_KEYS.every((key) => value[key] === undefined || typeof value[key] === "boolean");
+};
+
+/**
+ * Strict `ToolDescriptor` guard. Every element of a `tool_registry_snapshot`/`tool_registry_delta`
+ * must pass this before any field access — an invalid element (including `null`) must never be
+ * indexed into.
+ */
+export const isToolDescriptor = (value: unknown): value is ToolDescriptor => {
+  if (!isJsonObject(value)) {
+    return false;
+  }
+
+  if (typeof value.name !== "string" || !TOOL_NAME_PATTERN.test(value.name)) {
+    return false;
+  }
+
+  if (typeof value.description !== "string" || value.description.length === 0) {
+    return false;
+  }
+
+  if (value.description.length > MAX_TOOL_DESCRIPTION_LENGTH) {
+    return false;
+  }
+
+  if (!isValidOptionalSchema(value.input_schema)) {
+    return false;
+  }
+
+  if (!isValidOptionalSchema(value.output_schema)) {
+    return false;
+  }
+
+  if (!isValidAnnotations(value.annotations)) {
+    return false;
+  }
+
+  return true;
+};

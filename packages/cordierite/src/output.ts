@@ -1,4 +1,6 @@
 import pc from "picocolors";
+import type { ToolDescriptor } from "@cordierite/shared";
+
 import type {
   CliError,
   CliResult,
@@ -8,9 +10,8 @@ import type {
   InvokeCommandData,
   KeygenCommandData,
   SessionCommandData,
-  ToolDescriptor,
   ToolsCommandData,
-} from "@cordierite/shared";
+} from "./cli/result-types.js";
 
 type ColorPalette = ReturnType<typeof pc.createColors>;
 

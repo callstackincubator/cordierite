@@ -1,14 +1,13 @@
 import type {
-  ConnectBootstrapPayload,
-  HandshakeMessage,
-  StandardSchemaV1,
+  BootstrapPayload,
   SessionBoundMessage,
   SessionId,
-  SessionToken,
+  StandardSchemaV1,
   ToolCallMessage,
   ToolDescriptor,
   ToolErrorMessage,
   ToolResultMessage,
+  WireMessage,
 } from "@cordierite/shared";
 
 /** Mirrors native connection lifecycle; see `cordieriteClient.connect` JSDoc for promise semantics. */
@@ -20,15 +19,19 @@ export type CordieriteConnectionState =
   | "error";
 
 /**
- * Options passed to the TurboModule `connect` method (same shape as a validated bootstrap payload
- * plus optional device metadata). Must stay aligned with `CordieriteConnectOptionsNative` in
- * `NativeCordierite.ts` (Codegen).
+ * Options passed to the TurboModule `connect` method. Must stay aligned with
+ * `CordieriteConnectOptionsNative` in `NativeCordierite.ts` (Codegen).
+ *
+ * NOTE: the native layer still speaks this single-`ip` shape internally (v1-era claim building);
+ * it does not yet carry the v2 bootstrap `family`/`address` split. Native hardening for the v2
+ * wire protocol is tasks 09/10 — this type is left compiling against the current native surface.
  */
 export type CordieriteConnectOptions = {
   ip: string;
   port: number;
   sessionId: SessionId;
-  token: SessionToken;
+  /** Base64url, 32 raw bytes. */
+  token: string;
   expiresAt: number;
   /** Optional overrides for `session_claim`; native fills defaults when omitted. */
   deviceManufacturer?: string;
@@ -38,13 +41,13 @@ export type CordieriteConnectOptions = {
 
 export type CordieriteConnectInput =
   | CordieriteConnectOptions
-  | ConnectBootstrapPayload;
+  | BootstrapPayload;
 
 /**
  * Parsed JSON from the wire. Non-object or invalid JSON may surface as `{}` (see `CordieriteModule`).
  */
 export type CordieriteIncomingMessage =
-  | HandshakeMessage
+  | WireMessage
   | SessionBoundMessage
   | Record<string, unknown>;
 
@@ -85,7 +88,14 @@ export type CordieriteMessageEvent = {
 export type CordieriteErrorEvent = {
   code: string;
   message: string;
-  phase?: "bootstrap" | "tls" | "connect" | "handshake" | "session" | "transport" | "config";
+  phase?:
+    | "bootstrap"
+    | "tls"
+    | "connect"
+    | "handshake"
+    | "session"
+    | "transport"
+    | "config";
   nativeCode?: string;
   closeReason?: string;
   isRetryable?: boolean;

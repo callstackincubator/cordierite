@@ -1,3 +1,13 @@
+/**
+ * CLI command-result types.
+ *
+ * These lived in `@cordierite/shared`'s v1 `cli.ts` module. `@cordierite/shared` is now the v2
+ * wire-protocol package only (task 02 of the v2 refactor; see `docs/ARCHITECTURE.md` §13) and no
+ * longer exports CLI-output-specific shapes, so they live here instead, next to the renderer/CLI
+ * code that is their only consumer. Task 06 (CLI v2) owns redesigning the CLI surface and its
+ * command-result shapes; until then this preserves the current `keygen` command output unchanged.
+ */
+
 export type CliErrorType =
   | "usage_error"
   | "validation_error"
@@ -66,18 +76,9 @@ export type SessionCommandData = {
   selected?: SessionListItem;
 };
 
-export type ToolSchemaDescriptor = Record<string, unknown>;
-
-export type ToolDescriptor = {
-  name: string;
-  description: string;
-  input_schema: ToolSchemaDescriptor;
-  output_schema: ToolSchemaDescriptor;
-};
-
 export type ToolsCommandData = {
-  tools: ToolDescriptor[];
-  selected_tool?: ToolDescriptor;
+  tools: import("@cordierite/shared").ToolDescriptor[];
+  selected_tool?: import("@cordierite/shared").ToolDescriptor;
 };
 
 export type InvokeCommandData = {
