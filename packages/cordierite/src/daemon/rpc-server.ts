@@ -13,6 +13,11 @@ import type { ErrorType } from "@cordierite/shared";
 /** 1 MiB — lines beyond this are dropped by destroying the connection (ARCHITECTURE.md task notes). */
 export const MAX_LINE_BYTES = 1024 * 1024;
 
+/** 4 MiB — a subscriber connection (`events.subscribe`) whose outbound buffer grows past this
+ * (slow/dead reader) is dropped outright rather than left to back up the daemon indefinitely
+ * (task 05 scope item 4). */
+export const MAX_NOTIFY_BUFFERED_BYTES = 4 * 1024 * 1024;
+
 export class RpcApplicationError extends Error {
   constructor(
     readonly type: ErrorType,
@@ -250,6 +255,18 @@ export const startRpcServer = async (options: RpcServerOptions): Promise<RpcServ
   return {
     server,
     notify: (connection, payload) => {
+      if (connection.socket.destroyed) {
+        return;
+      }
+
+      // Backpressure guard: a slow/dead subscriber must never block the daemon or other
+      // connections. `writableLength` reflects bytes already queued but not yet flushed to the
+      // kernel; once it crosses the cap the connection is beyond saving and gets dropped.
+      if (connection.socket.writableLength > MAX_NOTIFY_BUFFERED_BYTES) {
+        connection.socket.destroy();
+        return;
+      }
+
       writeLine(connection.socket, { jsonrpc: "2.0", method: "event", params: payload });
     },
     connections: () => Array.from(connections.values()),
