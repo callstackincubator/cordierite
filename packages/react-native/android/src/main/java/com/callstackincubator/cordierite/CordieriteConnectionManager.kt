@@ -618,6 +618,12 @@ internal class CordieriteConnectionManager(
             if (keepaliveIntervalSeconds > 0) {
                 negotiatedPingIntervalSeconds = keepaliveIntervalSeconds
             }
+
+            // Forward the raw session_ack frame to JS, symmetric with every other post-claim
+            // message: the client needs `resume_token`/`alias`/`grace_s` to drive resume/reconnect
+            // logic (v2 SDK spec, ARCHITECTURE.md §11). All native-side ack handling above (state
+            // flip, keepalive scheduling) already ran before this point. Parity with iOS.
+            emitMessageRaw(text)
             return
         }
 
