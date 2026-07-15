@@ -1,5 +1,3 @@
-import { isConnectBootstrapPayload } from "@cordierite/shared";
-
 import type {
   CordieriteCloseEvent,
   CordieriteConnectionState,
@@ -15,8 +13,8 @@ import type {
   CreateCordieriteClientOptions,
 } from "./client-types";
 import {
+  isConnectOptionsValid,
   nowUnixSeconds,
-  toBootstrapPayload,
   toConnectOptions,
 } from "./connect-helpers";
 import { logger, maskSessionId } from "./logger";
@@ -93,9 +91,7 @@ export const createCordieriteClient = (
     async connect(input: CordieriteConnectInput): Promise<void> {
       const options = toConnectOptions(input, clientOptions);
 
-      const isValid = isConnectBootstrapPayload(toBootstrapPayload(options), {
-        now: nowUnixSeconds(),
-      });
+      const isValid = isConnectOptionsValid(options, nowUnixSeconds());
 
       if (!isValid) {
         logger.debug("connect rejected: invalid or expired bootstrap payload");

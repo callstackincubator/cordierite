@@ -11,7 +11,6 @@ import type {
 } from "./Cordierite.types";
 
 const JSON_SCHEMA_TARGET = "draft-2020-12";
-const EMPTY_SCHEMA_DESCRIPTOR: ToolSchemaDescriptor = {};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -53,25 +52,22 @@ const hasJsonSchemaExporter = (
   );
 };
 
+/** `undefined` when there is no schema, or it does not export JSON Schema (§7: `input_schema?`/`output_schema?` are optional). */
 export const exportToolSchema = (
   schema: StandardSchemaV1 | undefined,
   mode: "input" | "output"
-): ToolSchemaDescriptor => {
-  if (!schema) {
-    return EMPTY_SCHEMA_DESCRIPTOR;
-  }
-
-  if (!hasJsonSchemaExporter(schema)) {
-    return EMPTY_SCHEMA_DESCRIPTOR;
+): ToolSchemaDescriptor | undefined => {
+  if (!schema || !hasJsonSchemaExporter(schema)) {
+    return undefined;
   }
 
   try {
     const exported = schema["~standard"].jsonSchema[mode]({
       target: JSON_SCHEMA_TARGET,
     });
-    return isRecord(exported) ? exported : EMPTY_SCHEMA_DESCRIPTOR;
+    return isRecord(exported) ? exported : undefined;
   } catch {
-    return EMPTY_SCHEMA_DESCRIPTOR;
+    return undefined;
   }
 };
 
@@ -130,9 +126,14 @@ export const toToolDescriptor = (
     CordieriteRuntimeSchema | undefined,
     CordieriteRuntimeSchema | undefined
   >
-): ToolDescriptor => ({
-  name: definition.name,
-  description: definition.description,
-  input_schema: exportToolSchema(definition.inputSchema, "input"),
-  output_schema: exportToolSchema(definition.outputSchema, "output"),
-});
+): ToolDescriptor => {
+  const inputSchema = exportToolSchema(definition.inputSchema, "input");
+  const outputSchema = exportToolSchema(definition.outputSchema, "output");
+
+  return {
+    name: definition.name,
+    description: definition.description,
+    ...(inputSchema !== undefined ? { input_schema: inputSchema } : {}),
+    ...(outputSchema !== undefined ? { output_schema: outputSchema } : {}),
+  };
+};

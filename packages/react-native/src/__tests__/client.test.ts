@@ -676,7 +676,7 @@ describe("createCordieriteClient", () => {
     );
   });
 
-  test("registerTool allows omitted schemas and exports empty descriptors", async () => {
+  test("registerTool allows omitted schemas and omits them from the descriptor", async () => {
     const nativeModule = createMockModule();
     const client = createCordieriteClient(nativeModule);
 
@@ -700,8 +700,6 @@ describe("createCordieriteClient", () => {
           {
             name: "no-schema",
             description: "No input or output schema",
-            input_schema: {},
-            output_schema: {},
           },
         ],
       })

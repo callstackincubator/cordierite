@@ -1,4 +1,4 @@
-import type { CliResult } from "@cordierite/shared";
+import type { CliResult } from "./result-types.js";
 
 import { getExitCodeForError, toCliError } from "../errors.js";
 import { renderResult } from "../output.js";

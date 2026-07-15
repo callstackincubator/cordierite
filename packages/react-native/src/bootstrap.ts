@@ -1,7 +1,8 @@
 import {
-  tryParseConnectBootstrapWireString,
-  validateConnectBootstrapPayload,
-  type ConnectBootstrapPayload,
+  decodeBootstrap,
+  isExpiredAt,
+  isLocalAddress,
+  type BootstrapPayload,
 } from "@cordierite/shared";
 
 import { CordieriteBootstrapParseError } from "./Cordierite.types";
@@ -13,35 +14,20 @@ export const parseBootstrapPayload = (
     now?: number;
     requirePrivateIp?: boolean;
   } = {}
-): ConnectBootstrapPayload => {
-  const normalized = tryParseConnectBootstrapWireString(rawPayload);
+): BootstrapPayload => {
+  const decoded = decodeBootstrap(rawPayload);
 
-  if (!normalized) {
-    logger.debug("parseBootstrapPayload: unparseable wire string");
+  if (!decoded) {
+    logger.debug("parseBootstrapPayload: unparseable wire payload");
     throw new CordieriteBootstrapParseError(
       "invalid_payload",
-      "Bootstrap payload must be base64url-encoded binary v1 (see Cordierite HANDSHAKE docs)."
+      "Bootstrap payload must be a valid base64url-encoded v2 bootstrap blob (see Cordierite HANDSHAKE docs)."
     );
   }
 
-  const isValid = validateConnectBootstrapPayload(normalized, {
-    now: options.now,
-    requirePrivateIp: options.requirePrivateIp,
-  });
+  const now = options.now ?? Math.floor(Date.now() / 1000);
 
-  if (isValid) {
-    return normalized;
-  }
-
-  const validExceptTime = validateConnectBootstrapPayload(normalized, {
-    requirePrivateIp: options.requirePrivateIp,
-  });
-
-  if (
-    options.now !== undefined &&
-    validExceptTime &&
-    normalized.expiresAt <= options.now
-  ) {
+  if (isExpiredAt(decoded.expiresAt, now)) {
     logger.debug("parseBootstrapPayload: expired");
     throw new CordieriteBootstrapParseError(
       "expired_payload",
@@ -49,11 +35,15 @@ export const parseBootstrapPayload = (
     );
   }
 
-  logger.debug("parseBootstrapPayload: validation failed");
-  throw new CordieriteBootstrapParseError(
-    "invalid_payload",
-    "Bootstrap payload is invalid."
-  );
+  if (options.requirePrivateIp && !isLocalAddress(decoded)) {
+    logger.debug("parseBootstrapPayload: address is not local");
+    throw new CordieriteBootstrapParseError(
+      "invalid_payload",
+      "Bootstrap payload is invalid."
+    );
+  }
+
+  return decoded;
 };
 
 export const parseBootstrapUrl = (
@@ -62,7 +52,7 @@ export const parseBootstrapUrl = (
     now?: number;
     requirePrivateIp?: boolean;
   } = {}
-): ConnectBootstrapPayload => {
+): BootstrapPayload => {
   let url: URL;
 
   try {

@@ -1,4 +1,4 @@
-import type { CommandMeta } from "@cordierite/shared";
+import type { CommandMeta } from "./result-types.js";
 
 export type Clock = {
   now: () => Date;

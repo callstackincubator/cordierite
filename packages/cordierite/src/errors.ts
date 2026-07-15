@@ -1,4 +1,4 @@
-import type { CliError, CliErrorType } from "@cordierite/shared";
+import type { CliError, CliErrorType } from "./cli/result-types.js";
 
 const EXIT_CODE_BY_ERROR_TYPE: Record<CliErrorType, number> = {
   usage_error: 64,

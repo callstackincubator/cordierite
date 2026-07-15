@@ -27,7 +27,8 @@
   "homepage": "https://github.com/callstackincubator/cordierite/tree/main/packages/shared#readme",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "bun test"
   },
   "devDependencies": {
     "typescript": "~5.9.2"

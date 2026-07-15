@@ -1,4 +1,4 @@
-import { encodeConnectBootstrapWireBinary } from "@cordierite/shared";
+import { encodeBootstrap, type BootstrapPayload } from "@cordierite/shared";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 
@@ -10,33 +10,36 @@ import {
   hasCordieriteBootstrapQuery,
 } from "../deep-link-core";
 
-const padBase64Url = (value: string): string =>
-  value.replaceAll("+", "-").replaceAll("/", "_").replaceAll(/=+$/gu, "");
+const bytesToBase64Url = (bytes: Uint8Array): string => {
+  let binary = "";
 
-const token32B64Url = (): string =>
-  Buffer.from(randomBytes(32))
-    .toString("base64")
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return globalThis
+    .btoa(binary)
     .replaceAll("+", "-")
     .replaceAll("/", "_")
-    .replace(/=+$/u, "");
+    .replaceAll(/=+$/gu, "");
+};
+
+const token32B64Url = (): string =>
+  bytesToBase64Url(new Uint8Array(randomBytes(32)));
 
 const FIXED_NOW = 1_710_000_000;
 
-const basePayload = {
-  ip: "192.168.1.42",
+const basePayload: BootstrapPayload = {
+  family: 4,
+  address: "192.168.1.42",
   port: 8443,
   sessionId: "session-123",
   token: token32B64Url(),
   expiresAt: FIXED_NOW + 30,
 };
 
-const binaryPayloadB64 = (p: typeof basePayload): string =>
-  padBase64Url(
-    Buffer.from(encodeConnectBootstrapWireBinary(p)).toString("base64")
-  );
-
-const bootstrapUrl = (p: typeof basePayload) =>
-  `playground:///?cordierite=${binaryPayloadB64(p)}`;
+const bootstrapUrl = (p: BootstrapPayload) =>
+  `playground:///?cordierite=${encodeBootstrap(p)}`;
 
 const createMockClient = (initialState: CordieriteConnectionState = "idle") => {
   let state = initialState;
@@ -86,7 +89,7 @@ describe("cordierite deep-link bootstrap", () => {
     });
     expect(client.connects).toHaveLength(1);
     expect(client.connects[0]).toMatchObject({
-      ip: basePayload.ip,
+      address: basePayload.address,
       port: basePayload.port,
       sessionId: basePayload.sessionId,
     });
@@ -94,14 +97,14 @@ describe("cordierite deep-link bootstrap", () => {
 
   test("handleCordieriteDeepLinkUrl accepts loopback when local-only validation is enabled", () => {
     const client = createMockClient("idle");
-    const url = bootstrapUrl({ ...basePayload, ip: "127.0.0.1" });
+    const url = bootstrapUrl({ ...basePayload, address: "127.0.0.1" });
     handleCordieriteDeepLinkUrl(client, url, {
       now: FIXED_NOW,
       requirePrivateIp: true,
     });
     expect(client.connects).toHaveLength(1);
     expect(client.connects[0]).toMatchObject({
-      ip: "127.0.0.1",
+      address: "127.0.0.1",
       port: basePayload.port,
       sessionId: basePayload.sessionId,
     });

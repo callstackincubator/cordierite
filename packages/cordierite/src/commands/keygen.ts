@@ -2,7 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { rename, rm, stat, writeFile } from "node:fs/promises";
 
-import type { CliResult, KeygenCommandData } from "@cordierite/shared";
+import type { CliResult, KeygenCommandData } from "../cli/result-types.js";
 
 import { internalError, usageError } from "../errors.js";
 import { createPromptSession, ensureInteractivePromptInput, type PromptIo } from "../prompts.js";
