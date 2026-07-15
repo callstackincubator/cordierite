@@ -29,9 +29,8 @@ yarn-error.*
 # macOS
 .DS_Store
 
-# Ignore PEMs by default; commit Cordierite dev TLS material under certs/
+# Never commit TLS material (LOOP.md: `git ls-files "*.pem"` must stay empty).
 *.pem
-!certs/dev-cert.pem
 
 # local env files
 .env*.local

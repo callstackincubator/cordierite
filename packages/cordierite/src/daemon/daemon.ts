@@ -48,6 +48,7 @@ import { createTlsManager, toAgentEndpoint, type TlsManager } from "./tls.js";
 const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set<EventKind>([
   "daemon_started",
   "link_created",
+  "link_expired",
   "session_claimed",
   "session_suspended",
   "session_resumed",
@@ -56,6 +57,7 @@ const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set<EventKind>([
   "tools_changed",
   "app_event",
   "tool_call_started",
+  "tool_call_progress",
   "tool_call_finished",
 ]);
 
@@ -73,6 +75,10 @@ export type DaemonOptions = {
   stateDir: string;
   clock?: Clock;
   warn?: ConfigWarnFn;
+  /** Advertised-address detector; defaults to `detectAdvertisedAddress` honoring
+   * `config.advertisedIp`. Overridable so tests can simulate a network change between two
+   * `link.create` calls without mocking `os.networkInterfaces()` process-wide. */
+  detectAddress?: () => ReturnType<typeof detectAdvertisedAddress>;
 };
 
 export type RunningDaemon = {
@@ -259,8 +265,9 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
 
     eventBus = createEventBus(clock);
     const activeEventBus = eventBus;
-    const detectAddress = (): ReturnType<typeof detectAdvertisedAddress> =>
-      detectAdvertisedAddress({ override: config.advertisedIp });
+    const detectAddress =
+      options.detectAddress ??
+      ((): ReturnType<typeof detectAdvertisedAddress> => detectAdvertisedAddress({ override: config.advertisedIp }));
 
     const tls = await createTlsManager({ keyPath: config.keyPath, detectAddress });
 
@@ -308,6 +315,8 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
       sessionManager,
     });
 
+    const activeListener = listener;
+
     // `events.subscribe` fan-out: one global listener pushes matching notifications to every RPC
     // connection currently marked as a subscriber (state stashed by the `events.subscribe` handler
     // below). `RpcServer.notify` itself guards against a slow/dead subscriber backing up the daemon.
@@ -348,8 +357,21 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
 
           return { ok: true };
         },
-        [RPC_METHODS.linkCreate]: (params): LinkCreateResult => {
+        [RPC_METHODS.linkCreate]: async (params): Promise<LinkCreateResult> => {
           const { ttlSeconds } = asLinkCreateParams(params);
+
+          // Re-detect the advertised address on every mint (ARCHITECTURE.md §4/§8): a long-lived
+          // daemon that changed networks must not keep minting links with a stale address/SAN.
+          // `refresh` only re-mints the certificate when the address actually changed; applying the
+          // (possibly unchanged) secure context is a cheap no-op the rest of the time, but comparing
+          // material identity avoids even that when nothing changed.
+          const previousMaterial = tls.current();
+          const nextMaterial = await tls.refresh();
+
+          if (nextMaterial !== previousMaterial) {
+            activeListener.applyTls(nextMaterial);
+          }
+
           return activeSessionManager.createLink(ttlSeconds);
         },
         [RPC_METHODS.sessionsList]: (): SessionsListResult => {
@@ -392,25 +414,30 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
 
           const startedAt = clock.now().getTime();
           const session = { sessionId: resolved.sessionId, alias: resolved.alias };
+          // `callId` is available synchronously (before the app has answered) precisely so it can
+          // be exposed to the RPC caller and stamped on every event in this call's lifecycle — the
+          // MCP server correlates its own in-flight `tools.call` against `tool_call_progress`
+          // notifications by this id, unambiguous under concurrent calls (task 08).
+          const { callId, result: callResult } = activeCallsManager.call(session, name, args, timeoutMs);
 
           activeEventBus.emit({
             kind: "tool_call_started",
             sessionId: resolved.sessionId,
             alias: resolved.alias,
-            data: { name },
+            data: { name, callId },
           });
 
           try {
-            const result = await activeCallsManager.call(session, name, args, timeoutMs);
+            const result = await callResult;
 
             activeEventBus.emit({
               kind: "tool_call_finished",
               sessionId: resolved.sessionId,
               alias: resolved.alias,
-              data: { name, durationMs: clock.now().getTime() - startedAt, outcome: "ok" },
+              data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome: "ok" },
             });
 
-            return { result };
+            return { result, callId };
           } catch (error) {
             const errorType = error instanceof RpcApplicationError ? error.type : "tool_execution_error";
 
@@ -418,7 +445,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               kind: "tool_call_finished",
               sessionId: resolved.sessionId,
               alias: resolved.alias,
-              data: { name, durationMs: clock.now().getTime() - startedAt, outcome: "error", errorType },
+              data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome: "error", errorType },
             });
 
             throw error;
@@ -444,6 +471,11 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
     await pidfile?.release();
     throw error;
   }
+
+  // ARCHITECTURE.md §5 lists `daemon_started` among the real event kinds; emitted once startup has
+  // fully succeeded (pidfile/TLS/listener/RPC server all up) so a subscriber never sees it followed
+  // by a startup failure.
+  eventBus.emit({ kind: "daemon_started", data: { version: packageVersion, pid: process.pid } });
 
   return {
     paths,

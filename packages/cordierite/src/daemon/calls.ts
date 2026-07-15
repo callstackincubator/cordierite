@@ -48,12 +48,21 @@ export type CallsManagerOptions = {
   timers?: TimerFns;
 };
 
+/** The call id (available synchronously, before the app has answered) plus the eventual result —
+ * lets the caller correlate its own `tools.call` with `tool_call_started`/`tool_call_progress`
+ * events carrying the same `callId` before it has anything to await. */
+export type StartedCall = {
+  callId: string;
+  result: Promise<unknown>;
+};
+
 export type CallsManager = {
   /** Sends `tool_call` with a fresh `call_<random>` id, tracks it in a per-session pending map,
    * resolves on the matching `tool_result`, rejects on `tool_error` (type preserved verbatim) or
    * after `timeoutMs` (clamped to [{@link MIN_CALL_TIMEOUT_MS}, {@link MAX_CALL_TIMEOUT_MS}],
-   * default {@link DEFAULT_CALL_TIMEOUT_MS}). */
-  call: (session: CallSession, name: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
+   * default {@link DEFAULT_CALL_TIMEOUT_MS}). Returns the `callId` immediately (synchronously)
+   * alongside the result promise. */
+  call: (session: CallSession, name: string, args: Record<string, unknown>, timeoutMs?: number) => StartedCall;
   /** Routes a validated `tool_result` frame; unknown correlation ids are dropped. */
   handleToolResult: (message: ToolResultMessage) => void;
   /** Routes a validated `tool_error` frame; unknown correlation ids are dropped. */
@@ -124,9 +133,10 @@ export const createCallsManager = (options: CallsManagerOptions): CallsManager =
     name: string,
     args: Record<string, unknown>,
     timeoutMs?: number,
-  ): Promise<unknown> => {
-    return new Promise((resolve, reject) => {
-      const callId = generateCallId();
+  ): StartedCall => {
+    const callId = generateCallId();
+
+    const result = new Promise<unknown>((resolve, reject) => {
       const effectiveTimeoutMs = clampTimeout(timeoutMs);
 
       const timer = timers.setTimeout(() => {
@@ -160,6 +170,8 @@ export const createCallsManager = (options: CallsManagerOptions): CallsManager =
         pending?.reject(new RpcApplicationError("session_not_active", "Session has no active socket."));
       }
     });
+
+    return { callId, result };
   };
 
   const handleToolResult = (message: ToolResultMessage): void => {
@@ -184,10 +196,10 @@ export const createCallsManager = (options: CallsManagerOptions): CallsManager =
     }
 
     options.eventBus.emit({
-      // Progress frames belong to the same "stream" as the call's `tool_call_started` event —
-      // there is no dedicated `tool_call_progress` EventKind (ARCHITECTURE.md §5's kind list omits
-      // it); subscribers correlate by `callId` in `data`.
-      kind: "tool_call_started",
+      // Its own EventKind (ARCHITECTURE.md §5), distinct from `tool_call_started`/
+      // `tool_call_finished` — subscribers correlate all three by `callId` in `data` without
+      // needing to sniff which kind carries a `progress`/`message` field.
+      kind: "tool_call_progress",
       sessionId: message.session_id,
       alias: pending.alias,
       data: { callId: message.id, progress: message.progress, message: message.message },

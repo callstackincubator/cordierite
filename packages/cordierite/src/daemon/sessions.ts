@@ -372,11 +372,12 @@ export const createSessionManager = (options: SessionManagerOptions): SessionMan
     const candidateToken = decodeFixedLengthToken(message.token, pending.token.length);
 
     if (!tokensMatch(candidateToken, pending.token)) {
-      // Up to MAX_FAILED_CLAIM_ATTEMPTS failures are tolerated (the link stays claimable); the
-      // *next* one (the "6th claim attempt" in the acceptance matrix) invalidates it.
+      // ARCHITECTURE.md §6: the token is invalidated "after 5 failed claim attempts" — the 5th
+      // failure itself invalidates the link (a correct token on a would-be 6th attempt must not
+      // still claim).
       const attempts = pendingLinks.recordFailedAttempt(pending.sessionId);
 
-      if (attempts > MAX_FAILED_CLAIM_ATTEMPTS) {
+      if (attempts >= MAX_FAILED_CLAIM_ATTEMPTS) {
         pendingLinks.discard(pending.sessionId);
         closeSocket(socket, 1008, "claim_attempts_exceeded");
       } else {

@@ -56,6 +56,9 @@ export const ensureStateDir = async (stateDir: string): Promise<StateDirPaths> =
 
   await mkdir(paths.auditDir, { recursive: true });
   await chmod(paths.root, 0o700);
+  // `mkdir` honors the process umask (commonly 0o022, yielding drwxr-xr-x); tighten explicitly so
+  // `audit/` matches every other path under the state dir (ARCHITECTURE.md §3).
+  await chmod(paths.auditDir, 0o700);
 
   return paths;
 };

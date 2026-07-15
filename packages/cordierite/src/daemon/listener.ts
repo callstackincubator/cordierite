@@ -15,7 +15,7 @@ import { isSessionClaimMessage, isSessionResumeMessage, isSessionBoundMessage } 
 import { WebSocketServer } from "ws";
 
 import { isPostClaimMessageType, type SessionManager } from "./sessions.js";
-import type { TlsManager } from "./tls.js";
+import type { TlsManager, TlsMaterial } from "./tls.js";
 import { systemTimers, type TimerFns } from "./timers.js";
 
 const DEFAULT_PRE_CLAIM_TIMEOUT_MS = 10_000;
@@ -33,6 +33,10 @@ export type DaemonListener = {
   httpsServer: HttpsServer;
   wss: WebSocketServer;
   port: () => number | undefined;
+  /** Applies freshly-minted cert/key material to already-accepted-connections' future TLS
+   * handshakes (`tls.Server.setSecureContext`, ARCHITECTURE.md §4/§8: re-mint on advertised-IP
+   * change). Existing connections are unaffected — only new handshakes see the new SAN. */
+  applyTls: (material: Pick<TlsMaterial, "certPem" | "keyPem">) => void;
   close: () => Promise<void>;
 };
 
@@ -157,6 +161,18 @@ export const startListener = async (options: ListenerOptions): Promise<DaemonLis
     port: () => {
       const address = httpsServer.address();
       return address && typeof address !== "string" ? address.port : undefined;
+    },
+    applyTls: (nextMaterial) => {
+      // `tls.Server.prototype.setSecureContext` exists on real Node (the daemon's actual runtime —
+      // `bin.ts` shebangs `#!/usr/bin/env node`) since v11.4, but Bun's `node:https` shim (this
+      // package's *test* runtime per LOOP.md) does not implement it as of Bun 1.3. Guard rather than
+      // call unconditionally so `bun test` doesn't crash the listener; this is a no-op only under
+      // that shim, never under the daemon's real runtime.
+      const server = httpsServer as HttpsServer & {
+        setSecureContext?: (context: { key: string; cert: string }) => void;
+      };
+
+      server.setSecureContext?.({ key: nextMaterial.keyPem, cert: nextMaterial.certPem });
     },
     close: () =>
       new Promise<void>((resolve) => {
