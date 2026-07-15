@@ -45,6 +45,8 @@ export const createCli = () => {
 
   cli.command("revoke [selector]", "Revoke a session.");
 
+  cli.command("mcp", "Start a stdio MCP server that proxies connected apps' tools to MCP clients.");
+
   // cac only matches a command's first word against argv[0], so "run"/"start"/"stop"/"status"
   // are handled as a sub-action of the single "daemon" command rather than four cac commands.
   cli.command("daemon [action]", "Manage the Cordierite daemon: run, start, stop, or status.");

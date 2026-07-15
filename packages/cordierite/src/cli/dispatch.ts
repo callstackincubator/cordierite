@@ -11,6 +11,7 @@ import { handleInvokeCommand } from "../commands/invoke.js";
 import { handleKeygenCommand } from "../commands/keygen.js";
 import { handleLinkCommand } from "../commands/link.js";
 import { handleLsCommand } from "../commands/ls.js";
+import { handleMcpCommand } from "../commands/mcp.js";
 import { handleRevokeCommand } from "../commands/revoke.js";
 import { handleToolsCommand } from "../commands/tools.js";
 import { resolveStateDir } from "../daemon/state-dir.js";
@@ -193,6 +194,21 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
               },
             },
           ),
+        {
+          ...io,
+          reporter: {
+            kind: "interactive",
+            onEvent: () => {},
+            dispose: () => {},
+          },
+        },
+      );
+    }
+
+    case "mcp": {
+      return executeHostedCommand(
+        "mcp",
+        () => handleMcpCommand({ stateDir }),
         {
           ...io,
           reporter: {

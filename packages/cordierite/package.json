@@ -36,6 +36,7 @@
   },
   "dependencies": {
     "@cordierite/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@peculiar/x509": "^2.0.0",
     "cac": "^6.7.14",
     "picocolors": "^1.1.1",

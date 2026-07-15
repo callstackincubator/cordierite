@@ -77,3 +77,15 @@ New module tree `packages/cordierite/src/mcp/`:
 Use the real daemon + fake app-client harness from tasks 04–05, with the MCP SDK
 client driving the server in-process. Snapshot the generated MCP tool list for one
 scenario to lock the mapping.
+
+> Status: DONE. Implemented `packages/cordierite/src/mcp/{server,tool-namespace,tool-mapping,
+> daemon-tools,connect-tool}.ts` + `commands/mcp.ts` + `cordierite mcp` CLI wiring. Added
+> `@modelcontextprotocol/sdk@^1.29.0` (docs fetched via context7 for the current, low-level
+> `Server`/`StdioServerTransport` API — `McpServer`'s Zod-first `registerTool` doesn't fit raw
+> JSON-Schema descriptors). Tests: `__tests__/mcp-server.integration.test.ts` (12 cases incl. the
+> required tool-list snapshot, namespacing flip + `list_changed`, progress notifications, error
+> preservation, `cordierite_connect`/`cordierite_wait_for_session`, `cordierite://sessions`, and
+> the stdout-purity assertion over a real `StdioServerTransport`) and
+> `__tests__/mcp-command.integration.test.ts` (CLI wiring: config `scheme`, graceful `stop()`).
+> Updated `cli.integration.test.ts`'s exact-command-surface assertion to include the new `mcp`
+> command. All acceptance criteria verified; `bun run clean && build && test && lint` green.

@@ -53,10 +53,20 @@ describe("CLI integration", () => {
       .filter((line) => line.trim().length > 0)
       .map((line) => line.trim().split(/\s{2,}/u)[0]);
 
-    // Exactly the v2 command surface (ARCHITECTURE.md §10) — v1's `host`/`connect`/`session`
-    // commands (removed in task 01) must never resurface here.
+    // Exactly the v2 command surface (ARCHITECTURE.md §10, plus `mcp` from §9) — v1's
+    // `host`/`connect`/`session` commands (removed in task 01) must never resurface here.
     expect(new Set(commandNames)).toEqual(
-      new Set(["keygen", "link", "ls", "tools [selector] [name]", "invoke [selector] [tool]", "events [selector]", "revoke [selector]", "daemon [action]"]),
+      new Set([
+        "keygen",
+        "link",
+        "ls",
+        "tools [selector] [name]",
+        "invoke [selector] [tool]",
+        "events [selector]",
+        "revoke [selector]",
+        "mcp",
+        "daemon [action]",
+      ]),
     );
   });
 
