@@ -10,6 +10,7 @@ import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { DaemonAlreadyRunningError } from "../daemon/pidfile.js";
 import { startRpcServer } from "../daemon/rpc-server.js";
 import { getStateDirPaths } from "../daemon/state-dir.js";
+import { writeTestHostKey } from "./fixtures.js";
 
 const runningDaemons: RunningDaemon[] = [];
 
@@ -27,7 +28,9 @@ afterEach(async () => {
 });
 
 const makeTempStateDir = async (): Promise<string> => {
-  return mkdtemp(path.join(tmpdir(), "cordierite-daemon-test-"));
+  const stateDir = await mkdtemp(path.join(tmpdir(), "cordierite-daemon-test-"));
+  await writeTestHostKey(path.join(stateDir, "key.pem"));
+  return stateDir;
 };
 
 /** Reads newline-delimited JSON-RPC responses off a raw socket, resolving each awaited line. */
@@ -96,9 +99,10 @@ describe("daemon lifecycle", () => {
     expect(response.result).toMatchObject({
       pid: process.pid,
       wssPort: 8443,
-      pinnedKeys: [],
       sessions: [],
     });
+    expect(response.result.pinnedKeys).toHaveLength(1);
+    expect(response.result.pinnedKeys[0]).toMatch(/^sha256\//u);
     expect(response.result.version).toBeTypeOf("string");
     expect(response.result.startedAt).toBe(daemon.startedAt.toISOString());
 

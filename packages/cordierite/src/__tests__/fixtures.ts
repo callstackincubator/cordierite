@@ -1,3 +1,5 @@
+import { generateKeyPairSync } from "node:crypto";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 
@@ -13,6 +15,18 @@ export const fixedClock = {
 export const packageRoot = path.resolve(import.meta.dirname, "..", "..");
 
 export const binEntry = path.join(packageRoot, "src/bin.ts");
+
+/**
+ * Generates a throwaway EC host key directly into a temp state dir with mode 0600 — the daemon's
+ * TLS listener (daemon/tls.ts) refuses to start without one. Never used outside test runtime; the
+ * key is never committed (LOOP.md: "test keys are generated at test runtime into temp dirs").
+ */
+export const writeTestHostKey = async (keyPath: string): Promise<void> => {
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString("utf8");
+
+  await writeFile(keyPath, pem, { encoding: "utf8", mode: 0o600 });
+};
 
 export const createInteractiveInput = (
   text: string,

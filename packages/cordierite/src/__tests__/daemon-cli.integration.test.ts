@@ -4,13 +4,14 @@ import path from "node:path";
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { binEntry, packageRoot } from "./fixtures.js";
+import { binEntry, packageRoot, writeTestHostKey } from "./fixtures.js";
 
 const stateDirs: string[] = [];
 const daemonPids: number[] = [];
 
 const makeTempStateDir = async (): Promise<string> => {
   const directory = await mkdtemp(path.join(tmpdir(), "cordierite-daemon-cli-"));
+  await writeTestHostKey(path.join(directory, "key.pem"));
   stateDirs.push(directory);
   return directory;
 };
