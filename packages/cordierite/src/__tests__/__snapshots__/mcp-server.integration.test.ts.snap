@@ -1,0 +1,62 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`mcp: tools/list and tools/call the generated MCP tool list (built-ins + one proxied tool) matches the locked mapping 1`] = `
+[
+  {
+    "annotations": undefined,
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "enum": [
+            "android",
+            "ios-sim",
+          ],
+          "type": "string",
+        },
+        "ttlSeconds": {
+          "exclusiveMinimum": 0,
+          "type": "number",
+        },
+      },
+      "type": "object",
+    },
+    "name": "cordierite_connect",
+    "outputSchema": undefined,
+  },
+  {
+    "annotations": undefined,
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+        },
+        "timeoutMs": {
+          "exclusiveMinimum": 0,
+          "type": "number",
+        },
+      },
+      "required": [
+        "sessionId",
+      ],
+      "type": "object",
+    },
+    "name": "cordierite_wait_for_session",
+    "outputSchema": undefined,
+  },
+  {
+    "annotations": undefined,
+    "inputSchema": {
+      "properties": {
+        "text": {
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "echo",
+    "outputSchema": undefined,
+  },
+]
+`;
