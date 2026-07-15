@@ -1,7 +1,14 @@
+import {
+  handleDaemonRunCommand,
+  handleDaemonStartCommand,
+  handleDaemonStatusCommand,
+  handleDaemonStopCommand,
+} from "../commands/daemon.js";
 import { handleKeygenCommand } from "../commands/keygen.js";
+import { resolveStateDir } from "../daemon/state-dir.js";
 import { usageError } from "../errors.js";
 import { createCli } from "./create-cli.js";
-import { executeCommand } from "./runner.js";
+import { executeCommand, executeHostedCommand } from "./runner.js";
 import { systemClock } from "./types.js";
 import type { RunCliOptions } from "./types.js";
 
@@ -70,6 +77,7 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
   const json = Boolean(parsedOptions.json);
   const color = parsedOptions.color !== false;
   const io = { json, color, stdout: writers.stdout, stderr: writers.stderr, clock };
+  const stateDir = resolveStateDir();
 
   switch (matchedCommand) {
     case "keygen":
@@ -84,6 +92,41 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
           ),
         io,
       );
+
+    case "daemon": {
+      const action = parsedArgs[0];
+
+      switch (action) {
+        case "run":
+          return executeHostedCommand(
+            "daemon run",
+            () => handleDaemonRunCommand({ stateDir, clock }),
+            io,
+          );
+
+        case "start":
+          return executeCommand("daemon start", () => handleDaemonStartCommand({ stateDir, clock }), io);
+
+        case "stop":
+          return executeCommand("daemon stop", () => handleDaemonStopCommand({ stateDir, clock }), io);
+
+        case "status":
+          return executeCommand("daemon status", () => handleDaemonStatusCommand({ stateDir, clock }), io);
+
+        default:
+          return executeCommand(
+            "daemon",
+            () => {
+              throw usageError(
+                `The daemon command requires an action: run, start, stop, or status (got ${
+                  action === undefined ? "none" : `"${action}"`
+                }).`,
+              );
+            },
+            io,
+          );
+      }
+    }
 
     default:
       return executeCommand(

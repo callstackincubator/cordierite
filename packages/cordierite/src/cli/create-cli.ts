@@ -16,6 +16,10 @@ export const createCli = () => {
 
   cli.command("keygen", "Generate a Cordierite host private key and its app fingerprint.");
 
+  // cac only matches a command's first word against argv[0], so "run"/"start"/"stop"/"status"
+  // are handled as a sub-action of the single "daemon" command rather than four cac commands.
+  cli.command("daemon [action]", "Manage the Cordierite daemon: run, start, stop, or status.");
+
   cli.help();
   cli.version(version);
 
