@@ -156,7 +156,9 @@ export type LinkCreateResult = {
 };
 
 export type SessionManager = {
-  createLink: (ttlSeconds?: number) => LinkCreateResult;
+  /** `addressOverride` forces the address encoded into this one link's bootstrap payload (task
+   * 07's emulator/simulator fast path); see `links.ts`'s `PendingLinkRegistry.create`. */
+  createLink: (ttlSeconds?: number, addressOverride?: string) => LinkCreateResult;
   /** First message on a fresh socket. Returns the claimed sessionId, or `null` after closing the socket. */
   handleClaim: (socket: WebSocket, message: SessionClaimMessage) => string | null;
   /** First message on a resume socket. Returns the resumed sessionId, or `null` after closing the socket. */
@@ -337,8 +339,11 @@ export const createSessionManager = (options: SessionManagerOptions): SessionMan
     }
   }, options.keepaliveIntervalSeconds * 1000);
 
-  const createLink = (ttlSeconds?: number): LinkCreateResult => {
-    const { link, deepLinkPayload, endpoint } = pendingLinks.create(ttlSeconds ?? options.linkTtlSeconds);
+  const createLink = (ttlSeconds?: number, addressOverride?: string): LinkCreateResult => {
+    const { link, deepLinkPayload, endpoint } = pendingLinks.create(
+      ttlSeconds ?? options.linkTtlSeconds,
+      addressOverride,
+    );
 
     return {
       sessionId: link.sessionId,

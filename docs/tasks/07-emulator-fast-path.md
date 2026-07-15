@@ -62,3 +62,5 @@ New module `packages/cordierite/src/cli/open-target.ts` + wiring into `link`:
 All logic must be testable without adb/xcrun installed (exec seam). If you have a
 booted emulator/simulator available, do one manual smoke run and note the result in
 the commit message body — but CI-independence is the requirement.
+
+> Status: DONE. See `task(07)` commit.

@@ -66,6 +66,10 @@ export type DaemonShutdownResult = { ok: true };
 
 export type LinkCreateParams = {
   ttlSeconds?: number;
+  /** Forces the advertised address encoded into the bootstrap payload (ARCHITECTURE.md §8's
+   * emulator/simulator fast path: `127.0.0.1`, since the wss listener already binds all
+   * interfaces). Omitted for the normal LAN/QR delivery path. */
+  addressOverride?: string;
 };
 
 export type LinkCreateResult = {

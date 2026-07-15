@@ -109,18 +109,6 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
       );
 
     case "link": {
-      if (parsedOptions.open !== undefined) {
-        // ARCHITECTURE.md §8's adb/simctl fast path lands in task 07; the flag is registered now
-        // (create-cli.ts) purely so `--help` stays stable, per this task's scope note.
-        return executeCommand(
-          "link",
-          () => {
-            throw usageError('"--open" is not implemented yet (lands in a follow-up task).');
-          },
-          io,
-        );
-      }
-
       return executeCommand(
         "link",
         () =>
@@ -128,6 +116,8 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
             {
               ttlSeconds: parsePositiveIntegerOption(parsedOptions.ttl, "--ttl"),
               scheme: typeof parsedOptions.scheme === "string" ? parsedOptions.scheme : undefined,
+              open: typeof parsedOptions.open === "string" ? parsedOptions.open : undefined,
+              device: typeof parsedOptions.device === "string" ? parsedOptions.device : undefined,
             },
             { stateDir },
           ),
