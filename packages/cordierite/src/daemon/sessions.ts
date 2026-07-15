@@ -22,11 +22,16 @@ import {
   isToolResultMessage,
   parseSessionClaimDeviceFields,
   type EventKind,
+  type EventMessage,
   type SessionAckMessage,
   type SessionClaimMessage,
   type SessionDeviceMetadata,
   type SessionResumeMessage,
   type SessionSummary,
+  type ToolCallMessage,
+  type ToolCallProgressMessage,
+  type ToolErrorMessage,
+  type ToolResultMessage,
 } from "@cordierite/shared";
 import type { WebSocket } from "ws";
 
@@ -135,6 +140,12 @@ export type SessionManagerOptions = {
   eventBus: EventBus;
   clock?: Clock;
   timers?: TimerFns;
+  /** Routes a validated `tool_result`/`tool_error`/`tool_call_progress` frame (task 05's
+   * `calls.ts` correlates it); wired by the composition root once both modules exist. */
+  onToolFrame?: (message: ToolResultMessage | ToolErrorMessage | ToolCallProgressMessage) => void;
+  /** Routes a validated app-side `event` frame; the composition root forwards it to the event bus
+   * as `app_event` (ARCHITECTURE.md §7/task 05 scope item 5). */
+  onAppEvent?: (sessionId: string, alias: string, message: EventMessage) => void;
 };
 
 export type LinkCreateResult = {
@@ -155,6 +166,19 @@ export type SessionManager = {
   list: () => SessionSummary[];
   describe: (selector?: string) => SessionSummary;
   revoke: (selector?: string) => void;
+  /** Resolves a selector for the `tools.*` RPC surface (task 05): same selector rules as
+   * `describe`/`revoke` (no_session/ambiguous_session/unknown_session), but returns the pieces
+   * `tools.list`/`tools.call` need directly rather than a wire-shaped summary. */
+  resolveForTools: (selector?: string) => {
+    sessionId: string;
+    alias: string;
+    state: "active" | "suspended";
+    registry: ToolRegistry;
+  };
+  /** Sends a `tool_call` frame to the session's active socket; `false` if the session has no
+   * active socket right now (caller has typically already checked ACTIVE state via
+   * {@link resolveForTools}, but the socket can still disappear between check and send). */
+  sendToolCall: (sessionId: string, message: ToolCallMessage) => boolean;
   /** Closes every live socket with the given code (daemon shutdown) and clears all timers. */
   disposeAll: (code: number, reason: string) => void;
 };
@@ -471,22 +495,43 @@ export const createSessionManager = (options: SessionManagerOptions): SessionMan
         return;
       }
 
-      case "tool_result":
-      case "tool_error":
-      case "tool_call_progress":
-      case "event": {
-        // In-flight `tools.call` matching and `events.subscribe` fan-out land in task 05; this
-        // module only guards against indexing into unvalidated content in the meantime.
-        const isValid =
-          (message.type === "tool_result" && isToolResultMessage(message)) ||
-          (message.type === "tool_error" && isToolErrorMessage(message)) ||
-          (message.type === "tool_call_progress" && isToolCallProgressMessage(message)) ||
-          (message.type === "event" && isEventMessage(message));
-
-        if (!isValid) {
+      case "tool_result": {
+        if (!isToolResultMessage(message)) {
           closeSocket(socket, 1008, "invalid_message");
+          return;
         }
 
+        options.onToolFrame?.(message);
+        return;
+      }
+
+      case "tool_error": {
+        if (!isToolErrorMessage(message)) {
+          closeSocket(socket, 1008, "invalid_message");
+          return;
+        }
+
+        options.onToolFrame?.(message);
+        return;
+      }
+
+      case "tool_call_progress": {
+        if (!isToolCallProgressMessage(message)) {
+          closeSocket(socket, 1008, "invalid_message");
+          return;
+        }
+
+        options.onToolFrame?.(message);
+        return;
+      }
+
+      case "event": {
+        if (!isEventMessage(message)) {
+          closeSocket(socket, 1008, "invalid_message");
+          return;
+        }
+
+        options.onAppEvent?.(sessionId, session.alias, message);
         return;
       }
 
@@ -536,6 +581,33 @@ export const createSessionManager = (options: SessionManagerOptions): SessionMan
     sessions.clear();
   };
 
+  const resolveForTools = (
+    selector?: string,
+  ): { sessionId: string; alias: string; state: "active" | "suspended"; registry: ToolRegistry } => {
+    const session = resolveSession(selector);
+    return { sessionId: session.sessionId, alias: session.alias, state: session.state, registry: session.registry };
+  };
+
+  const sendToolCall = (sessionId: string, message: ToolCallMessage): boolean => {
+    const session = sessions.get(sessionId);
+
+    if (!session || session.state !== "active" || !session.socket) {
+      return false;
+    }
+
+    const socket = session.socket;
+
+    socket.send(JSON.stringify(message), (error) => {
+      if (error) {
+        // A failed send must never throw into the socket library's event loop turn (v1's exact
+        // defect); the resulting 'close'/'error' drives suspend, which rejects the pending call.
+        closeSocket(socket, 1011, "send_failed");
+      }
+    });
+
+    return true;
+  };
+
   return {
     createLink,
     handleClaim,
@@ -544,6 +616,8 @@ export const createSessionManager = (options: SessionManagerOptions): SessionMan
     list: () => Array.from(sessions.values(), toSummary),
     describe: (selector) => toSummary(resolveSession(selector)),
     revoke,
+    resolveForTools,
+    sendToolCall,
     disposeAll,
   };
 };

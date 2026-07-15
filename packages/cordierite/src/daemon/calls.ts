@@ -1,0 +1,231 @@
+/**
+ * Per-session tool-invocation manager (ARCHITECTURE.md §5 `tools.call`, §7 `tool_call` /
+ * `tool_result` / `tool_error` / `tool_call_progress`). This is the v2 replacement for v1's
+ * `pendingCalls` map: the correlation pattern (`call_<random>` ids, resolve on `tool_result`,
+ * reject on `tool_error`) was sound and is kept. v1's defect was error flattening — the app's
+ * `error.type` got re-wrapped twice and ended up buried two `details` levels deep. Here the type is
+ * preserved verbatim: {@link RpcApplicationError.type} is set directly from the app's
+ * `tool_error.error.type`, never a generic wrapper.
+ *
+ * This module knows nothing about sockets or the session state machine — `sessions.ts` (via the
+ * composition root in `daemon.ts`) supplies a `send` function and routes incoming
+ * `tool_result`/`tool_error`/`tool_call_progress` frames and suspend/revoke/expiry transitions back
+ * in. That keeps a single seam (`call`) that a policy layer (task 13) can wrap.
+ */
+
+import { randomBytes } from "node:crypto";
+
+import type {
+  ToolCallMessage,
+  ToolCallProgressMessage,
+  ToolErrorMessage,
+  ToolResultMessage,
+} from "@cordierite/shared";
+
+import type { EventBus } from "./event-bus.js";
+import { RpcApplicationError } from "./rpc-server.js";
+import { systemTimers, type TimerFns, type TimerHandle } from "./timers.js";
+
+export const DEFAULT_CALL_TIMEOUT_MS = 10_000;
+export const MIN_CALL_TIMEOUT_MS = 1_000;
+export const MAX_CALL_TIMEOUT_MS = 600_000;
+
+/** Identifies the session a call belongs to; carried through so progress/lifecycle events can be
+ * tagged with the alias without this module needing to look sessions back up. */
+export type CallSession = {
+  sessionId: string;
+  alias: string;
+};
+
+/** Sends a `tool_call` frame to the session's active socket; `false` if there is none (the caller
+ * must already have checked the session is ACTIVE, but the socket can still vanish mid-flight —
+ * the resulting rejection comes from the `session_suspended` transition below, not this return). */
+export type SendToolCall = (sessionId: string, message: ToolCallMessage) => boolean;
+
+export type CallsManagerOptions = {
+  send: SendToolCall;
+  eventBus: EventBus;
+  timers?: TimerFns;
+};
+
+export type CallsManager = {
+  /** Sends `tool_call` with a fresh `call_<random>` id, tracks it in a per-session pending map,
+   * resolves on the matching `tool_result`, rejects on `tool_error` (type preserved verbatim) or
+   * after `timeoutMs` (clamped to [{@link MIN_CALL_TIMEOUT_MS}, {@link MAX_CALL_TIMEOUT_MS}],
+   * default {@link DEFAULT_CALL_TIMEOUT_MS}). */
+  call: (session: CallSession, name: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
+  /** Routes a validated `tool_result` frame; unknown correlation ids are dropped. */
+  handleToolResult: (message: ToolResultMessage) => void;
+  /** Routes a validated `tool_error` frame; unknown correlation ids are dropped. */
+  handleToolError: (message: ToolErrorMessage) => void;
+  /** Routes a validated `tool_call_progress` frame to the event bus; unknown correlation ids are
+   * dropped (no event is emitted). */
+  handleToolCallProgress: (message: ToolCallProgressMessage) => void;
+  /** Rejects every pending call for a session immediately (suspend/revoke/expiry transitions). */
+  rejectSession: (sessionId: string, errorType: "session_suspended" | "unknown_session") => void;
+  /** Rejects and clears every pending call across every session (daemon shutdown). */
+  disposeAll: () => void;
+};
+
+type PendingCall = {
+  alias: string;
+  resolve: (result: unknown) => void;
+  reject: (error: RpcApplicationError) => void;
+  timer: TimerHandle;
+};
+
+const generateCallId = (): string => `call_${randomBytes(16).toString("base64url")}`;
+
+const clampTimeout = (timeoutMs: number | undefined): number => {
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) {
+    return DEFAULT_CALL_TIMEOUT_MS;
+  }
+
+  return Math.min(Math.max(Math.trunc(timeoutMs), MIN_CALL_TIMEOUT_MS), MAX_CALL_TIMEOUT_MS);
+};
+
+/** Event kinds that terminate every pending call for a session (ARCHITECTURE.md §6/§5: "On
+ * suspend/revoke/expiry, every pending call rejects immediately with session_suspended (or
+ * unknown_session on revoke)"). Expiry only ever follows suspend (pending calls are already gone
+ * by then), but it is handled defensively with the same `unknown_session` type as revoke. */
+const TERMINATING_KIND_ERROR_TYPES = {
+  session_suspended: "session_suspended",
+  session_revoked: "unknown_session",
+  session_expired: "unknown_session",
+} as const;
+
+export const createCallsManager = (options: CallsManagerOptions): CallsManager => {
+  const timers = options.timers ?? systemTimers;
+  // sessionId -> callId -> PendingCall. Concurrent calls to the same session get independent
+  // entries here, keyed by their own call id, so out-of-order tool_result/tool_error frames still
+  // resolve the right caller.
+  const pendingBySession = new Map<string, Map<string, PendingCall>>();
+
+  const takePending = (sessionId: string, callId: string): PendingCall | undefined => {
+    const sessionMap = pendingBySession.get(sessionId);
+    const pending = sessionMap?.get(callId);
+
+    if (!sessionMap || !pending) {
+      return undefined;
+    }
+
+    sessionMap.delete(callId);
+
+    if (sessionMap.size === 0) {
+      pendingBySession.delete(sessionId);
+    }
+
+    timers.clearTimeout(pending.timer);
+    return pending;
+  };
+
+  const call = (
+    session: CallSession,
+    name: string,
+    args: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<unknown> => {
+    return new Promise((resolve, reject) => {
+      const callId = generateCallId();
+      const effectiveTimeoutMs = clampTimeout(timeoutMs);
+
+      const timer = timers.setTimeout(() => {
+        const pending = takePending(session.sessionId, callId);
+        pending?.reject(
+          new RpcApplicationError("tool_timeout", `Tool call "${name}" timed out after ${effectiveTimeoutMs}ms.`),
+        );
+      }, effectiveTimeoutMs);
+
+      let sessionMap = pendingBySession.get(session.sessionId);
+
+      if (!sessionMap) {
+        sessionMap = new Map();
+        pendingBySession.set(session.sessionId, sessionMap);
+      }
+
+      sessionMap.set(callId, { alias: session.alias, resolve, reject, timer });
+
+      const message: ToolCallMessage = {
+        type: "tool_call",
+        session_id: session.sessionId,
+        id: callId,
+        name,
+        args,
+      };
+
+      const sent = options.send(session.sessionId, message);
+
+      if (!sent) {
+        const pending = takePending(session.sessionId, callId);
+        pending?.reject(new RpcApplicationError("session_not_active", "Session has no active socket."));
+      }
+    });
+  };
+
+  const handleToolResult = (message: ToolResultMessage): void => {
+    const pending = takePending(message.session_id, message.id);
+    pending?.resolve(message.result);
+  };
+
+  const handleToolError = (message: ToolErrorMessage): void => {
+    const pending = takePending(message.session_id, message.id);
+    // Verbatim: `error.type` comes straight from the app's frame, never re-wrapped (v1's defect).
+    pending?.reject(new RpcApplicationError(message.error.type, message.error.message, -32000, message.error.details));
+  };
+
+  const handleToolCallProgress = (message: ToolCallProgressMessage): void => {
+    const sessionMap = pendingBySession.get(message.session_id);
+    const pending = sessionMap?.get(message.id);
+
+    if (!pending) {
+      // Unknown correlation id: dropped (ARCHITECTURE.md task notes say "log at debug level"; a
+      // full logging seam doesn't exist yet in the daemon, so this is a silent, intentional no-op).
+      return;
+    }
+
+    options.eventBus.emit({
+      // Progress frames belong to the same "stream" as the call's `tool_call_started` event —
+      // there is no dedicated `tool_call_progress` EventKind (ARCHITECTURE.md §5's kind list omits
+      // it); subscribers correlate by `callId` in `data`.
+      kind: "tool_call_started",
+      sessionId: message.session_id,
+      alias: pending.alias,
+      data: { callId: message.id, progress: message.progress, message: message.message },
+    });
+  };
+
+  const rejectSession = (sessionId: string, errorType: "session_suspended" | "unknown_session"): void => {
+    const sessionMap = pendingBySession.get(sessionId);
+
+    if (!sessionMap) {
+      return;
+    }
+
+    pendingBySession.delete(sessionId);
+
+    for (const pending of sessionMap.values()) {
+      timers.clearTimeout(pending.timer);
+      pending.reject(new RpcApplicationError(errorType, `Session transitioned while the call was pending.`));
+    }
+  };
+
+  const unsubscribeFromEventBus = options.eventBus.subscribe((event) => {
+    const errorType = (TERMINATING_KIND_ERROR_TYPES as Record<string, "session_suspended" | "unknown_session">)[
+      event.kind
+    ];
+
+    if (errorType && event.sessionId) {
+      rejectSession(event.sessionId, errorType);
+    }
+  });
+
+  const disposeAll = (): void => {
+    unsubscribeFromEventBus();
+
+    for (const sessionId of Array.from(pendingBySession.keys())) {
+      rejectSession(sessionId, "unknown_session");
+    }
+  };
+
+  return { call, handleToolResult, handleToolError, handleToolCallProgress, rejectSession, disposeAll };
+};
