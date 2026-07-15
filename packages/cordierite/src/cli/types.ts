@@ -1,4 +1,24 @@
-import type { Clock } from "../runtime.js";
+import type { CommandMeta } from "@cordierite/shared";
+
+export type Clock = {
+  now: () => Date;
+};
+
+export const systemClock: Clock = {
+  now: () => new Date(),
+};
+
+export const createCommandMeta = (
+  command: string,
+  startedAt: Date,
+  finishedAt: Date,
+): CommandMeta => {
+  return {
+    command,
+    timestamp: finishedAt.toISOString(),
+    duration_ms: finishedAt.getTime() - startedAt.getTime(),
+  };
+};
 
 export type RunCliOptions = {
   stdout?: Pick<typeof process.stdout, "write" | "isTTY">;

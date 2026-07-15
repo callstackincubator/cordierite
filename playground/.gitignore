@@ -32,7 +32,6 @@ yarn-error.*
 # Ignore PEMs by default; commit Cordierite dev TLS material under certs/
 *.pem
 !certs/dev-cert.pem
-!certs/dev-key.pem
 
 # local env files
 .env*.local

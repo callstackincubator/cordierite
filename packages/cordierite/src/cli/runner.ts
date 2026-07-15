@@ -1,14 +1,31 @@
 import type { CliResult } from "@cordierite/shared";
 
-import { handleHostCommand } from "../commands/host.js";
 import { getExitCodeForError, toCliError } from "../errors.js";
-import type { HostReporter } from "../host-reporters.js";
 import { renderResult } from "../output.js";
-import {
-  createCommandMeta,
-  type Clock,
-} from "../runtime.js";
-import type { CliIoWriters } from "./types.js";
+import { createCommandMeta, type Clock, type CliIoWriters } from "./types.js";
+
+/**
+ * Long-lived command result shape shared by any CLI command that keeps a process alive
+ * until completion/cancellation (e.g. a foreground daemon run). Not tied to any specific
+ * command's data type.
+ */
+type HostedCommandResult = {
+  result: CliResult<unknown>;
+  completion: Promise<void>;
+  stop: () => void;
+};
+
+/**
+ * Minimal reporter contract for {@link executeHostedCommand}: an optional live-rendering
+ * reporter that receives lifecycle events and must be disposed once the hosted command
+ * completes. `kind: "plain"` reporters render their own bootstrap output instead of the
+ * default `renderResult` output.
+ */
+export type HostedCommandReporter = {
+  kind: "interactive" | "plain";
+  onEvent: (event: unknown) => void | Promise<void>;
+  dispose: () => void;
+};
 
 const writeRenderedOutput = (
   rendered: { stdout?: string; stderr?: string },
@@ -22,8 +39,6 @@ const writeRenderedOutput = (
     writers.stderr.write(rendered.stderr);
   }
 };
-
-type HostedCommandResult = Awaited<ReturnType<typeof handleHostCommand>>;
 
 export const executeCommand = async (
   command: string,
@@ -83,7 +98,7 @@ export const executeHostedCommand = async (
     json: boolean;
     color: boolean;
     clock: Clock;
-    reporter?: HostReporter;
+    reporter?: HostedCommandReporter;
   },
 ): Promise<number> => {
   const startedAt = options.clock.now();
@@ -111,8 +126,6 @@ export const executeHostedCommand = async (
       );
       renderedSuccess = true;
     }
-
-    renderedSuccess = true;
 
     let resolved = false;
     const stop = () => {

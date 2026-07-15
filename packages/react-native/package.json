@@ -22,7 +22,8 @@
     "build": "tsc",
     "clean": "rm -rf build",
     "lint": "eslint .",
-    "test": "bun test"
+    "test": "bun test",
+    "prepublishOnly": "bun run clean && bun run build"
   },
   "keywords": [
     "react-native",

@@ -1,14 +1,8 @@
-import { handleConnectCommand } from "../commands/connect.js";
-import { handleInvokeCommand } from "../commands/invoke.js";
 import { handleKeygenCommand } from "../commands/keygen.js";
-import { handleSessionCommand } from "../commands/session.js";
-import { handleToolsCommand } from "../commands/tools.js";
 import { usageError } from "../errors.js";
-import { systemClock } from "../runtime.js";
-import { requireConnectPayload, requireSessionId, requireToolName } from "./command-options.js";
 import { createCli } from "./create-cli.js";
 import { executeCommand } from "./runner.js";
-import { runHostSubcommand } from "./run-host.js";
+import { systemClock } from "./types.js";
 import type { RunCliOptions } from "./types.js";
 
 export const runCli = async (argv: string[], options: RunCliOptions = {}): Promise<number> => {
@@ -78,23 +72,6 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
   const io = { json, color, stdout: writers.stdout, stderr: writers.stderr, clock };
 
   switch (matchedCommand) {
-    case "host":
-      return runHostSubcommand(parsedOptions, { json, color, writers, clock });
-
-    case "connect":
-      return executeCommand(
-        "connect",
-        () =>
-          handleConnectCommand(
-            {
-              payload: requireConnectPayload(parsedOptions),
-              requirePrivateIp: Boolean(parsedOptions.privateIp),
-            },
-            { clock },
-          ),
-        io,
-      );
-
     case "keygen":
       return executeCommand(
         "keygen",
@@ -105,57 +82,6 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
               prompt,
             },
           ),
-        io,
-      );
-
-    case "session": {
-      const rawSid = parsedOptions.sessionId;
-      const sessionId =
-        rawSid === undefined || rawSid === null
-          ? undefined
-          : typeof rawSid === "number" && Number.isFinite(rawSid)
-            ? String(Math.trunc(rawSid))
-            : typeof rawSid === "string" && rawSid.trim().length > 0
-              ? rawSid.trim()
-              : undefined;
-
-      return executeCommand(
-        "session",
-        () =>
-          handleSessionCommand({
-            sessionId,
-          }),
-        io,
-      );
-    }
-
-    case "tools":
-      return executeCommand(
-        "tools",
-        () => {
-          const name = parsedArgs[0];
-
-          return handleToolsCommand({
-            name: typeof name === "string" ? name : undefined,
-            sessionId: requireSessionId(parsedOptions),
-          });
-        },
-        io,
-      );
-
-    case "invoke":
-      return executeCommand(
-        "invoke",
-        () => {
-          const name = requireToolName(parsedArgs);
-          const input = parsedOptions.input;
-
-          return handleInvokeCommand({
-            name,
-            input: typeof input === "string" ? input : undefined,
-            sessionId: requireSessionId(parsedOptions),
-          });
-        },
         io,
       );
 

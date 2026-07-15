@@ -1,8 +1,6 @@
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 
-import { encodeConnectBootstrapWireBinary, type ConnectBootstrapPayload } from "@cordierite/shared";
-
 import { runCli } from "../cli.js";
 
 export const FIXED_NOW = new Date("2026-03-17T10:00:00.000Z");
@@ -15,23 +13,6 @@ export const fixedClock = {
 export const packageRoot = path.resolve(import.meta.dirname, "..", "..");
 
 export const binEntry = path.join(packageRoot, "src/bin.ts");
-
-const testTokenRaw = Buffer.alloc(32, 0xab);
-
-const baseBootstrapPayload: ConnectBootstrapPayload = {
-  ip: "192.168.1.42",
-  port: 8443,
-  sessionId: "session-123",
-  token: testTokenRaw.toString("base64url"),
-  expiresAt: Math.floor(FIXED_NOW.getTime() / 1000) + 30,
-};
-
-/** Base64url binary v1 bootstrap payload (for `cordierite` query value) in tests. */
-export const createPayload = (overrides: Partial<ConnectBootstrapPayload> = {}): string => {
-  const payload = { ...baseBootstrapPayload, ...overrides };
-  const bytes = encodeConnectBootstrapWireBinary(payload, testTokenRaw);
-  return Buffer.from(bytes).toString("base64url");
-};
 
 export const createInteractiveInput = (
   text: string,
