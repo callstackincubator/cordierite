@@ -502,7 +502,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
     }
 
     if state == .connecting {
-      await handleSessionAck(parsed)
+      await handleSessionAck(parsed, rawText: text)
       return
     }
 
@@ -530,7 +530,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
     emitMessageRaw?(text)
   }
 
-  private func handleSessionAck(_ message: [String: Any]) async {
+  private func handleSessionAck(_ message: [String: Any], rawText: String) async {
     guard
       let pendingSessionId,
       let type = message["type"] as? String,
@@ -554,6 +554,12 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
     if let intervalSeconds = cordieriteIntFromBridge(message["keepalive_interval_s"]), intervalSeconds > 0 {
       scheduleKeepalive(intervalSeconds: intervalSeconds)
     }
+
+    // Forward the raw session_ack frame to JS, symmetric with every other post-claim message:
+    // the client needs `resume_token`/`alias`/`grace_s` to drive resume/reconnect logic (v2 SDK
+    // spec, ARCHITECTURE.md §11). All native-side ack handling above (state flip, keepalive
+    // scheduling) already ran before this point.
+    emitMessageRaw?(rawText)
   }
 
   private func scheduleKeepalive(intervalSeconds: Int) {
