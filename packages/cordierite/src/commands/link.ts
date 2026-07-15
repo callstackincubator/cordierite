@@ -2,6 +2,10 @@
  * `cordierite link` (ARCHITECTURE.md §10, §8): mints a pending session via `link.create`, then
  * composes the deep link `<scheme>:///?cordierite=<payload>`. The scheme comes from `--scheme`,
  * else `config.json`'s `scheme` field, else the command errors with a clear message.
+ *
+ * `--open android|ios-sim` (task 07) additionally forces the advertised address to `127.0.0.1`
+ * (the simulator/emulator reaches the daemon over localhost — the wss listener already binds all
+ * interfaces) and delivers the link via adb/xcrun instead of just printing it.
  */
 
 import { RPC_METHODS, type LinkCreateResult } from "@cordierite/shared";
@@ -11,21 +15,45 @@ import { loadConfig } from "../daemon/config.js";
 import { getStateDirPaths } from "../daemon/state-dir.js";
 import { usageError } from "../errors.js";
 import { callDaemon, type SpawnFn } from "../rpc/client.js";
+import { deliverToOpenTarget, isOpenTarget, type ExecFn, type OpenTarget } from "../cli/open-target.js";
+
+/** The emulator/simulator fast path forces `127.0.0.1`: the daemon's wss listener already binds
+ * all interfaces, and both delivery mechanisms (adb reverse, the iOS simulator's shared host
+ * network) make the daemon reachable there regardless of the machine's real LAN address. */
+const OPEN_TARGET_ADDRESS_OVERRIDE = "127.0.0.1";
 
 export type LinkCommandOptions = {
   ttlSeconds?: number;
   scheme?: string;
+  open?: string;
+  device?: string;
 };
 
 export type LinkCommandContext = {
   stateDir: string;
   spawn?: SpawnFn;
+  exec?: ExecFn;
+  env?: NodeJS.ProcessEnv;
 };
 
 export const handleLinkCommand = async (
   options: LinkCommandOptions,
   context: LinkCommandContext,
 ): Promise<CliResult<LinkCommandData>> => {
+  let openTarget: OpenTarget | undefined;
+
+  if (options.open !== undefined) {
+    if (!isOpenTarget(options.open)) {
+      throw usageError(`"--open" must be "android" or "ios-sim" (got "${options.open}").`);
+    }
+
+    openTarget = options.open;
+  }
+
+  if (options.device !== undefined && openTarget !== "android") {
+    throw usageError('"--device" only applies with "--open android".');
+  }
+
   const paths = getStateDirPaths(context.stateDir);
   const config = await loadConfig(paths);
   const scheme = options.scheme ?? config.scheme;
@@ -38,17 +66,34 @@ export const handleLinkCommand = async (
 
   const result = await callDaemon<LinkCreateResult>(
     RPC_METHODS.linkCreate,
-    { ttlSeconds: options.ttlSeconds },
+    {
+      ttlSeconds: options.ttlSeconds,
+      addressOverride: openTarget ? OPEN_TARGET_ADDRESS_OVERRIDE : undefined,
+    },
     { stateDir: context.stateDir, spawn: context.spawn },
   );
+
+  const deepLink = `${scheme}:///?cordierite=${result.deepLinkPayload}`;
+
+  if (openTarget) {
+    await deliverToOpenTarget({
+      target: openTarget,
+      deepLink,
+      wssPort: result.endpoint.port,
+      device: options.device,
+      exec: context.exec,
+      env: context.env,
+    });
+  }
 
   return {
     ok: true,
     data: {
       sessionId: result.sessionId,
-      deepLink: `${scheme}:///?cordierite=${result.deepLinkPayload}`,
+      deepLink,
       endpoint: result.endpoint,
       expiresAt: result.expiresAt,
+      ...(openTarget ? { delivered: true as const, target: openTarget } : {}),
     },
   };
 };

@@ -60,6 +60,11 @@ export type LinkCommandData = {
   endpoint: AgentEndpoint;
   /** Unix seconds. */
   expiresAt: number;
+  /** Present (and `true`) only once `--open <target>` has successfully delivered the link
+   * (ARCHITECTURE.md §10/task 07). */
+  delivered?: true;
+  /** The `--open` target the link was delivered to, alongside `delivered`. */
+  target?: "android" | "ios-sim";
 };
 
 /** `cordierite ls`: `sessions.list` passthrough, verbatim (ARCHITECTURE.md §10: "--json passthrough"). */

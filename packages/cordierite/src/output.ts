@@ -184,6 +184,7 @@ const renderLinkData = (colors: ColorPalette, data: LinkCommandData, qr?: boolea
       ["Deep link", data.deepLink],
       ["Endpoint", formatAgentWebSocketUrl(data.endpoint)],
       ["Expires", new Date(data.expiresAt * 1000).toISOString()],
+      ["Delivered", data.delivered ? `yes (${data.target})` : undefined],
     ]),
   ];
 

@@ -205,13 +205,20 @@ const asLinkCreateParams = (params: unknown): LinkCreateParams => {
     throw new RpcApplicationError("invalid_request", "Params must be an object.");
   }
 
-  const ttlSeconds = (params as Record<string, unknown>).ttlSeconds;
+  const record = params as Record<string, unknown>;
+  const ttlSeconds = record.ttlSeconds;
 
   if (ttlSeconds !== undefined && (typeof ttlSeconds !== "number" || !Number.isInteger(ttlSeconds) || ttlSeconds <= 0)) {
     throw new RpcApplicationError("invalid_request", '"ttlSeconds" must be a positive integer.');
   }
 
-  return { ttlSeconds };
+  const addressOverride = record.addressOverride;
+
+  if (addressOverride !== undefined && (typeof addressOverride !== "string" || addressOverride.length === 0)) {
+    throw new RpcApplicationError("invalid_request", '"addressOverride" must be a non-empty string.');
+  }
+
+  return { ttlSeconds, addressOverride: addressOverride as string | undefined };
 };
 
 export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon> => {
@@ -358,7 +365,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           return { ok: true };
         },
         [RPC_METHODS.linkCreate]: async (params): Promise<LinkCreateResult> => {
-          const { ttlSeconds } = asLinkCreateParams(params);
+          const { ttlSeconds, addressOverride } = asLinkCreateParams(params);
 
           // Re-detect the advertised address on every mint (ARCHITECTURE.md §4/§8): a long-lived
           // daemon that changed networks must not keep minting links with a stale address/SAN.
@@ -372,7 +379,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
             activeListener.applyTls(nextMaterial);
           }
 
-          return activeSessionManager.createLink(ttlSeconds);
+          return activeSessionManager.createLink(ttlSeconds, addressOverride);
         },
         [RPC_METHODS.sessionsList]: (): SessionsListResult => {
           return activeSessionManager.list();

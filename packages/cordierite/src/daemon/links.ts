@@ -8,7 +8,7 @@
 
 import { randomBytes } from "node:crypto";
 
-import { encodeBootstrap, type AgentEndpoint } from "@cordierite/shared";
+import { encodeBootstrap, type AddressFamily, type AgentEndpoint } from "@cordierite/shared";
 
 import type { Clock } from "../cli/types.js";
 import type { EventBus } from "./event-bus.js";
@@ -40,7 +40,10 @@ export type PendingLinkRegistryOptions = {
 };
 
 export type PendingLinkRegistry = {
-  create: (ttlSeconds: number) => CreatedLink;
+  /** `addressOverride` forces the endpoint address encoded into this one link's bootstrap payload
+   * (task 07's emulator/simulator fast path: `127.0.0.1`), leaving the detected endpoint used by
+   * every other link unaffected. */
+  create: (ttlSeconds: number, addressOverride?: string) => CreatedLink;
   /** Looks up a pending link without consuming it (used to distinguish "unknown" from "already claimed"). */
   get: (sessionId: string) => PendingLink | undefined;
   /** Removes and returns the link (successful claim consumes its single use). */
@@ -86,12 +89,21 @@ export const createPendingLinkRegistry = (options: PendingLinkRegistryOptions): 
   };
 
   return {
-    create: (ttlSeconds) => {
+    create: (ttlSeconds, addressOverride) => {
       const sessionId = generateSessionId();
       const token = randomBytes(TOKEN_BYTES);
       const createdAt = options.clock.now();
       const expiresAt = new Date(createdAt.getTime() + ttlSeconds * 1000);
-      const endpoint = options.getEndpoint();
+      const detectedEndpoint = options.getEndpoint();
+      // Overriding only ever changes the address (and its family); the port stays the daemon's
+      // real wss port, since the listener already binds all interfaces (ARCHITECTURE.md §8).
+      const endpoint: AgentEndpoint = addressOverride
+        ? {
+            family: (addressOverride.includes(":") ? 6 : 4) as AddressFamily,
+            address: addressOverride,
+            port: detectedEndpoint.port,
+          }
+        : detectedEndpoint;
 
       // Deliberately does not delete the record the instant the TTL fires: a claim attempt arriving
       // just after must still see the (now-expired) link and be told "expired" rather than
