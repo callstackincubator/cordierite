@@ -9,7 +9,10 @@ export type CordieriteConnectOptionsNative = {
   ip: string;
   port: number;
   sessionId: string;
-  token: string;
+  /** Claim token. Required unless `resumeToken` is given (protocol v2 `session_resume`). */
+  token?: string;
+  /** When present, native sends `session_resume` as the first frame instead of `session_claim`. */
+  resumeToken?: string;
   expiresAt: number;
   deviceManufacturer?: string;
   deviceModel?: string;
@@ -41,9 +44,11 @@ export type CordieriteCloseEventNative = {
 
 export interface Spec extends TurboModule {
   /**
-   * Starts the TLS + WebSocket connection and sends `session_claim`. Resolves when that work has
-   * been accepted by native — not when connection state is already `"active"`. Wait for
-   * `stateChange` to `"active"` before calling `send`.
+   * Starts the TLS + WebSocket connection and sends the first protocol v2 frame: `session_claim`
+   * (using `token`) or, when `resumeToken` is given instead, `session_resume`. Resolves once TLS
+   * has completed and that first frame has been sent — not when connection state is already
+   * `"active"`. Wait for `stateChange` to `"active"` before calling `send`. Rejects on pin
+   * mismatch, TLS/transport failure, or invalid params (neither `token` nor `resumeToken` given).
    */
   connect(options: CordieriteConnectOptionsNative): Promise<void>;
   send(message: string): Promise<void>;

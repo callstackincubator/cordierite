@@ -82,3 +82,7 @@ same `sha256/…` as `packages/cordierite/src/spki-pin.ts`, share the fixture PE
 `packages/react-native/__fixtures__/`). Where a test target is impractical, the
 simulator smoke script in the acceptance criteria is the fallback — document what was
 run manually in the commit body.
+
+> Status: DONE. See commit `task(09): ...` for details, verification, and known gaps
+> (notably: connect-reentrancy and abrupt-death/keepalive were verified by full Xcode
+> builds and a pure-logic XCTest target, not a live daemon/simulator smoke run).
