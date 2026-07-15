@@ -39,7 +39,7 @@ describe("CLI integration", () => {
     }
   });
 
-  test("help is available from the binary entrypoint and lists only keygen", () => {
+  test("help is available from the binary entrypoint and lists only keygen and daemon", () => {
     const command = Bun.spawnSync({
       cmd: ["bun", binEntry, "--help"],
       cwd: packageRoot,
@@ -55,7 +55,9 @@ describe("CLI integration", () => {
 
     expect(commandsSection).toBeDefined();
     expect(commandsSection).toContain("keygen");
-    expect(commandsSection?.trim().split("\n")).toHaveLength(2);
+    expect(commandsSection).toContain("daemon [action]");
+    // Header line + keygen + daemon.
+    expect(commandsSection?.trim().split("\n")).toHaveLength(3);
     expect(stdout).not.toMatch(/\bconnect\b|\bsession\b|\binvoke\b/u);
   });
 

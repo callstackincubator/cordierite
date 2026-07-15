@@ -107,3 +107,38 @@ export type KeygenCommandData = {
     algorithm: "rsa-2048";
   };
 };
+
+export type DaemonRunCommandData = {
+  daemon: {
+    pid: number;
+    state_dir: string;
+    socket_path: string;
+  };
+};
+
+export type DaemonStartCommandData = {
+  daemon: {
+    pid: number;
+    wss_port: number;
+    started_at: string;
+  };
+};
+
+export type DaemonStopCommandData = {
+  daemon: {
+    ok: true;
+    /** How the daemon was told to stop: a clean RPC round-trip, or a SIGTERM fallback. */
+    method: "rpc" | "sigterm";
+  };
+};
+
+export type DaemonStatusCommandData = {
+  daemon: {
+    version: string;
+    pid: number;
+    started_at: string;
+    wss_port: number;
+    pinned_keys: string[];
+    session_count: number;
+  };
+};

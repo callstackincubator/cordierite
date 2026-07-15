@@ -6,6 +6,10 @@ import type {
   CliResult,
   CommandMeta,
   ConnectCommandData,
+  DaemonRunCommandData,
+  DaemonStartCommandData,
+  DaemonStatusCommandData,
+  DaemonStopCommandData,
   HostCommandData,
   InvokeCommandData,
   KeygenCommandData,
@@ -182,6 +186,49 @@ const renderKeygenData = (colors: ColorPalette, data: KeygenCommandData): string
   ];
 };
 
+const renderDaemonRunData = (colors: ColorPalette, data: DaemonRunCommandData): string[] => {
+  return [
+    colors.green("Daemon Running"),
+    ...renderFields("Daemon", [
+      ["PID", data.daemon.pid],
+      ["State dir", data.daemon.state_dir],
+      ["Socket", data.daemon.socket_path],
+    ]),
+  ];
+};
+
+const renderDaemonStartData = (colors: ColorPalette, data: DaemonStartCommandData): string[] => {
+  return [
+    colors.green("Daemon Started"),
+    ...renderFields("Daemon", [
+      ["PID", data.daemon.pid],
+      ["WSS port", data.daemon.wss_port],
+      ["Started at", data.daemon.started_at],
+    ]),
+  ];
+};
+
+const renderDaemonStopData = (colors: ColorPalette, data: DaemonStopCommandData): string[] => {
+  return [
+    colors.green("Daemon Stopped"),
+    ...renderFields("Daemon", [["Method", data.daemon.method]]),
+  ];
+};
+
+const renderDaemonStatusData = (colors: ColorPalette, data: DaemonStatusCommandData): string[] => {
+  return [
+    colors.green("Daemon Status"),
+    ...renderFields("Daemon", [
+      ["Version", data.daemon.version],
+      ["PID", data.daemon.pid],
+      ["Started at", data.daemon.started_at],
+      ["WSS port", data.daemon.wss_port],
+      ["Pinned keys", data.daemon.pinned_keys.length],
+      ["Sessions", data.daemon.session_count],
+    ]),
+  ];
+};
+
 const renderSuccessData = (
   colors: ColorPalette,
   command: string,
@@ -191,7 +238,11 @@ const renderSuccessData = (
     | SessionCommandData
     | ToolsCommandData
     | InvokeCommandData
-    | KeygenCommandData,
+    | KeygenCommandData
+    | DaemonRunCommandData
+    | DaemonStartCommandData
+    | DaemonStopCommandData
+    | DaemonStatusCommandData,
 ): string[] => {
   switch (command) {
     case "host":
@@ -206,6 +257,14 @@ const renderSuccessData = (
       return renderToolsData(colors, data as ToolsCommandData);
     case "invoke":
       return renderInvokeData(colors, data as InvokeCommandData);
+    case "daemon run":
+      return renderDaemonRunData(colors, data as DaemonRunCommandData);
+    case "daemon start":
+      return renderDaemonStartData(colors, data as DaemonStartCommandData);
+    case "daemon stop":
+      return renderDaemonStopData(colors, data as DaemonStopCommandData);
+    case "daemon status":
+      return renderDaemonStatusData(colors, data as DaemonStatusCommandData);
     default:
       return [colors.green("Command Complete"), indentJson(data)];
   }
