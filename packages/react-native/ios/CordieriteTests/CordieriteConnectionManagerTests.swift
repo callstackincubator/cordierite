@@ -207,6 +207,57 @@ final class CordieriteConnectionManagerTests: XCTestCase {
     XCTAssertNil(CordieriteProcessResumeLeaseStore.shared.get()?.disconnectedAtMs)
   }
 
+  func testManagerResumeLeaseGetterReturnsNilThenExactSchemaRecord() throws {
+    let ownerGeneration = CordieriteProcessResumeLeaseStore.shared.newOwnerGeneration()
+    let manager = CordieriteConnectionManager(ownerGeneration: ownerGeneration)
+
+    XCTAssertNil(manager.currentResumeLeaseRecord())
+    XCTAssertTrue(
+      CordieriteProcessResumeLeaseStore.shared.replace(
+        ownerGeneration: ownerGeneration,
+        lease: CordieriteResumeLeaseV1(
+          sessionId: "session-1",
+          resumeToken: "resume-token-1",
+          alias: "iphone-1",
+          endpoint: CordieriteResumeEndpoint(ip: "127.0.0.1", port: 8443),
+          keepaliveIntervalS: 15,
+          graceS: 600,
+          disconnectedAtMs: 1_234
+        )
+      )
+    )
+
+    let record = try XCTUnwrap(manager.currentResumeLeaseRecord())
+    XCTAssertEqual(record["schemaVersion"] as? Int, 1)
+    XCTAssertEqual(record["sessionId"] as? String, "session-1")
+    XCTAssertEqual(record["resumeToken"] as? String, "resume-token-1")
+    XCTAssertEqual(record["alias"] as? String, "iphone-1")
+    let endpoint = try XCTUnwrap(record["endpoint"] as? [String: Any])
+    XCTAssertEqual(endpoint["ip"] as? String, "127.0.0.1")
+    XCTAssertEqual(endpoint["port"] as? Int, 8443)
+    XCTAssertEqual(record["keepaliveIntervalS"] as? Double, 15)
+    XCTAssertEqual(record["graceS"] as? Double, 600)
+    XCTAssertEqual(record["disconnectedAtMs"] as? Int64, 1_234)
+  }
+
+  func testManagerResumeLeaseClearIsGuardedByItsOwnerGeneration() {
+    let olderOwner = CordieriteProcessResumeLeaseStore.shared.newOwnerGeneration()
+    let newerOwner = CordieriteProcessResumeLeaseStore.shared.newOwnerGeneration()
+    let oldManager = CordieriteConnectionManager(ownerGeneration: olderOwner)
+    let newManager = CordieriteConnectionManager(ownerGeneration: newerOwner)
+    XCTAssertTrue(
+      CordieriteProcessResumeLeaseStore.shared.replace(
+        ownerGeneration: newerOwner,
+        lease: lease(resumeToken: "resume-token-new")
+      )
+    )
+
+    XCTAssertFalse(oldManager.clearResumeLease())
+    XCTAssertEqual(CordieriteProcessResumeLeaseStore.shared.get()?.resumeToken, "resume-token-new")
+    XCTAssertTrue(newManager.clearResumeLease())
+    XCTAssertNil(CordieriteProcessResumeLeaseStore.shared.get())
+  }
+
   func testTransportLossTimestampsLeaseWhileNormalTerminalCloseClearsIt() {
     let ownerGeneration = CordieriteProcessResumeLeaseStore.shared.newOwnerGeneration()
     CordieriteProcessResumeLeaseStore.shared.replace(

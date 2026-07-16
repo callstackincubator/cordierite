@@ -4,6 +4,7 @@ import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReadableMap
+import com.facebook.react.bridge.WritableMap
 import com.facebook.react.module.annotations.ReactModule
 
 @ReactModule(name = NativeCordieriteSpec.NAME)
@@ -93,6 +94,34 @@ class NativeCordieriteModule(
     }
 
     override fun getState(): String = manager.getState()
+
+    override fun getResumeLease(): WritableMap? {
+        val record = manager.getResumeLeaseRecord() ?: return null
+        val endpoint = record["endpoint"] as Map<*, *>
+        return Arguments.createMap().apply {
+            putInt("schemaVersion", record["schemaVersion"] as Int)
+            putString("sessionId", record["sessionId"] as String)
+            putString("resumeToken", record["resumeToken"] as String)
+            putString("alias", record["alias"] as String)
+            putMap(
+                "endpoint",
+                Arguments.createMap().apply {
+                    putString("ip", endpoint["ip"] as String)
+                    putInt("port", endpoint["port"] as Int)
+                },
+            )
+            putDouble("keepaliveIntervalS", record["keepaliveIntervalS"] as Double)
+            putDouble("graceS", record["graceS"] as Double)
+            when (val disconnectedAtMs = record["disconnectedAtMs"]) {
+                is Long -> putDouble("disconnectedAtMs", disconnectedAtMs.toDouble())
+                else -> putNull("disconnectedAtMs")
+            }
+        }
+    }
+
+    override fun clearResumeLease() {
+        manager.clearResumeLease()
+    }
 
     override fun invalidate() {
         manager.invalidate()

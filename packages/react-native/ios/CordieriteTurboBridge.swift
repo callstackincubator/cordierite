@@ -107,6 +107,14 @@ public final class CordieriteTurboBridge: NSObject, @unchecked Sendable {
     (manager.currentStateSnapshot() as NSString)
   }
 
+  @objc public func getResumeLease() -> NSDictionary? {
+    manager.currentResumeLeaseRecord()
+  }
+
+  @objc public func clearResumeLease() {
+    manager.clearResumeLease()
+  }
+
   /// TurboModule invalidation entry point (see `RCTNativeCordierite.invalidate`). Cancels the
   /// socket, invalidates the URLSession, and drops event callbacks so a Metro reload fully
   /// releases the transport instead of leaving a wedged "connecting or active" state.

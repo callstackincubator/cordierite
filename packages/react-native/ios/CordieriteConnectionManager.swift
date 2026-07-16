@@ -198,7 +198,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
   private var socketTask: URLSessionWebSocketTask?
   private var activeSessionId: String?
   private var pendingOptions: CordieriteConnectOptions?
-  private let ownerGeneration: Int64
+  nonisolated private let ownerGeneration: Int64
   private var isInvalidated = false
   /// Written once per `connect()` (inside `configureFromBundle`, before the socket exists) and
   /// read from the `nonisolated` TLS challenge delegate callback, which must respond
@@ -376,6 +376,16 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
   /// which is a synchronous ObjC method and cannot `await` onto the actor.
   nonisolated func currentStateSnapshot() -> String {
     stateSnapshot
+  }
+
+  /// Synchronous TurboModule bridge wrappers; clear retains this manager's generation guard.
+  nonisolated func currentResumeLeaseRecord() -> NSDictionary? {
+    CordieriteProcessResumeLeaseStore.shared.getRecord().map { $0 as NSDictionary }
+  }
+
+  @discardableResult
+  nonisolated func clearResumeLease() -> Bool {
+    CordieriteProcessResumeLeaseStore.shared.clear(ownerGeneration: ownerGeneration)
   }
 
   private func cleanup() {

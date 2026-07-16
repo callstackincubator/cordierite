@@ -54,6 +54,13 @@ describe("root entry (@cordierite/react-native): TurboModule laziness", () => {
     expect(nativeAccessAttempts).toBe(0);
   });
 
+  test("restoreSession lazily reads the native lease and tolerates a missing module", async () => {
+    const { cordieriteClient } = await import("../index");
+
+    await expect(cordieriteClient.restoreSession()).resolves.toBe(false);
+    expect(nativeAccessAttempts).toBeGreaterThan(0);
+  });
+
   test("registerTool does not throw, even with no native module available", async () => {
     const { registerTool } = await import("../index");
 

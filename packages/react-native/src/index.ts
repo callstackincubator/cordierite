@@ -7,7 +7,10 @@ import type {
   CordieriteToolRegistration,
   CordieriteUnifiedListenerMap,
 } from "./Cordierite.types";
-import { cordieriteNativeModule } from "./CordieriteModule";
+import {
+  cordieriteNativeModule,
+  cordieriteNativeResumeLeaseStore,
+} from "./CordieriteModule";
 import { parseBootstrapPayload, parseBootstrapUrl } from "./bootstrap";
 import { createCordieriteClient } from "./client";
 import { realAppState } from "./client/real-app-state";
@@ -45,6 +48,7 @@ const getCordieriteClientInstance = (): ReturnType<
   if (!cordieriteClientInstance) {
     cordieriteClientInstance = createCordieriteClient(cordieriteNativeModule, {
       appState: realAppState,
+      resumeLeaseStore: cordieriteNativeResumeLeaseStore,
     });
   }
   return cordieriteClientInstance;

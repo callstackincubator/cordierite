@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { cordieriteNativeModule } from "../CordieriteModule.web";
+import {
+  cordieriteNativeModule,
+  cordieriteNativeResumeLeaseStore,
+} from "../CordieriteModule.web";
 
 describe("CordieriteModule.web stub", () => {
   test('getState() returns "idle" instead of throwing (v1 defect)', () => {
@@ -29,5 +32,10 @@ describe("CordieriteModule.web stub", () => {
     expect(() => {
       subscription.remove();
     }).not.toThrow();
+  });
+
+  test("resume lease store is inert and nonthrowing", () => {
+    expect(cordieriteNativeResumeLeaseStore.get()).toBeNull();
+    expect(() => cordieriteNativeResumeLeaseStore.clear()).not.toThrow();
   });
 });

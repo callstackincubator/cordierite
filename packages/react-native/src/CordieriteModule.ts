@@ -5,6 +5,7 @@ import type {
   CordieriteModuleEvents,
   CordieriteStateChangeEvent,
 } from "./Cordierite.types";
+import type { ResumeLeaseStore } from "./client/resume-lease";
 import type { CordieriteNativeModuleLike } from "./client-types";
 import { logger } from "./logger";
 
@@ -33,13 +34,14 @@ const resolveNativeModule = (): NativeCordieriteModule["NativeCordierite"] => {
   try {
     const nativeModule =
       require("./NativeCordierite") as NativeCordieriteModule;
-    if (!nativeModule.NativeCordierite) {
+    const resolvedNative = nativeModule.NativeCordierite;
+    if (!resolvedNative) {
       // Defensive: the real `NativeCordierite.ts` either resolves or throws (it never resolves to
       // a nullish value), but a test double or an unexpected bundler transform could — treat that
       // the same as "not found" rather than deferring a crash to the first actual method call.
       throw new Error("NativeCordierite module resolved to a nullish value.");
     }
-    cachedNative = nativeModule.NativeCordierite;
+    cachedNative = resolvedNative;
     return cachedNative;
   } catch (error) {
     throw new Error(
@@ -193,6 +195,31 @@ export const cordieriteNativeModule: CordieriteNativeModuleLike = {
         error
       );
       return noopSubscription;
+    }
+  },
+};
+
+/** @internal Production adapter for the native process-memory resume lease. */
+export const cordieriteNativeResumeLeaseStore: ResumeLeaseStore = {
+  get() {
+    try {
+      return resolveNativeModule().getResumeLease();
+    } catch (error) {
+      logger.debug(
+        "getResumeLease(): native module unavailable, reporting no lease",
+        error
+      );
+      return null;
+    }
+  },
+  clear() {
+    try {
+      resolveNativeModule().clearResumeLease();
+    } catch (error) {
+      logger.debug(
+        "clearResumeLease(): native module unavailable, clear is inert",
+        error
+      );
     }
   },
 };
