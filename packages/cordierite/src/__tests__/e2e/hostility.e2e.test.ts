@@ -8,7 +8,7 @@
 
 import { connect as tlsConnect } from "node:tls";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import WebSocket from "ws";
 
 import { FakeAppClient } from "./app-client.js";

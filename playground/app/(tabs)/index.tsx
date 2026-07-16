@@ -15,7 +15,7 @@ import { useThemeColor } from "@/hooks/use-theme-color";
 const CONNECT_COMMANDS = [
   "cordierite keygen",
   "# paste the printed sha256/... pin into app.json's cliPins, then:",
-  "bun expo run:ios   # or: bun expo run:android",
+  "pnpm exec expo run:ios   # or: pnpm exec expo run:android",
   "cordierite link --open ios-sim   # or: --open android / --qr",
 ].join("\n");
 

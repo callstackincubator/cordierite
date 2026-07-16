@@ -10,16 +10,15 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import WebSocket from "ws";
 
 import { decodeBootstrap } from "@cordierite/shared";
 
-import { binEntry, packageRoot, writeTestHostKey } from "./fixtures.js";
+import { runCliBinary, writeTestHostKey } from "./fixtures.js";
 
-// The fake app client below skips pinning (that is the app SDK's job); Bun's client-side `ws` shim
-// also doesn't honor a per-client `rejectUnauthorized: false`, so the leaf-cert check is disabled
-// process-wide for this file's throwaway self-signed daemon key.
+// The fake app client below skips pinning (that is the app SDK's job), so the leaf-cert check is
+// disabled process-wide for this file's throwaway self-signed daemon key.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const stateDirs: string[] = [];
@@ -64,7 +63,7 @@ const pickFreePort = async (): Promise<number> => {
 };
 
 /** Always pins a free port: several cases below auto-spawn a real daemon, and the shared default
- * (8443) collides with the other test files' daemons running concurrently under `bun test`. */
+ * (8443) collides with the other test files' daemons when test files run concurrently. */
 const makeTempStateDir = async (configOverrides: Record<string, unknown> = {}): Promise<string> => {
   const directory = await mkdtemp(path.join(tmpdir(), "cordierite-exit-codes-"));
   await writeTestHostKey(path.join(directory, "key.pem"));
@@ -80,17 +79,11 @@ const makeTempStateDir = async (configOverrides: Record<string, unknown> = {}): 
 };
 
 const runCli = (args: string[], stateDir: string) => {
-  const result = Bun.spawnSync({
-    cmd: ["bun", binEntry, ...args, "--json"],
-    cwd: packageRoot,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CORDIERITE_STATE_DIR: stateDir },
-  });
+  const result = runCliBinary([...args, "--json"], { stateDir });
 
   return {
     exitCode: result.exitCode,
-    payload: JSON.parse(result.stdout.toString("utf8")),
+    payload: JSON.parse(result.stdout),
   };
 };
 

@@ -4,7 +4,7 @@
  * the task calls for): list/call/list_changed with the fake app.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -59,7 +59,7 @@ describe("e2e: mcp (real stdio subprocess)", () => {
       events.close();
 
       const transport = new StdioClientTransport({
-        command: "bun",
+        command: process.execPath,
         args: [binEntry, "mcp"],
         cwd: packageRoot,
         env: { ...(process.env as Record<string, string>), CORDIERITE_STATE_DIR: stateDir },

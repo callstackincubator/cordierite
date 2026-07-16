@@ -1,6 +1,6 @@
-// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`mcp: tools/list and tools/call the generated MCP tool list (built-ins + one proxied tool) matches the locked mapping 1`] = `
+exports[`mcp: tools/list and tools/call > the generated MCP tool list (built-ins + one proxied tool) matches the locked mapping 1`] = `
 [
   {
     "annotations": undefined,

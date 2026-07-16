@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import { BOOTSTRAP_VERSION_V2, decodeBootstrap, encodeBootstrap, type BootstrapPayload } from "../domains/bootstrap.js";
 import { formatAgentWebSocketUrl } from "../domains/transport.js";

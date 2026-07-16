@@ -5,7 +5,7 @@
  * directly, rather than sleeping on wall-clock time.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import type { EventNotification } from "@cordierite/shared";
 

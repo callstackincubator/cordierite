@@ -11,7 +11,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import WebSocket from "ws";
 
 import { decodeBootstrap, TOOL_ERROR_TYPES, type EventKind, type EventNotification } from "@cordierite/shared";
@@ -19,8 +19,7 @@ import { decodeBootstrap, TOOL_ERROR_TYPES, type EventKind, type EventNotificati
 import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { writeTestHostKey } from "./fixtures.js";
 
-// Client pinning is the app's job; tests skip it client-side (see session-engine.integration.test.ts
-// for why this is process-wide under Bun's `ws` shim rather than per-client).
+// Client pinning is the app's job; tests skip it client-side for their throwaway self-signed key.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const runningDaemons: RunningDaemon[] = [];

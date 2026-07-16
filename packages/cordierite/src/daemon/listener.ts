@@ -163,11 +163,7 @@ export const startListener = async (options: ListenerOptions): Promise<DaemonLis
       return address && typeof address !== "string" ? address.port : undefined;
     },
     applyTls: (nextMaterial) => {
-      // `tls.Server.prototype.setSecureContext` exists on real Node (the daemon's actual runtime —
-      // `bin.ts` shebangs `#!/usr/bin/env node`) since v11.4, but Bun's `node:https` shim (this
-      // package's *test* runtime per LOOP.md) does not implement it as of Bun 1.3. Guard rather than
-      // call unconditionally so `bun test` doesn't crash the listener; this is a no-op only under
-      // that shim, never under the daemon's real runtime.
+      // Keep this guard for compatibility with runtimes whose `node:https` shim omits the method.
       const server = httpsServer as HttpsServer & {
         setSecureContext?: (context: { key: string; cert: string }) => void;
       };

@@ -10,9 +10,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 
-import { binEntry, packageRoot, writeTestHostKey } from "./fixtures.js";
+import { runCliBinary, spawnCliBinary, waitForExit, writeTestHostKey } from "./fixtures.js";
 
 const stateDirs: string[] = [];
 const daemonPids: number[] = [];
@@ -60,7 +60,7 @@ const makeTempStateDir = async (): Promise<string> => {
   await writeTestHostKey(path.join(directory, "key.pem"));
 
   // A free-port config avoids EADDRINUSE collisions with the other test files' daemons that also
-  // bind a wss listener concurrently under `bun test`'s default parallelism.
+  // bind a wss listener concurrently when test files are run in parallel.
   const port = await pickFreePort();
   await writeFile(
     path.join(directory, "config.json"),
@@ -72,15 +72,9 @@ const makeTempStateDir = async (): Promise<string> => {
 };
 
 const runCliJson = (args: string[], stateDir: string) => {
-  const result = Bun.spawnSync({
-    cmd: ["bun", binEntry, ...args, "--json"],
-    cwd: packageRoot,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CORDIERITE_STATE_DIR: stateDir },
-  });
+  const result = runCliBinary([...args, "--json"], { stateDir });
 
-  return JSON.parse(result.stdout.toString("utf8"));
+  return JSON.parse(result.stdout);
 };
 
 describe("cordierite events --json", () => {
@@ -92,20 +86,14 @@ describe("cordierite events --json", () => {
     expect(status.ok).toBe(true);
     daemonPids.push(status.data.daemon.pid);
 
-    const eventsProcess = Bun.spawn({
-      cmd: ["bun", binEntry, "events", "--json"],
-      cwd: packageRoot,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, CORDIERITE_STATE_DIR: stateDir },
-    });
+    const eventsProcess = spawnCliBinary(["events", "--json"], { stateDir });
 
     const lines: string[] = [];
     let buffered = "";
     const linesSeen = new Promise<void>((resolve) => {
       (async () => {
         for await (const chunk of eventsProcess.stdout) {
-          buffered += Buffer.from(chunk).toString("utf8");
+          buffered += chunk.toString("utf8");
           let newlineIndex = buffered.indexOf("\n");
 
           while (newlineIndex !== -1) {
@@ -148,7 +136,7 @@ describe("cordierite events --json", () => {
     expect(lines.some((line) => JSON.parse(line).kind === "link_created")).toBe(true);
 
     eventsProcess.kill("SIGINT");
-    const exitCode = await eventsProcess.exited;
+    const exitCode = await waitForExit(eventsProcess);
     expect(exitCode).toBe(0);
 
     const stopResult = runCliJson(["daemon", "stop"], stateDir);

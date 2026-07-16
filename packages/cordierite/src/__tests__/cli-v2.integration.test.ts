@@ -8,21 +8,21 @@
  */
 
 import { createServer as createNetServer } from "node:net";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { text } from "node:stream/consumers";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import WebSocket from "ws";
 
 import { decodeBootstrap } from "@cordierite/shared";
 
-import { binEntry, packageRoot, writeTestHostKey } from "./fixtures.js";
+import { spawnCliBinary, waitForExit, writeTestHostKey } from "./fixtures.js";
 
 // The fake app client below skips pinning (that is the app SDK's job, exercised in
-// session-engine.integration.test.ts); Bun's client-side `ws` shim also doesn't honor a per-client
-// `rejectUnauthorized: false`, so the leaf-cert check is disabled process-wide for this file's
-// throwaway self-signed daemon key.
+// session-engine.integration.test.ts); the leaf-cert check is disabled process-wide for this
+// file's throwaway self-signed daemon key.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const stateDirs: string[] = [];
@@ -83,26 +83,20 @@ const makeTempStateDir = async (configOverrides: Record<string, unknown> = {}): 
 type CliJsonResult = { ok: boolean; data?: unknown; error?: { type: string; message: string } };
 
 /**
- * Runs the CLI as a subprocess and returns its parsed `--json` output. Uses `Bun.spawn` (async),
- * never `Bun.spawnSync`: several flows below (`invoke`) need the daemon to round-trip through this
+ * Runs the CLI as a subprocess and returns its parsed `--json` output. It uses an async process:
+ * several flows below (`invoke`) need the daemon to round-trip through this
  * test's own fake app WebSocket client while the CLI subprocess is in flight — `spawnSync` blocks
  * this process's event loop for the subprocess's entire lifetime, which would starve that
  * WebSocket's `message` handler and deadlock the round-trip.
  */
 const runCliJson = async (args: string[], stateDir: string): Promise<CliJsonResult> => {
-  const proc = Bun.spawn({
-    cmd: ["bun", binEntry, ...args, "--json"],
-    cwd: packageRoot,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CORDIERITE_STATE_DIR: stateDir },
-  });
+  const proc = spawnCliBinary([...args, "--json"], { stateDir });
 
   const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
+    text(proc.stdout),
+    text(proc.stderr),
   ]);
-  await proc.exited;
+  await waitForExit(proc);
 
   try {
     return JSON.parse(stdout);
@@ -138,7 +132,7 @@ describe("cordierite CLI v2: end-to-end command table", () => {
     "keygen -> ls auto-spawns -> link -> claim -> ls ACTIVE -> tools/invoke round-trip -> revoke",
     async () => {
       const stateDir = await makeTempStateDir();
-      const port = JSON.parse(await Bun.file(path.join(stateDir, "config.json")).text()).wssPort as number;
+      const port = JSON.parse(await readFile(path.join(stateDir, "config.json"), "utf8")).wssPort as number;
 
       // keygen: fully non-interactive, refuses to overwrite without --force.
       const keygenPath = path.join(stateDir, "operator-key.pem");
@@ -276,7 +270,7 @@ describe("cordierite CLI v2: end-to-end command table", () => {
       expect(status.ok).toBe(true);
       daemonPids.push((status.data as { daemon: { pid: number } }).daemon.pid);
 
-      const port = JSON.parse(await Bun.file(path.join(stateDir, "config.json")).text()).wssPort as number;
+      const port = JSON.parse(await readFile(path.join(stateDir, "config.json"), "utf8")).wssPort as number;
 
       const claimOne = async (deviceModel: string): Promise<{ socket: WebSocket; alias: string }> => {
         const linkResult = await runCliJson(["link", "--ttl", "60"], stateDir);

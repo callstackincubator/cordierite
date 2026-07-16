@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, vi, test } from "vitest";
 
 import type { CordieriteToolRegistration } from "../Cordierite.types";
 import type { CordieriteSubscription } from "../public-api";
@@ -12,7 +12,7 @@ type EffectCallback = () => EffectCleanup;
  * A minimal, controllable stand-in for React's `useRef`/`useEffect` that implements exactly the
  * one contract `useCordieriteTool` depends on (run the effect on the first call, and again only
  * when `deps` shallowly changes, disposing the previous effect first) -- without needing a real
- * reconciler. "react-native"'s own source cannot be parsed under plain `bun test` (Flow-typed), and
+ * reconciler. "react-native"'s own source cannot be parsed under a Node test runner (Flow-typed), and
  * pulling in a full React renderer just to drive one `useEffect` call is unnecessary; mocking "react"
  * itself follows the same pattern `deep-link-install.test.ts` uses for `Linking`.
  *
@@ -102,7 +102,8 @@ describe("createUseCordieriteTool", () => {
 
   beforeEach(() => {
     host = createFakeReactHost();
-    void mock.module("react", () => ({
+    vi.resetModules();
+    vi.doMock("react", () => ({
       useEffect: host.useEffect,
       useRef: host.useRef,
     }));

@@ -6,7 +6,7 @@
  * new link/claim works against the fresh daemon.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 
 import { FakeAppClient } from "./app-client.js";
 import {

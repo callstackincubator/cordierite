@@ -165,8 +165,7 @@ export class FakeAppClient {
 
   private connect(): Promise<WebSocket> {
     return new Promise((resolve, reject) => {
-      // `rejectUnauthorized: false` here is the Bun `ws`-shim workaround documented in harness.ts;
-      // the real trust decision already happened in `verifyServerPin` above.
+      // The real trust decision already happened in `verifyServerPin` above.
       const socket = new WebSocket(`wss://127.0.0.1:${this.port}`, { rejectUnauthorized: false });
       socket.once("open", () => resolve(socket));
       socket.once("error", reject);

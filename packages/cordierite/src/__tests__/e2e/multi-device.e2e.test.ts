@@ -6,7 +6,7 @@
  * "one daemon serves N concurrent device sessions on one port").
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 
 import { FakeAppClient } from "./app-client.js";
 import {

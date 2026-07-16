@@ -10,11 +10,12 @@ import type { CordieriteNativeModuleLike } from "./client-types";
 import { logger } from "./logger";
 
 // Metro/Node's CommonJS `require` is available at runtime in every environment this file actually
-// ships to (RN bundles, and `bun test` via its own CJS interop); this narrow local declaration
+// ships to (React Native bundles); this narrow local declaration
 // avoids pulling in `@types/node` just for the lazy-resolution trick below.
 declare const require: (id: string) => Record<string, unknown>;
 
 type NativeCordieriteModule = typeof import("./NativeCordierite");
+type NativeModuleLoader = () => NativeCordieriteModule;
 
 /**
  * ARCHITECTURE.md §11 / task 12: the root entry is side-effect-free, so the TurboModule lookup
@@ -25,6 +26,14 @@ type NativeCordieriteModule = typeof import("./NativeCordierite");
  * actually executes.
  */
 let cachedNative: NativeCordieriteModule["NativeCordierite"] | null = null;
+const defaultNativeModuleLoader: NativeModuleLoader = () => require("./NativeCordierite") as NativeCordieriteModule;
+let nativeModuleLoader: NativeModuleLoader = defaultNativeModuleLoader;
+
+/** @internal Allows the Node test runner to supply the lazy native-module dependency. */
+export const __cordieriteSetNativeModuleLoaderForTests = (loader?: NativeModuleLoader): void => {
+  cachedNative = null;
+  nativeModuleLoader = loader ?? defaultNativeModuleLoader;
+};
 
 const resolveNativeModule = (): NativeCordieriteModule["NativeCordierite"] => {
   if (cachedNative) {
@@ -32,8 +41,7 @@ const resolveNativeModule = (): NativeCordieriteModule["NativeCordierite"] => {
   }
 
   try {
-    const nativeModule =
-      require("./NativeCordierite") as NativeCordieriteModule;
+    const nativeModule = nativeModuleLoader();
     const resolvedNative = nativeModule.NativeCordierite;
     if (!resolvedNative) {
       // Defensive: the real `NativeCordierite.ts` either resolves or throws (it never resolves to

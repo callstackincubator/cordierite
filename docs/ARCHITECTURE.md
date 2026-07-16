@@ -392,7 +392,7 @@ packages/
 playground/        reference app (Expo dev build)
 ```
 
-Tooling stays: bun workspaces, turbo, `bun test`, tsc builds. Node ≥ 20 for the daemon
+Tooling stays: pnpm workspaces, turbo, Vitest, tsc builds. Node ≥ 20 for the daemon
 (UDS + `AF_UNIX` on Windows). Windows support is best-effort; the control plane uses the
 named-pipe path `\\.\pipe\cordierite-<user>` behind the same client API.
 

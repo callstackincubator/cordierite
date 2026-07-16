@@ -2,9 +2,9 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
-import { binEntry, packageRoot, runCliWithCapture } from "./fixtures.js";
+import { runCliBinary, runCliWithCapture } from "./fixtures.js";
 
 describe("CLI integration", () => {
   test("keygen --out --json is non-interactive and works with stdin/stdout not a TTY", async () => {
@@ -32,17 +32,11 @@ describe("CLI integration", () => {
   });
 
   test("help lists exactly the v2 command surface (ARCHITECTURE.md §10)", () => {
-    const command = Bun.spawnSync({
-      cmd: ["bun", binEntry, "--help"],
-      cwd: packageRoot,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: process.env,
-    });
+    const command = runCliBinary(["--help"]);
 
     expect(command.exitCode).toBe(0);
 
-    const stdout = command.stdout.toString("utf8");
+    const stdout = command.stdout;
     const commandsSection = stdout.split(/\n\s*\n/u).find((block) => block.startsWith("Commands:"));
 
     expect(commandsSection).toBeDefined();
@@ -72,15 +66,9 @@ describe("CLI integration", () => {
 
   test("--help on each command exposes exactly its documented flags", () => {
     const helpFor = (command: string): string => {
-      const result = Bun.spawnSync({
-        cmd: ["bun", binEntry, command, "--help"],
-        cwd: packageRoot,
-        stdout: "pipe",
-        stderr: "pipe",
-        env: process.env,
-      });
+      const result = runCliBinary([command, "--help"]);
       expect(result.exitCode).toBe(0);
-      return result.stdout.toString("utf8");
+      return result.stdout;
     };
 
     const keygenHelp = helpFor("keygen");
@@ -105,13 +93,7 @@ describe("CLI integration", () => {
   });
 
   test("version is available from the binary entrypoint", () => {
-    const command = Bun.spawnSync({
-      cmd: ["bun", binEntry, "--version"],
-      cwd: packageRoot,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: process.env,
-    });
+    const command = runCliBinary(["--version"]);
 
     expect(command.exitCode).toBe(0);
   });
