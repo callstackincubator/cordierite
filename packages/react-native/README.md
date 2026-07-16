@@ -101,7 +101,7 @@ The package has three entries:
 | Entry | Behavior |
 | --- | --- |
 | `@cordierite/react-native` | Side-effect-free. Exports `registerTool`, `useCordieriteTool`, `postEvent`, `installCordieriteDeepLinkBootstrap`, `addCordieriteListener`, `getCordieriteState`, `connect`, and types. The native module is looked up **lazily**, on the first actual native call — importing it (even in Expo Go or a misconfigured build) never crashes; only calling a native-requiring function like `connect()` without native support does, with an actionable error. |
-| `@cordierite/react-native/auto` | Same exports, plus a side effect: installs the default deep-link bootstrap listener on import (the old v1 root-import behavior, now opt-in). |
+| `@cordierite/react-native/auto` | Same exports, plus a side effect: installs the default deep-link bootstrap listener and starts recovery from the native process lease on import (the old v1 root-import behavior, now opt-in). |
 | `@cordierite/react-native/noop` | Same public API, fully inert — for compiling Cordierite out of release builds (see below). |
 
 Most apps just want the deep-link listener installed automatically, so import the side-effect entry once near your app's entry point:
@@ -118,7 +118,9 @@ import { installCordieriteDeepLinkBootstrap } from "@cordierite/react-native";
 installCordieriteDeepLinkBootstrap();
 ```
 
-**Bootstrap connection:** the installed listener watches for URLs with a `cordierite` query parameter, parses the v2 bootstrap payload, and calls `connect` when the client is idle. You do not need your own `Linking` handler for the default flow.
+**Bootstrap connection and recovery:** installation registers the runtime URL listener immediately, reads the initial launch URL, and attempts native-lease recovery once. The initial URL waits for recovery: a successful restore suppresses the old launch-link claim, while no lease or an unexpected orchestration failure falls back to the normal initial-link flow. Runtime URLs still parse the v2 bootstrap payload and call `connect` when the client is idle. You do not need your own `Linking` handler for the default flow.
+
+The resume lease is native **process-memory only** and is committed before JS receives each successful claim/resume acknowledgement. That supports Metro reloads and JS runtime replacement with the same alias and no new link, provided the native app process stays alive. It is never persisted to disk; after native process death, open a fresh bootstrap link. The grace window starts when the transport suspends/disconnects, not when the acknowledgement was received. Advanced flows can trigger the same recovery explicitly with `cordieriteClient.restoreSession()`.
 
 **Errors:** use `addCordieriteListener("error", callback)` for bootstrap-parse, connect, socket, and tool-handler failures — one unified channel.
 

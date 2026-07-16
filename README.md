@@ -6,7 +6,7 @@ Cordierite exists so **developers, QA, and automation** can drive **registered t
 
 ## Why it exists
 
-Shipping ad-hoc debug UIs in production builds is risky: they leak intent, widen attack surface, and are hard to gate consistently. Cordierite inverts that: **production-capable** builds can still participate in Cordierite **when a trusted host is available**, because trust is **not** "anyone on Wi-Fi" or "whoever crafted a link" - it is **TLS + SPKI pinning** to identities you embed, plus **short-lived session bootstrap** so deep links are hints, not proof of authority. A single **`cordierite`** daemon absorbs the churn a real dev loop produces - Metro reloads, crashes, backgrounding, CI restarts - by suspending and resuming sessions instead of dying with them, and serves any number of devices at once.
+Shipping ad-hoc debug UIs in production builds is risky: they leak intent, widen attack surface, and are hard to gate consistently. Cordierite inverts that: **production-capable** builds can still participate in Cordierite **when a trusted host is available**, because trust is **not** "anyone on Wi-Fi" or "whoever crafted a link" - it is **TLS + SPKI pinning** to identities you embed, plus **short-lived session bootstrap** so deep links are hints, not proof of authority. A single **`cordierite`** daemon absorbs common dev-loop churn - Metro reloads, backgrounding, and network flaps - by suspending and resuming sessions instead of dying with them, and serves any number of devices at once. Resume credentials live only in the native app process: process death requires a fresh bootstrap link.
 
 ## Security
 
@@ -162,7 +162,7 @@ Add that to Claude Code's or Cursor's MCP config and the connected app's tools a
 ## Security summary
 
 - **Pinning**: the app trusts the daemon by SPKI hash, not IP/DNS/deep-link origin; deep links are bootstrap hints, never proof of authority.
-- **Tokens**: pending-session tokens are short-lived, single-use, and compared with `crypto.timingSafeEqual`; a rotating resume token lets a suspended session recover without minting a new link.
+- **Tokens**: pending-session tokens are short-lived, single-use, and compared with `crypto.timingSafeEqual`; a rotating resume token lets a suspended session recover without minting a new link while the native app process remains alive. Resume credentials are process-memory-only and are never persisted to disk.
 - **Control plane**: CLI and MCP talk to the daemon over a Unix domain socket (`0700`/`0600`), not an open localhost port.
 - **Policy + audit**: production deployments can deny tool classes or specific tools by policy, and every invocation attempt is audited (args hashed, never logged raw).
 

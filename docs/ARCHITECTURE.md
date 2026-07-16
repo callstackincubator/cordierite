@@ -16,9 +16,10 @@ Decisions already made (do not re-litigate in implementation):
 
 ## 1. Goals
 
-1. **Survive churn.** Metro reloads, app crashes, backgrounding, network flaps, and CI
-   restarts must not require operator intervention (no new host process, no new deep
-   link for a reconnect within the grace window).
+1. **Survive churn.** Metro reloads, backgrounding, and network flaps must not require
+   operator intervention (no new host process or deep link for a reconnect within the
+   grace window while the native app process remains alive). App process death requires
+   a fresh bootstrap because resume credentials are never persisted to disk.
 2. **Agent-native.** MCP is the primary machine-consumption surface; the CLI is the
    human surface. Both are thin clients of the same daemon RPC.
 3. **Multi-device.** One daemon serves N concurrent device sessions on one port.
@@ -326,18 +327,27 @@ Package `@cordierite/react-native`. Entry points:
   `addCordieriteListener`, `getCordieriteState`, types. TurboModule lookup is lazy
   (first native call), never at import time.
 - `@cordierite/react-native/auto` — side-effect entry: installs the deep-link bootstrap
-  with defaults on import (the v1 root-import behavior, now opt-in).
+  with defaults and starts native-lease recovery on import (the v1 root-import behavior,
+  now opt-in).
 - `@cordierite/react-native/noop` — identical public API, inert implementation, for
   release-build compile-out via Metro `resolveRequest` or conditional require. Document
   the recipe in the package README.
 
 Client behavior:
 
-- On claim ack, keep `resume_token` **in memory only**. On socket loss, auto-reconnect
-  with exponential backoff (0.5 s → 30 s cap, jitter) while the token is presumed valid;
-  re-send the full registry snapshot after every successful resume. Stop after
-  `grace_s` from the ack or on `AppState` staying background (resume attempts pause in
-  background, restart on foreground).
+- On every successful claim/resume, native commits the latest `resume_token` lease before
+  emitting the `session_ack` to JS. The lease is synchronous, native **process-memory
+  only**, and never written to disk. It records transport suspension/disconnection time,
+  which anchors `grace_s`; ack time does not. On socket loss, auto-reconnect with
+  exponential backoff (0.5 s → 30 s cap, jitter) while the lease remains within grace,
+  and re-send the full registry snapshot after every successful resume. Resume attempts
+  pause in background and restart on foreground.
+- Installing the bootstrap explicitly or importing `/auto` registers the runtime URL
+  listener first, then restores once from the native lease before considering the initial
+  launch URL. A successful restore suppresses that initial URL claim; no lease or an
+  unexpected orchestration failure falls back to normal initial-link handling. This lets
+  a fresh Metro JS runtime resume automatically with the same alias and no new link.
+  Native app process death erases the lease and requires a fresh bootstrap.
 - `registerTool({ name, description, inputSchema?, outputSchema?, annotations?, handler })`
   → `{ remove() }`. The disposer removes only its own registration (compare by
   registration identity, not name). Duplicate name registration logs a dev warning and

@@ -6,11 +6,13 @@ import { parseBootstrapUrl } from "./bootstrap";
 import { logger } from "./logger";
 
 /**
- * Structural seam the deep-link flow needs from a Cordierite client: state + connect (both
- * platforms), plus routing parse/connect failures onto the client's single unified error channel
- * (ARCHITECTURE.md §11) instead of a bespoke bootstrap-only listener set.
+ * Structural seam the auto-bootstrap flow needs from a Cordierite client: startup recovery,
+ * state + connect (both platforms), plus routing parse/connect failures onto the client's single
+ * unified error channel (ARCHITECTURE.md §11) instead of a bespoke bootstrap-only listener set.
  */
 export type CordieriteAutoBootstrapClient = {
+  /** Starts recovery from the native process-memory lease, if one is available. */
+  restoreSession(): Promise<boolean>;
   getState(): CordieriteConnectionState;
   connect(input: CordieriteConnectInput): Promise<void>;
   reportBootstrapError(event: {

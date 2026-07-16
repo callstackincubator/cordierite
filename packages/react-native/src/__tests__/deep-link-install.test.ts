@@ -1,3 +1,4 @@
+import { encodeBootstrap } from "@cordierite/shared";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import type { CordieriteConnectionState } from "../Cordierite.types";
@@ -34,11 +35,32 @@ const flushMicrotasks = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-const createMockClient = (initialState: CordieriteConnectionState = "idle") => {
+const validBootstrapUrl = () =>
+  `playground:///?cordierite=${encodeBootstrap({
+    family: 4,
+    address: "127.0.0.1",
+    port: 8443,
+    sessionId: "session-123",
+    token: "a".repeat(43),
+    expiresAt: Math.floor(Date.now() / 1000) + 60,
+  })}`;
+
+const createMockClient = (
+  initialState: CordieriteConnectionState = "idle",
+  restoreSessionImpl: () => Promise<boolean> = () => Promise.resolve(false)
+) => {
   const state = initialState;
   const connects: unknown[] = [];
+  let restoreCalls = 0;
   return {
     connects,
+    get restoreCalls() {
+      return restoreCalls;
+    },
+    async restoreSession() {
+      restoreCalls += 1;
+      return restoreSessionImpl();
+    },
     getState() {
       return state;
     },
@@ -89,6 +111,72 @@ describe("installCordieriteDeepLinkBootstrap", () => {
     installCordieriteDeepLinkBootstrap(client, { requirePrivateIp: true });
 
     expect(urlListeners).toHaveLength(1);
+    expect(client.restoreCalls).toBe(1);
+  });
+
+  test("successful startup recovery suppresses the initial deep-link claim", async () => {
+    getInitialURLImpl = () => Promise.resolve(validBootstrapUrl());
+    const { installCordieriteDeepLinkBootstrap } = await import(
+      "../deep-link-install"
+    );
+    const client = createMockClient("idle", () => Promise.resolve(true));
+
+    installCordieriteDeepLinkBootstrap(client);
+    await flushMicrotasks();
+
+    expect(client.restoreCalls).toBe(1);
+    expect(client.connects).toEqual([]);
+  });
+
+  test("a missing startup lease falls back to the valid initial deep link", async () => {
+    getInitialURLImpl = () => Promise.resolve(validBootstrapUrl());
+    const { installCordieriteDeepLinkBootstrap } = await import(
+      "../deep-link-install"
+    );
+    const client = createMockClient("idle", () => Promise.resolve(false));
+
+    installCordieriteDeepLinkBootstrap(client);
+    await flushMicrotasks();
+
+    expect(client.connects).toHaveLength(1);
+  });
+
+  test("an unexpected recovery rejection falls back to the valid initial deep link", async () => {
+    getInitialURLImpl = () => Promise.resolve(validBootstrapUrl());
+    const { installCordieriteDeepLinkBootstrap } = await import(
+      "../deep-link-install"
+    );
+    const client = createMockClient("idle", () =>
+      Promise.reject(new Error("restore failed"))
+    );
+
+    installCordieriteDeepLinkBootstrap(client);
+    await flushMicrotasks();
+
+    expect(client.connects).toHaveLength(1);
+  });
+
+  test("the initial URL waits until startup recovery resolves", async () => {
+    getInitialURLImpl = () => Promise.resolve(validBootstrapUrl());
+    let resolveRestore: ((restored: boolean) => void) | undefined;
+    const restoreResult = new Promise<boolean>((resolve) => {
+      resolveRestore = resolve;
+    });
+    const { installCordieriteDeepLinkBootstrap } = await import(
+      "../deep-link-install"
+    );
+    const client = createMockClient("idle", () => restoreResult);
+
+    installCordieriteDeepLinkBootstrap(client);
+    await flushMicrotasks();
+
+    expect(urlListeners).toHaveLength(1);
+    expect(client.connects).toEqual([]);
+
+    resolveRestore?.(false);
+    await flushMicrotasks();
+
+    expect(client.connects).toHaveLength(1);
   });
 
   test("options are threaded down to the deep-link handler (requirePrivateIp: false)", async () => {
@@ -100,7 +188,6 @@ describe("installCordieriteDeepLinkBootstrap", () => {
     installCordieriteDeepLinkBootstrap(client, { requirePrivateIp: false });
     expect(urlListeners).toHaveLength(1);
 
-    const { encodeBootstrap } = await import("@cordierite/shared");
     const nonPrivatePayload = {
       family: 4 as const,
       address: "8.8.8.8",
