@@ -10,9 +10,17 @@ import type { StateDirPaths } from "./state-dir.js";
 
 export type PolicyDecision = "allow" | "deny";
 
+/**
+ * `config.json`'s `policy` shape (ARCHITECTURE.md §12): `default` applies to tools whose
+ * descriptor has no `annotations.destructiveHint`; `destructive` applies when it is `true`;
+ * `tools["<alias>/<name>"]` overrides both for one specific tool on one specific session alias.
+ * Values are `"allow" | "deny"` only — the enum deliberately leaves room for a future `"prompt"`
+ * value, which is rejected at load time with a message that says so (see `requirePolicyDecision`).
+ */
 export type CordieritePolicyConfig = {
   default: PolicyDecision;
   destructive: PolicyDecision;
+  tools?: Record<string, PolicyDecision>;
 };
 
 export type CordieriteConfig = {
@@ -45,7 +53,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
   "scheme",
 ]);
 
-const KNOWN_POLICY_KEYS = new Set<string>(["default", "destructive"]);
+const KNOWN_POLICY_KEYS = new Set<string>(["default", "destructive", "tools"]);
 
 const POLICY_DECISIONS = new Set<string>(["allow", "deny"]);
 
@@ -81,7 +89,10 @@ const requireNonEmptyString = (value: unknown, key: string): string => {
 
 const requirePolicyDecision = (value: unknown, key: string): PolicyDecision => {
   if (typeof value !== "string" || !POLICY_DECISIONS.has(value)) {
-    throw configError(key, 'must be "allow" or "deny".');
+    throw configError(
+      key,
+      'must be "allow" or "deny" ("prompt" is reserved for a future release and is not yet supported).',
+    );
   }
 
   return value as PolicyDecision;
@@ -185,6 +196,20 @@ export const loadConfig = async (
 
     if (policy.destructive !== undefined) {
       config.policy.destructive = requirePolicyDecision(policy.destructive, "policy.destructive");
+    }
+
+    if (policy.tools !== undefined) {
+      if (typeof policy.tools !== "object" || policy.tools === null || Array.isArray(policy.tools)) {
+        throw configError("policy.tools", "must be an object.");
+      }
+
+      const tools: Record<string, PolicyDecision> = {};
+
+      for (const [toolKey, toolValue] of Object.entries(policy.tools as Record<string, unknown>)) {
+        tools[toolKey] = requirePolicyDecision(toolValue, `policy.tools["${toolKey}"]`);
+      }
+
+      config.policy.tools = tools;
     }
   }
 

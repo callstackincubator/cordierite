@@ -48,6 +48,14 @@ export type SessionSelectorParams = {
 
 // --- daemon.status ---
 
+/** Wire-safe mirror of `daemon/config.ts`'s `CordieritePolicyConfig` (ARCHITECTURE.md §12):
+ * `daemon.status`'s effective policy, exactly as loaded from `config.json` plus defaults. */
+export type EffectivePolicyConfig = {
+  default: "allow" | "deny";
+  destructive: "allow" | "deny";
+  tools?: Record<string, "allow" | "deny">;
+};
+
 export type DaemonStatusResult = {
   version: string;
   pid: number;
@@ -56,6 +64,13 @@ export type DaemonStatusResult = {
   wssPort: number;
   pinnedKeys: string[];
   sessions: SessionSummary[];
+  /** Effective policy configuration (ARCHITECTURE.md §12). */
+  policy: EffectivePolicyConfig;
+  /** Audit log surfacing (ARCHITECTURE.md §12): where records land and how many writes failed. */
+  audit: {
+    path: string;
+    failedWrites: number;
+  };
 };
 
 // --- daemon.shutdown ---
@@ -100,6 +115,9 @@ export type ToolsCallParams = SessionSelectorParams & {
   name: string;
   args: Record<string, unknown>;
   timeoutMs?: number;
+  /** Attribution for the audit log (ARCHITECTURE.md §12): who issued this call. The MCP server
+   * always sets `"mcp"`; omitted (the CLI's case) defaults to `"cli"` at the daemon. */
+  caller?: "cli" | "mcp";
 };
 
 export type ToolsCallResult = {

@@ -68,3 +68,12 @@ passes through both.
 
 Extend the task 04/05 daemon integration harness; use a temp state dir and read the
 audit file directly in assertions.
+
+> Status: DONE. `daemon/policy.ts` (evaluate), `daemon/audit.ts` (JSONL audit logger, serialized
+> queue, sha256 args digest, flushed on shutdown), `daemon/config.ts` (`policy.tools` overrides,
+> "prompt" rejected with a message naming it as a future value), `daemon.ts` (`tools.call` wraps
+> policy + audit around the existing seam; `caller` param plumbed via `ToolsCallParams`; `mcp` sets
+> `caller: "mcp"`), `daemon.status`/`cordierite daemon status` surface `policy`/`audit`, and
+> `policy_denied` carries a `details.hint` naming `config.json`. Tests:
+> `src/__tests__/policy-and-audit.integration.test.ts` (8 cases). All acceptance criteria verified;
+> `bun run clean && bun run build && bun run test && bun run lint` green.

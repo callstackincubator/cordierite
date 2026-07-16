@@ -135,6 +135,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
         selector: tool.selector,
         name: tool.descriptor.name,
         args,
+        caller: "mcp",
       });
 
       return result.result;
@@ -186,6 +187,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
           selector: tool.selector,
           name: tool.descriptor.name,
           args,
+          caller: "mcp",
         });
 
         return result.result;

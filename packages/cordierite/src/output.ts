@@ -249,6 +249,17 @@ const renderDaemonStatusData = (colors: ColorPalette, data: DaemonStatusCommandD
       ["Pinned keys", data.daemon.pinned_keys.length],
       ["Sessions", data.daemon.session_count],
     ]),
+    "",
+    ...renderFields("Policy", [
+      ["Default", data.policy.default],
+      ["Destructive", data.policy.destructive],
+      ["Overrides", data.policy.tools ? Object.keys(data.policy.tools).length : 0],
+    ]),
+    "",
+    ...renderFields("Audit", [
+      ["Path", data.audit.path],
+      ["Failed writes", data.audit.failed_writes],
+    ]),
   ];
 };
 
