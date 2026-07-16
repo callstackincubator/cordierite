@@ -59,3 +59,10 @@ docs. Small task by design — a fresh pair of eyes over the accumulated diff.
 
 No new behavior — the full suite staying green after prunes/moves is the test. If a
 dependency removal breaks something, it wasn't dead: restore it and move on.
+
+> Status: DONE. Residue sweeps clean. Removed dead `zod` devDependency (react-native
+> package, unused since task 12) and the leftover `export * from "./commands/keygen.js"`
+> re-export in `cordierite`'s package root (pre-refactor v1 leftover, nothing depended
+> on it). No duplicate helpers found (selector resolution, base64url, JSON rendering
+> already single-sourced). Bumped all three packages to `0.4.0-rc.1` and the Android
+> gradle sync comments. Added v1 banners to HANDSHAKE.md/REQUIREMENTS.md.

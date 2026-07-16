@@ -1,5 +1,8 @@
 # Product Requirements
 
+> **Note:** this document describes the v1 product shape and is being superseded by the v2 refactor.
+> See `docs/ARCHITECTURE.md` for the current specification.
+
 ## Purpose
 
 Cordierite lets React Native apps expose explicit, schema-described tools that can be invoked from a trusted external host over a pinned TLS session.

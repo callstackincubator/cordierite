@@ -32,7 +32,7 @@ apply plugin: "com.android.library"
 apply plugin: "kotlin-android"
 
 group = "com.callstackincubator.cordierite"
-version = "0.3.1" // keep in sync with package.json
+version = "0.4.0-rc.1" // keep in sync with package.json
 
 android {
   namespace "com.callstackincubator.cordierite"
@@ -42,7 +42,7 @@ android {
     minSdkVersion safeExtGet("minSdkVersion", 24)
     targetSdkVersion safeExtGet("targetSdkVersion", 35)
     versionCode 1
-    versionName "0.3.1" // keep in sync with package.json
+    versionName "0.4.0-rc.1" // keep in sync with package.json
     buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
   }
 

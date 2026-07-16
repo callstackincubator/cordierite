@@ -1,5 +1,8 @@
 # Cordierite Handshake And Session Flow
 
+> **Note:** this document describes the v1 protocol and is being superseded by the v2 refactor.
+> See `docs/ARCHITECTURE.md` for the current specification.
+
 ## Overview
 
 Cordierite lets a React Native app connect back to a trusted host over pinned `wss://`, claim a short-lived session, and then exchange tool registry and tool invocation messages on that same connection.
