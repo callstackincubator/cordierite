@@ -5,9 +5,53 @@ import type {
   CordieriteModuleEvents,
   CordieriteStateChangeEvent,
 } from "./Cordierite.types";
-import { NativeCordierite } from "./NativeCordierite";
 import type { CordieriteNativeModuleLike } from "./client-types";
 import { logger } from "./logger";
+
+// Metro/Node's CommonJS `require` is available at runtime in every environment this file actually
+// ships to (RN bundles, and `bun test` via its own CJS interop); this narrow local declaration
+// avoids pulling in `@types/node` just for the lazy-resolution trick below.
+declare const require: (id: string) => Record<string, unknown>;
+
+type NativeCordieriteModule = typeof import("./NativeCordierite");
+
+/**
+ * ARCHITECTURE.md §11 / task 12: the root entry is side-effect-free, so the TurboModule lookup
+ * (`TurboModuleRegistry.getEnforcing`, which throws when the native module was never registered —
+ * Expo Go, a misconfigured build, or a JS-only environment) must happen lazily on the *first* native
+ * call, never at import time. `require` here (not a static `import`) is what makes the lookup lazy:
+ * `./NativeCordierite`'s top-level `getEnforcing` call only runs the first time this function
+ * actually executes.
+ */
+let cachedNative: NativeCordieriteModule["NativeCordierite"] | null = null;
+
+const resolveNativeModule = (): NativeCordieriteModule["NativeCordierite"] => {
+  if (cachedNative) {
+    return cachedNative;
+  }
+
+  try {
+    const nativeModule =
+      require("./NativeCordierite") as NativeCordieriteModule;
+    if (!nativeModule.NativeCordierite) {
+      // Defensive: the real `NativeCordierite.ts` either resolves or throws (it never resolves to
+      // a nullish value), but a test double or an unexpected bundler transform could — treat that
+      // the same as "not found" rather than deferring a crash to the first actual method call.
+      throw new Error("NativeCordierite module resolved to a nullish value.");
+    }
+    cachedNative = nativeModule.NativeCordierite;
+    return cachedNative;
+  } catch (error) {
+    throw new Error(
+      '@cordierite/react-native could not find its native module ("Cordierite"). ' +
+        "This library ships native code and requires a custom development build — Expo Go and " +
+        "JS-only bundles do not include it. Rebuild with `expo run:ios`/`expo run:android` (or " +
+        `your bare React Native dev client), then try again. (${
+          error instanceof Error ? error.message : String(error)
+        })`
+    );
+  }
+};
 
 const toErrorPhase = (
   phase: string | undefined
@@ -50,7 +94,7 @@ const bridgeListeners: {
   ) => EventSubscription;
 } = {
   stateChange(listener) {
-    const subscription = NativeCordierite.onStateChange((nativeEvent) => {
+    const subscription = resolveNativeModule().onStateChange((nativeEvent) => {
       listener({
         state: nativeEvent.state as CordieriteStateChangeEvent["state"],
       });
@@ -59,7 +103,7 @@ const bridgeListeners: {
   },
 
   message(listener) {
-    const subscription = NativeCordierite.onMessage((nativeEvent) => {
+    const subscription = resolveNativeModule().onMessage((nativeEvent) => {
       const rawMessage = nativeEvent.rawMessage;
       let message: CordieriteMessageEvent["message"];
       try {
@@ -76,7 +120,7 @@ const bridgeListeners: {
   },
 
   error(listener) {
-    const subscription = NativeCordierite.onError((nativeEvent) => {
+    const subscription = resolveNativeModule().onError((nativeEvent) => {
       listener({
         code: nativeEvent.code,
         message: nativeEvent.message,
@@ -91,7 +135,7 @@ const bridgeListeners: {
   },
 
   close(listener) {
-    const subscription = NativeCordierite.onClose((nativeEvent) => {
+    const subscription = resolveNativeModule().onClose((nativeEvent) => {
       const event: CordieriteCloseEvent = {};
       if (nativeEvent.code != null) {
         event.code = nativeEvent.code;
@@ -105,17 +149,50 @@ const bridgeListeners: {
   },
 };
 
+const noopSubscription: EventSubscription = { remove() {} };
+
 export const cordieriteNativeModule: CordieriteNativeModuleLike = {
-  connect: (options) => NativeCordierite.connect(options),
-  send: (message) => NativeCordierite.send(message),
-  close: () => NativeCordierite.close(),
-  getState: (): CordieriteConnectionState =>
-    NativeCordierite.getState() as CordieriteConnectionState,
+  connect: (options) => resolveNativeModule().connect(options),
+  send: (message) => resolveNativeModule().send(message),
+  close: () => resolveNativeModule().close(),
+  /**
+   * Never throws, even when the native module cannot be resolved: mirrors `CordieriteModule.web.ts`
+   * (see its doc comment) since this is called unconditionally from code paths that must survive a
+   * missing native module (e.g. the deep-link handler's "already connecting/active?" guard) before
+   * an app-level `connect()` call ever gets a chance to surface the actionable error.
+   */
+  getState: (): CordieriteConnectionState => {
+    try {
+      return resolveNativeModule().getState() as CordieriteConnectionState;
+    } catch (error) {
+      logger.debug(
+        "getState(): native module unavailable, reporting idle",
+        error
+      );
+      return "idle";
+    }
+  },
+  /**
+   * Never throws: constructing a `CordieriteClient` (task 11) subscribes three of these at creation
+   * time, and that must stay side-effect-free at import time (task 12). When the native module is
+   * unavailable the returned subscription is an inert no-op — the listener simply never fires until
+   * an app-level native call (e.g. `connect()`) has a chance to surface the real, actionable error.
+   */
   addListener(eventName, listener) {
     const attach = bridgeListeners[eventName];
     if (!attach) {
       throw new Error(`Unknown Cordierite event: ${String(eventName)}`);
     }
-    return attach(listener as CordieriteModuleEvents[typeof eventName]);
+    try {
+      return attach(listener as CordieriteModuleEvents[typeof eventName]);
+    } catch (error) {
+      logger.debug(
+        `addListener("${String(
+          eventName
+        )}"): native module unavailable, subscription is inert`,
+        error
+      );
+      return noopSubscription;
+    }
   },
 };

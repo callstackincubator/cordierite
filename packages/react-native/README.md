@@ -50,7 +50,7 @@ Use the printed fingerprint value verbatim in `cliPins`.
 
 #### Expo
 
-Add the **`@cordierite/react-native`** config plugin to Expo config with **`cliPins`** (required) and optionally **`allowPrivateLanOnly`**:
+Add the **`@cordierite/react-native`** config plugin to Expo config with **`cliPins`** (required, each a `sha256/` + 44-character base64 SPKI pin — the plugin throws naming the offending value if one doesn't match) and, optionally, **`allowPrivateLanOnly`** (defaults to `true`, fail-closed) and **`deepLinkScheme`** (warns at prebuild time if it isn't declared in `expo.scheme`):
 
 ```json
 {
@@ -61,7 +61,8 @@ Add the **`@cordierite/react-native`** config plugin to Expo config with **`cliP
         "@cordierite/react-native",
         {
           "cliPins": ["sha256/REPLACE_WITH_KEYGEN_OUTPUT"],
-          "allowPrivateLanOnly": true
+          "allowPrivateLanOnly": true,
+          "deepLinkScheme": "myapp"
         }
       ]
     ]
@@ -89,37 +90,52 @@ Android `<application>` meta-data:
 | Name | Purpose |
 | --- | ------- |
 | `com.callstackincubator.cordierite.CLI_PINS` | JSON array string of pin values |
-| `com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY` | `"true"` / `"false"` |
+| `com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY` | Boolean meta-data value (a `"true"`/`"false"` String is also accepted); defaults to `true` (fail-closed) when absent |
 
-Empty or missing pins fail at configuration time. Wire **deep links** so the OS can open your app with the host’s bootstrap URL, and make sure the app scheme matches the value you will pass to `cordierite host --scheme ...`.
+Empty or missing pins fail at configuration time. Wire **deep links** so the OS can open your app with the host's bootstrap URL, and make sure the app scheme matches the one `cordierite link` (or the `deepLinkScheme` plugin option, or `config.json`) uses to compose that link.
 
 ### 4. Import Cordierite in the JS entry point
 
-Import the package in the app entry point so the default bootstrap listener is installed during startup:
+The package has three entries:
+
+| Entry | Behavior |
+| --- | --- |
+| `@cordierite/react-native` | Side-effect-free. Exports `registerTool`, `useCordieriteTool`, `postEvent`, `installCordieriteDeepLinkBootstrap`, `addCordieriteListener`, `getCordieriteState`, `connect`, and types. The native module is looked up **lazily**, on the first actual native call — importing it (even in Expo Go or a misconfigured build) never crashes; only calling a native-requiring function like `connect()` without native support does, with an actionable error. |
+| `@cordierite/react-native/auto` | Same exports, plus a side effect: installs the default deep-link bootstrap listener on import (the old v1 root-import behavior, now opt-in). |
+| `@cordierite/react-native/noop` | Same public API, fully inert — for compiling Cordierite out of release builds (see below). |
+
+Most apps just want the deep-link listener installed automatically, so import the side-effect entry once near your app's entry point:
 
 ```ts
-import "@cordierite/react-native";
+import "@cordierite/react-native/auto";
 ```
 
-This side-effect import installs the default React Native `Linking` listener for Cordierite bootstrap URLs.
+If you'd rather drive bootstrap yourself (custom deep-link handling, QR scanning, tests), import from the root entry and call `installCordieriteDeepLinkBootstrap()` (or `connect()` directly) when you're ready:
 
-**Bootstrap connection:** importing this package registers React Native `Linking` listeners that watch for URLs with a `cordierite` query parameter, parse the binary v1 payload, and call `connect` when the client is idle. You do not need your own `Linking` handler for the default flow.
+```ts
+import { installCordieriteDeepLinkBootstrap } from "@cordierite/react-native";
 
-**Errors:** use `addCordieriteErrorListener` if you want callbacks when bootstrap parsing or that automatic `connect` fails.
+installCordieriteDeepLinkBootstrap();
+```
+
+**Bootstrap connection:** the installed listener watches for URLs with a `cordierite` query parameter, parses the v2 bootstrap payload, and calls `connect` when the client is idle. You do not need your own `Linking` handler for the default flow.
+
+**Errors:** use `addCordieriteListener("error", callback)` for bootstrap-parse, connect, socket, and tool-handler failures — one unified channel.
 
 ### 5. Define tools in app startup code
 
-Call `registerTool({ ... })` with Standard Schema compatible `inputSchema` and `outputSchema` values plus a `handler` so the host can invoke your tools after the session is active. `zod` v4 works well here and is used in the playground example.
+Call `registerTool({ ... })` with Standard Schema compatible `inputSchema` and `outputSchema` values plus a `handler` so the host can invoke your tools after the session is active. `zod` v4 works well here (its built-in JSON Schema exporter means agents see a real tool shape — zod 3 and plain valibot schemas still register, just with a dev warning and an empty schema).
+
+`useCordieriteTool` wraps `registerTool` in a `useEffect` so registration follows the component's lifecycle, including remounts and Fast Refresh:
 
 ```ts
-import "@cordierite/react-native";
-import { useEffect } from "react";
-import { registerTool } from "@cordierite/react-native";
+import "@cordierite/react-native/auto";
+import { useCordieriteTool } from "@cordierite/react-native";
 import { z } from "zod";
 
 export function CordieriteBootstrap() {
-  useEffect(() => {
-    const registration = registerTool({
+  useCordieriteTool(
+    {
       name: "sum",
       description: "Add two numeric values",
       inputSchema: z.object({
@@ -132,12 +148,9 @@ export function CordieriteBootstrap() {
       handler: async ({ a, b }) => ({
         total: a + b,
       }),
-    });
-
-    return () => {
-      registration.remove();
-    };
-  }, []);
+    },
+    []
+  );
 
   return null;
 }
@@ -145,20 +158,69 @@ export function CordieriteBootstrap() {
 
 Mount that component near app startup, or register from another module that loads on startup. The host can only list and invoke tools that your app has already registered.
 
-### 6. Start the host and test the flow
+### 6. Start the daemon and test the flow
 
-Run the host with the key generated by `cordierite keygen`:
-
-```bash
-cordierite host --tls-key ./dev-key.pem --scheme myapp
-```
-
-Open the printed bootstrap deep link in the app, then inspect and invoke tools with the returned `session_id`:
+`cordierite` auto-spawns its daemon on first use, so most CLI commands just work:
 
 ```bash
-cordierite tools --session-id <session_id>
-cordierite invoke sum --session-id <session_id> --input '{"a":2,"b":3}'
+cordierite link --qr
 ```
+
+Scan the printed QR (or open the deep link) in the app, then inspect and invoke tools:
+
+```bash
+cordierite tools
+cordierite invoke sum --input '{"a":2,"b":3}'
+```
+
+Omit the session selector when you only have one active session — `cordierite` uses it automatically; pass an alias or session id when you have several (`cordierite ls` lists them).
+
+## Compiling Cordierite out of production builds
+
+Ship `./noop` instead of the real entries in release builds so no Cordierite code — native or JS — ends up in that bundle. Add a Metro `resolveRequest` override in `metro.config.js`:
+
+```js
+const { getDefaultConfig } = require("expo/metro-config");
+
+const config = getDefaultConfig(__dirname);
+const isProductionBuild = process.env.CORDIERITE_ENABLED !== "1";
+
+if (isProductionBuild) {
+  const original = config.resolver.resolveRequest;
+  config.resolver.resolveRequest = (context, moduleName, platform) => {
+    if (moduleName === "@cordierite/react-native") {
+      return context.resolveRequest(
+        context,
+        "@cordierite/react-native/noop",
+        platform
+      );
+    }
+    if (moduleName === "@cordierite/react-native/auto") {
+      // `/noop` has no side effect on import, matching `/auto`'s shape without installing anything.
+      return context.resolveRequest(
+        context,
+        "@cordierite/react-native/noop",
+        platform
+      );
+    }
+    return original
+      ? original(context, moduleName, platform)
+      : context.resolveRequest(context, moduleName, platform);
+  };
+}
+
+module.exports = config;
+```
+
+If you'd rather not touch Metro config, a conditional `require` at each import site works too (module identity differs per call site, so this is more repetitive but avoids any bundler-level indirection):
+
+```ts
+const { registerTool, useCordieriteTool } = __DEV__
+  ? require("@cordierite/react-native")
+  : require("@cordierite/react-native/noop");
+```
+
+Either way, `/noop` is typed identically to the root entry (both implement the same shared interface — see `src/public-api.ts` and `src/__tests__/noop-parity.test.ts`), so switching between them is a drop-in swap: `registerTool` still returns a disposer, `connect()` still returns a `Promise<void>` (it just always rejects with a `CordieriteDisabledError`, `code: "cordierite_disabled"`), and `getCordieriteState()` always reports `"idle"`.
 
 ## Platform compatibility
 

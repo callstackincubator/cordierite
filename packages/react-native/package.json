@@ -12,9 +12,24 @@
       "import": "./build/index.js",
       "default": "./build/index.js"
     },
+    "./auto": {
+      "types": "./build/auto.d.ts",
+      "react-native": "./build/auto.js",
+      "import": "./build/auto.js",
+      "default": "./build/auto.js"
+    },
+    "./noop": {
+      "types": "./build/noop.d.ts",
+      "react-native": "./build/noop.js",
+      "import": "./build/noop.js",
+      "default": "./build/noop.js"
+    },
     "./package.json": "./package.json",
     "./app.plugin.js": "./app.plugin.js"
   },
+  "sideEffects": [
+    "./build/auto.js"
+  ],
   "expo": {
     "plugin": "./app.plugin.js"
   },
@@ -52,6 +67,7 @@
     "@types/react": "~19.1.1",
     "eslint": "^8.57.0",
     "eslint-config-universe": "^15.0.3",
+    "react": "19.1.0",
     "react-native": "0.81.5",
     "typescript": "~5.9.2",
     "zod": "^4.3.6"

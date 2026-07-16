@@ -81,3 +81,8 @@ and the production compile-out recipe (ARCHITECTURE §11).
 
 Follow the existing bun-test + mocked-native patterns. For the plugin, test the pure
 config-mutation functions directly (they're plain JS).
+
+> Status: DONE. See commit `task(12): ...` for details, verification, and known gaps (notably:
+> `npm pack --dry-run` was used to confirm the three entries are published, not a real publish;
+> the Metro `resolveRequest` compile-out recipe is documented and type-checks (`/noop` is typed
+> identically to `.`) but was not run through an actual Metro bundle).
