@@ -75,3 +75,14 @@ parsing, exit codes, and auto-spawn are covered for real):
 
 This task *is* testing. Review for flake-resistance: no bare `setTimeout` waits; all
 synchronization via `events.subscribe` or process exit.
+
+> Status: DONE. Implemented `packages/cordierite/src/__tests__/e2e/` with a shared harness
+> (`harness.ts`: temp state dirs, real-CLI-subprocess runner, SPKI pin verification, raw-UDS
+> event-subscription sync helper) and a scripted app-client fixture (`app-client.ts`) that verifies
+> the daemon's SPKI pin before claiming. All eight scenarios landed as separate `*.e2e.test.ts`
+> files: cold-start, churn, multi-device, hostility, events, policy-audit, mcp (real stdio
+> subprocess), daemon-restart. Verified deterministic across 5 consecutive `bun test
+> src/__tests__/e2e` runs (~13s each, well under the 90s budget); `bun run clean && bun run build
+> && bun run test && bun run lint` green from root. One Bun-runtime quirk found and worked around:
+> `tls.getPeerCertificate(false)` returns no fields at all under Bun (only `getPeerCertificate(true)`
+> populates `.raw`) — noted in `harness.ts`.
