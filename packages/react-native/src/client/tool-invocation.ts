@@ -88,6 +88,16 @@ export const createToolMessageHandler = (deps: ToolInvocationDeps) => {
       sessionId: currentSessionId,
       invocationId: rawMessage.id,
       receivedAt: new Date().toISOString(),
+      reportProgress: (progress, message) =>
+        send(
+          JSON.stringify({
+            type: "tool_call_progress",
+            session_id: currentSessionId,
+            id: rawMessage.id,
+            ...(progress !== undefined ? { progress } : {}),
+            ...(message !== undefined ? { message } : {}),
+          })
+        ),
     };
 
     logger.debug("tool call", rawMessage.name, "id", rawMessage.id);

@@ -8,7 +8,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "node ../node_modules/eslint/bin/eslint.js ."
+    "lint": "node ../node_modules/eslint/bin/eslint.js . && tsc --noEmit",
+    "test": "tsc --noEmit"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

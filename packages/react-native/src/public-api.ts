@@ -1,3 +1,4 @@
+import type { ToolDescriptor } from "@cordierite/shared";
 import type { DependencyList } from "react";
 
 import type {
@@ -34,6 +35,8 @@ export type CordierePublicApi = {
   ): void;
 
   postEvent(name: string, payload?: unknown): Promise<void>;
+
+  getRegisteredTools(): ToolDescriptor[];
 
   installCordieriteDeepLinkBootstrap(
     options?: InstallCordieriteDeepLinkBootstrapOptions

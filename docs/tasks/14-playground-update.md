@@ -62,3 +62,8 @@ Playground has no test suite; the deliverable is the documented manual smoke plu
 keeping workspace builds green. Any SDK gap discovered here (e.g. missing
 `getRegisteredTools`) is fixed in the SDK package within this task, with a unit test
 there.
+
+> Status: DONE. `bun install/build/test/lint` green at root; playground type-checks via
+> a new `tsc --noEmit` in its `lint`/`test` scripts. Manual on-device/simulator smoke
+> not run in this environment (no simulator/emulator available) — see final report for
+> the "not verified" breakdown.
