@@ -1,13 +1,12 @@
 import { encodeBootstrap, type BootstrapPayload } from "@cordierite/shared";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 
 import type { CordieriteConnectionState } from "../Cordierite.types";
 import {
-  __cordieriteResetDeepLinkBootstrapForTests,
-  addCordieriteErrorListener,
   handleCordieriteDeepLinkUrl,
   hasCordieriteBootstrapQuery,
+  type CordieriteAutoBootstrapClient,
 } from "../deep-link-core";
 
 const bytesToBase64Url = (bytes: Uint8Array): string => {
@@ -41,11 +40,20 @@ const basePayload: BootstrapPayload = {
 const bootstrapUrl = (p: BootstrapPayload) =>
   `playground:///?cordierite=${encodeBootstrap(p)}`;
 
-const createMockClient = (initialState: CordieriteConnectionState = "idle") => {
+const createMockClient = (
+  initialState: CordieriteConnectionState = "idle"
+): CordieriteAutoBootstrapClient & {
+  connects: unknown[];
+  bootstrapErrors: { phase: "parse" | "connect"; error: unknown }[];
+  setState(s: CordieriteConnectionState): void;
+} => {
   let state = initialState;
   const connects: unknown[] = [];
+  const bootstrapErrors: { phase: "parse" | "connect"; error: unknown }[] = [];
+
   return {
     connects,
+    bootstrapErrors,
     setState(s: CordieriteConnectionState) {
       state = s;
     },
@@ -55,14 +63,13 @@ const createMockClient = (initialState: CordieriteConnectionState = "idle") => {
     async connect(input: unknown) {
       connects.push(input);
     },
+    reportBootstrapError(event) {
+      bootstrapErrors.push(event);
+    },
   };
 };
 
 describe("cordierite deep-link bootstrap", () => {
-  beforeEach(() => {
-    __cordieriteResetDeepLinkBootstrapForTests();
-  });
-
   test("hasCordieriteBootstrapQuery is false without param", () => {
     expect(hasCordieriteBootstrapQuery("myapp://some/path")).toBe(false);
     expect(hasCordieriteBootstrapQuery(null)).toBe(false);
@@ -110,6 +117,26 @@ describe("cordierite deep-link bootstrap", () => {
     });
   });
 
+  test("handleCordieriteDeepLinkUrl rejects a non-private address when requirePrivateIp defaults on", () => {
+    const client = createMockClient("idle");
+    const url = bootstrapUrl({ ...basePayload, address: "8.8.8.8" });
+    handleCordieriteDeepLinkUrl(client, url, { now: FIXED_NOW });
+    expect(client.connects).toEqual([]);
+    expect(client.bootstrapErrors).toEqual([
+      { phase: "parse", error: expect.anything() },
+    ]);
+  });
+
+  test("handleCordieriteDeepLinkUrl allows a non-private address when requirePrivateIp is explicitly disabled", () => {
+    const client = createMockClient("idle");
+    const url = bootstrapUrl({ ...basePayload, address: "8.8.8.8" });
+    handleCordieriteDeepLinkUrl(client, url, {
+      now: FIXED_NOW,
+      requirePrivateIp: false,
+    });
+    expect(client.connects).toHaveLength(1);
+  });
+
   test("handleCordieriteDeepLinkUrl skips when already connecting or active", () => {
     for (const state of ["connecting", "active"] as const) {
       const client = createMockClient(state);
@@ -120,36 +147,62 @@ describe("cordierite deep-link bootstrap", () => {
     }
   });
 
-  test("handleCordieriteDeepLinkUrl notifies error listeners on bad payload", () => {
+  test("handleCordieriteDeepLinkUrl reports a parse-phase bootstrap error on bad payload", () => {
     const client = createMockClient();
-    const events: { phase: string }[] = [];
-    const sub = addCordieriteErrorListener((e) => {
-      events.push({ phase: e.phase });
-    });
     handleCordieriteDeepLinkUrl(client, "playground:///?cordierite=not-valid", {
       now: FIXED_NOW,
     });
-    expect(events).toEqual([{ phase: "parse" }]);
-    sub.remove();
+    expect(client.bootstrapErrors).toEqual([
+      { phase: "parse", error: expect.anything() },
+    ]);
   });
 
-  test("handleCordieriteDeepLinkUrl notifies error listeners when connect rejects", async () => {
-    const client = {
+  test("handleCordieriteDeepLinkUrl reports a connect-phase bootstrap error when connect rejects", async () => {
+    const bootstrapErrors: { phase: "parse" | "connect"; error: unknown }[] =
+      [];
+    const client: CordieriteAutoBootstrapClient = {
       getState: (): CordieriteConnectionState => "idle",
       async connect() {
         throw new Error("native failed");
       },
+      reportBootstrapError(event) {
+        bootstrapErrors.push(event);
+      },
     };
-    const phases: string[] = [];
-    addCordieriteErrorListener((e) => {
-      phases.push(e.phase);
-    });
     handleCordieriteDeepLinkUrl(client, bootstrapUrl(basePayload), {
       now: FIXED_NOW,
     });
     await new Promise((r) => {
       setTimeout(r, 0);
     });
-    expect(phases).toEqual(["connect"]);
+    expect(bootstrapErrors).toEqual([
+      { phase: "connect", error: expect.anything() },
+    ]);
+  });
+
+  test("handleCordieriteDeepLinkUrl reports a bootstrap error (not a throw) when getState() throws", () => {
+    // Regression test for the v1 defect: getState() was called before any guard, which crashed on
+    // the web stub (getState used to throw there). The fix is two-layered: CordieriteModule.web.ts
+    // now returns "idle" instead of throwing, and handleCordieriteDeepLinkUrl defensively catches
+    // any client whose getState() still throws and reports it instead of propagating.
+    const client: CordieriteAutoBootstrapClient = {
+      getState() {
+        throw new Error("getState is not available on this platform");
+      },
+      connect: async () => {},
+      reportBootstrapError: () => {},
+    };
+    const bootstrapErrors: { phase: "parse" | "connect"; error: unknown }[] =
+      [];
+    client.reportBootstrapError = (event) => {
+      bootstrapErrors.push(event);
+    };
+
+    expect(() => {
+      handleCordieriteDeepLinkUrl(client, bootstrapUrl(basePayload), {
+        now: FIXED_NOW,
+      });
+    }).not.toThrow();
+    expect(bootstrapErrors).toHaveLength(1);
   });
 });

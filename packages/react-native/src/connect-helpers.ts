@@ -18,6 +18,7 @@ const isBootstrapPayloadInput = (
   return "address" in input;
 };
 
+/** Builds the `session_claim` first-frame options from a decoded v2 bootstrap (or manual options). */
 export const toConnectOptions = (
   input: CordieriteConnectInput,
   clientOptions: CreateCordieriteClientOptions
@@ -31,12 +32,38 @@ export const toConnectOptions = (
     port: input.port,
     sessionId: input.sessionId,
     token: input.token,
+    ...("resumeToken" in input && input.resumeToken
+      ? { resumeToken: input.resumeToken }
+      : {}),
     expiresAt: input.expiresAt,
   };
 
   const fromOverrides = clientOptions.sessionClaimDeviceFields?.();
 
   return fromOverrides ? { ...base, ...fromOverrides } : base;
+};
+
+/**
+ * Builds the `session_resume` first-frame options for an auto-reconnect attempt. `expiresAt` is a
+ * native-side sanity guard only (never sent on the wire — see `SessionResumeMessage`), so it is
+ * synthesized here rather than reused from the original (short-lived) bootstrap.
+ */
+export const toResumeConnectOptions = (params: {
+  ip: string;
+  port: number;
+  sessionId: string;
+  resumeToken: string;
+  now: number;
+  graceSeconds: number;
+}): CordieriteConnectOptions => {
+  return {
+    ip: params.ip,
+    port: params.port,
+    sessionId: params.sessionId,
+    resumeToken: params.resumeToken,
+    // Comfortably past the guard check on native, independent of the original claim's expiry.
+    expiresAt: params.now + Math.max(params.graceSeconds, 60) + 60,
+  };
 };
 
 /**
@@ -47,14 +74,18 @@ export const isConnectOptionsValid = (
   options: CordieriteConnectOptions,
   now: number = nowUnixSeconds()
 ): boolean => {
+  const hasClaimToken =
+    typeof options.token === "string" && options.token.length > 0;
+  const hasResumeToken =
+    typeof options.resumeToken === "string" && options.resumeToken.length > 0;
+
   return (
     typeof options.ip === "string" &&
     options.ip.length > 0 &&
     isValidPort(options.port) &&
     typeof options.sessionId === "string" &&
     options.sessionId.length > 0 &&
-    typeof options.token === "string" &&
-    options.token.length > 0 &&
+    (hasClaimToken || hasResumeToken) &&
     !isExpiredAt(options.expiresAt, now)
   );
 };

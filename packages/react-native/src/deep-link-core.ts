@@ -5,46 +5,19 @@ import type {
 import { parseBootstrapUrl } from "./bootstrap";
 import { logger } from "./logger";
 
-/** Emitted when auto-bootstrap fails to parse the URL or `connect` rejects. */
-export type CordieriteBootstrapErrorEvent = {
-  phase: "parse" | "connect";
-  url: string | null;
-  error: unknown;
-};
-
+/**
+ * Structural seam the deep-link flow needs from a Cordierite client: state + connect (both
+ * platforms), plus routing parse/connect failures onto the client's single unified error channel
+ * (ARCHITECTURE.md §11) instead of a bespoke bootstrap-only listener set.
+ */
 export type CordieriteAutoBootstrapClient = {
   getState(): CordieriteConnectionState;
   connect(input: CordieriteConnectInput): Promise<void>;
+  reportBootstrapError(event: {
+    phase: "parse" | "connect";
+    error: unknown;
+  }): void;
 };
-
-const errorListeners = new Set<
-  (event: CordieriteBootstrapErrorEvent) => void
->();
-
-/**
- * Subscribe to failures from the import-time deep-link bootstrap flow.
- * Does not replace `cordieriteClient.addListener("error", …)` for socket errors after connect.
- */
-export function addCordieriteErrorListener(
-  listener: (event: CordieriteBootstrapErrorEvent) => void
-): { remove(): void } {
-  errorListeners.add(listener);
-  return {
-    remove() {
-      errorListeners.delete(listener);
-    },
-  };
-}
-
-function emitBootstrapError(event: CordieriteBootstrapErrorEvent): void {
-  for (const listener of errorListeners) {
-    try {
-      listener(event);
-    } catch (listenerError) {
-      logger.warn("Cordierite bootstrap error listener threw", listenerError);
-    }
-  }
-}
 
 /** True if `rawUrl` parses as a URL and includes a `cordierite` query parameter. */
 export function hasCordieriteBootstrapQuery(
@@ -62,12 +35,19 @@ export function hasCordieriteBootstrapQuery(
 
 export type HandleCordieriteDeepLinkOptions = {
   now?: number;
+  /** Reject bootstrap payloads whose address is not a private/loopback range. Default `true`. */
   requirePrivateIp?: boolean;
 };
 
 /**
  * If the URL carries a Cordierite bootstrap payload, parse it and start `connect`.
  * Ignores URLs without a `cordierite` query param. Skips when already connecting or active.
+ *
+ * `client.getState()` is called behind a try/catch: some `CordieriteAutoBootstrapClient`
+ * implementations (the web stub in particular) may throw from `getState()`, and a deep link can
+ * arrive before an app has had a chance to guard against calling Cordierite APIs on an unsupported
+ * platform. A throwing `getState()` is reported like any other bootstrap failure rather than
+ * crashing the caller.
  */
 export function handleCordieriteDeepLinkUrl(
   client: CordieriteAutoBootstrapClient,
@@ -79,7 +59,19 @@ export function handleCordieriteDeepLinkUrl(
   }
 
   const url = rawUrl ?? null;
-  const state = client.getState();
+
+  let state: CordieriteConnectionState;
+  try {
+    state = client.getState();
+  } catch (error) {
+    logger.warn(
+      "Cordierite: getState() failed while handling a deep link",
+      error
+    );
+    client.reportBootstrapError({ phase: "parse", error });
+    return;
+  }
+
   if (state === "connecting" || state === "active") {
     logger.debug("Cordierite deep link ignored: session already", state);
     return;
@@ -88,20 +80,15 @@ export function handleCordieriteDeepLinkUrl(
   const now = options.now ?? Math.floor(Date.now() / 1000);
   const requirePrivateIp = options.requirePrivateIp ?? true;
 
+  let bootstrap: CordieriteConnectInput;
   try {
-    const bootstrap = parseBootstrapUrl(url!, {
-      now,
-      requirePrivateIp,
-    });
-    void client.connect(bootstrap).catch((error: unknown) => {
-      emitBootstrapError({ phase: "connect", url, error });
-    });
+    bootstrap = parseBootstrapUrl(url!, { now, requirePrivateIp });
   } catch (error) {
-    emitBootstrapError({ phase: "parse", url, error });
+    client.reportBootstrapError({ phase: "parse", error });
+    return;
   }
-}
 
-/** @internal Clears bootstrap error listeners between tests. */
-export function __cordieriteResetDeepLinkBootstrapForTests(): void {
-  errorListeners.clear();
+  client.connect(bootstrap).catch((error: unknown) => {
+    client.reportBootstrapError({ phase: "connect", error });
+  });
 }

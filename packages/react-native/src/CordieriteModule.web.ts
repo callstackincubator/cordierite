@@ -1,11 +1,14 @@
 /**
  * Web / unsupported-platform stub for Metro resolution.
  *
- * `connect`, `send`, `close`, and `getState` throw — Cordierite is iOS/Android-only.
+ * `connect`, `send`, and `close` throw — Cordierite is iOS/Android-only. `getState` returns
+ * `"idle"` rather than throwing: it is called unconditionally from code paths that run on every
+ * platform (e.g. the deep-link handler's "already connecting/active?" guard), and throwing there
+ * would crash any web bundle that merely imports the package before an app ever calls a Cordierite
+ * API. Apps must still not call the throwing APIs on web.
  *
- * `addListener` returns a no-op subscription on purpose: the package eagerly constructs
- * `cordieriteClient` at import time, which registers internal listeners. Throwing here would crash
- * any web bundle that merely imports the package. Apps must still not call Cordierite APIs on web.
+ * `addListener` returns a no-op subscription for the same reason: the package eagerly constructs
+ * `cordieriteClient` at import time, which registers internal listeners.
  */
 import type { CordieriteConnectionState } from "./Cordierite.types";
 import type { CordieriteNativeModuleLike } from "./client-types";
@@ -29,7 +32,7 @@ export const cordieriteNativeModule: CordieriteNativeModuleLike = {
     unsupported("close");
   },
   getState(): CordieriteConnectionState {
-    return unsupported("getState");
+    return "idle";
   },
   addListener() {
     return {
