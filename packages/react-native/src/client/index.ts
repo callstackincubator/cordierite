@@ -33,6 +33,7 @@ import type { AppStateLike, AppStateStatus } from "./app-state";
 import { computeFullJitterBackoffMs } from "./backoff";
 import { createUnifiedListenerBus } from "./listeners";
 import { createToolRegistry, type RegistryDelta } from "./registry";
+import { isResumeLeaseExpired, parseResumeLease } from "./resume-lease";
 import {
   systemClientTimers,
   type ClientTimerHandle,
@@ -51,7 +52,7 @@ type HeldSession = {
   alias: string;
   keepaliveIntervalS: number;
   graceS: number;
-  lastAckAtMs: number;
+  disconnectedAtMs: number | null;
   endpoint: { ip: string; port: number };
 };
 
@@ -89,6 +90,7 @@ export const createCordieriteClient = (
   const appState: AppStateLike = clientOptions.appState ?? noopAppState;
   const defaultToolTimeoutMs =
     clientOptions.defaultToolTimeoutMs ?? CORDIERITE_DEFAULT_TOOL_TIMEOUT_MS;
+  const resumeLeaseStore = clientOptions.resumeLeaseStore;
 
   const listenerBus = createUnifiedListenerBus();
 
@@ -132,6 +134,14 @@ export const createCordieriteClient = (
     if (graceTimerHandle !== null) {
       timers.clearTimeout(graceTimerHandle);
       graceTimerHandle = null;
+    }
+  };
+
+  const clearResumeLease = () => {
+    try {
+      resumeLeaseStore?.clear();
+    } catch (error) {
+      logger.warn("Cordierite failed to clear the resume lease", error);
     }
   };
 
@@ -222,7 +232,7 @@ export const createCordieriteClient = (
       alias: ack.alias,
       keepaliveIntervalS: ack.keepalive_interval_s,
       graceS: ack.grace_s,
-      lastAckAtMs: timers.now(),
+      disconnectedAtMs: null,
       endpoint,
     };
 
@@ -240,10 +250,16 @@ export const createCordieriteClient = (
     const alias = heldSession?.alias ?? null;
     const sessionId = heldSession?.sessionId ?? null;
 
+    epoch += 1;
     clearReconnectTimer();
     clearGraceTimer();
     heldSession = null;
     resumeInFlight = false;
+    clearResumeLease();
+    settlePendingAttempt({
+      ok: false,
+      error: new Error(`Cordierite session was lost: ${reason}.`),
+    });
 
     setClientState("closed", reason);
     if (sessionId !== null) {
@@ -280,13 +296,34 @@ export const createCordieriteClient = (
     }, delay);
   };
 
+  const scheduleGraceExpiry = (myEpoch: number) => {
+    if (graceTimerHandle !== null || !heldSession) {
+      return;
+    }
+
+    const now = timers.now();
+    const disconnectedAtMs = heldSession.disconnectedAtMs ?? now;
+    heldSession.disconnectedAtMs = disconnectedAtMs;
+    const remainingGraceMs =
+      heldSession.graceS * 1000 - (now - disconnectedAtMs);
+
+    graceTimerHandle = timers.setTimeout(() => {
+      graceTimerHandle = null;
+      if (myEpoch === epoch && heldSession) {
+        finalizeSessionLost("grace_expired");
+      }
+    }, Math.max(remainingGraceMs, 0));
+  };
+
   const attemptResume = async (myEpoch: number): Promise<void> => {
     if (resumeInFlight || destroyed || myEpoch !== epoch || !heldSession) {
       return;
     }
 
     const now = timers.now();
-    if (now - heldSession.lastAckAtMs >= heldSession.graceS * 1000) {
+    const disconnectedAtMs = heldSession.disconnectedAtMs ?? now;
+    heldSession.disconnectedAtMs = disconnectedAtMs;
+    if (now - disconnectedAtMs >= heldSession.graceS * 1000) {
       finalizeSessionLost("grace_expired");
       return;
     }
@@ -359,20 +396,14 @@ export const createCordieriteClient = (
     });
 
     const now = timers.now();
-    if (now - heldSession.lastAckAtMs >= heldSession.graceS * 1000) {
+    const disconnectedAtMs = heldSession.disconnectedAtMs ?? now;
+    heldSession.disconnectedAtMs = disconnectedAtMs;
+    if (now - disconnectedAtMs >= heldSession.graceS * 1000) {
       finalizeSessionLost("grace_expired");
       return;
     }
 
-    if (graceTimerHandle === null) {
-      const remainingGraceMs =
-        heldSession.graceS * 1000 - (now - heldSession.lastAckAtMs);
-      graceTimerHandle = timers.setTimeout(() => {
-        graceTimerHandle = null;
-        finalizeSessionLost("grace_expired");
-      }, Math.max(remainingGraceMs, 0));
-    }
-
+    scheduleGraceExpiry(myEpoch);
     scheduleReconnectAttempt(myEpoch);
   };
 
@@ -445,6 +476,65 @@ export const createCordieriteClient = (
 
   return {
     /**
+     * Starts recovery from a native-owned process-memory lease when this client is idle. Resolves
+     * `true` once the resume attempt has been accepted and started; it does not wait for the
+     * daemon's `session_ack`. Resolves `false` when no valid, unexpired lease can be restored.
+     */
+    async restoreSession(): Promise<boolean> {
+      if (
+        !resumeLeaseStore ||
+        destroyed ||
+        heldSession !== null ||
+        (clientState !== "idle" && clientState !== "closed")
+      ) {
+        return false;
+      }
+
+      let storedValue: unknown;
+      try {
+        storedValue = resumeLeaseStore.get();
+      } catch (error) {
+        logger.warn("Cordierite failed to read the resume lease", error);
+        return false;
+      }
+
+      if (storedValue === null || storedValue === undefined) {
+        return false;
+      }
+
+      const lease = parseResumeLease(storedValue);
+      const now = timers.now();
+      if (!lease || isResumeLeaseExpired(lease, now)) {
+        clearResumeLease();
+        return false;
+      }
+
+      const nativeState = module.getState();
+      if (nativeState === "connecting" || nativeState === "active") {
+        return false;
+      }
+
+      epoch += 1;
+      const myEpoch = epoch;
+      clearReconnectTimer();
+      clearGraceTimer();
+      reconnectAttempt = 0;
+      heldSession = {
+        sessionId: lease.sessionId,
+        resumeToken: lease.resumeToken,
+        alias: lease.alias,
+        keepaliveIntervalS: lease.keepaliveIntervalS,
+        graceS: lease.graceS,
+        disconnectedAtMs: lease.disconnectedAtMs ?? now,
+        endpoint: lease.endpoint,
+      };
+      setClientState("reconnecting");
+      scheduleGraceExpiry(myEpoch);
+      fireAndForget(attemptResume(myEpoch), "restore the session", emitError);
+      return true;
+    },
+
+    /**
      * Runs the v2 claim handshake: validates the bootstrap, hands the exact `session_claim`
      * first-frame to native, and resolves once `session_ack` is received (not merely once native
      * has accepted the socket). On success the resume token, alias, and grace/keepalive intervals
@@ -460,7 +550,11 @@ export const createCordieriteClient = (
       }
 
       const nativeState = module.getState();
-      if (nativeState === "connecting" || nativeState === "active") {
+      const supersedingReconnect = clientState === "reconnecting";
+      if (
+        (nativeState === "connecting" || nativeState === "active") &&
+        !supersedingReconnect
+      ) {
         logger.debug("connect rejected: already", nativeState);
         throw new Error(
           "A Cordierite session is already connecting or active."
@@ -478,10 +572,26 @@ export const createCordieriteClient = (
       clearGraceTimer();
       reconnectAttempt = 0;
       heldSession = null;
-      setClientState("connecting");
+      resumeInFlight = false;
+      clearResumeLease();
+      if (supersedingReconnect) {
+        settlePendingAttempt({
+          ok: false,
+          error: new Error(
+            "Cordierite recovery was superseded by a fresh connection."
+          ),
+        });
+      }
 
       let ack: SessionAckMessage;
       try {
+        if (
+          supersedingReconnect &&
+          (nativeState === "connecting" || nativeState === "active")
+        ) {
+          await module.close();
+        }
+        setClientState("connecting");
         ack = await performHandshake(options);
       } catch (error) {
         if (myEpoch === epoch) {
@@ -594,6 +704,7 @@ export const createCordieriteClient = (
       const sessionId = heldSession?.sessionId ?? null;
       heldSession = null;
       resumeInFlight = false;
+      clearResumeLease();
 
       // A `connect()`/resume attempt in flight must not hang forever: nothing else will ever
       // settle it once the epoch bump below makes onAckReceived/attemptResume treat it as stale.
