@@ -9,8 +9,30 @@ import type {
   CordieriteRuntimeSchema,
   CordieriteToolDefinition,
 } from "./Cordierite.types";
+import { logger } from "./logger";
 
 const JSON_SCHEMA_TARGET = "draft-2020-12";
+
+/** Dedupes the dev warning below across repeated registrations of the same tool name. */
+const shapelessToolWarningsSeen = new Set<string>();
+
+/**
+ * ARCHITECTURE.md §11: when a provided Standard Schema does not export JSON Schema (zod 3, valibot
+ * without an adapter), the tool is still registered — just with an empty `input_schema`/
+ * `output_schema` — so warn once per tool name that agents will see it as shapeless.
+ */
+const warnMissingSchemaExporter = (toolName: string): void => {
+  if (shapelessToolWarningsSeen.has(toolName)) {
+    return;
+  }
+  shapelessToolWarningsSeen.add(toolName);
+  logger.devWarn(
+    `Tool "${toolName}" has a Standard Schema that does not export JSON Schema ` +
+      `("~standard.jsonSchema" is missing — this is expected for zod 3 and plain valibot). It will ` +
+      "be registered without a schema, so agents will see it as shapeless. Use zod v4 (built-in " +
+      'exporter) or a wrapper that implements "~standard.jsonSchema" to give agents a real shape.'
+  );
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -55,9 +77,17 @@ const hasJsonSchemaExporter = (
 /** `undefined` when there is no schema, or it does not export JSON Schema (§7: `input_schema?`/`output_schema?` are optional). */
 export const exportToolSchema = (
   schema: StandardSchemaV1 | undefined,
-  mode: "input" | "output"
+  mode: "input" | "output",
+  toolName?: string
 ): ToolSchemaDescriptor | undefined => {
-  if (!schema || !hasJsonSchemaExporter(schema)) {
+  if (!schema) {
+    return undefined;
+  }
+
+  if (!hasJsonSchemaExporter(schema)) {
+    if (toolName !== undefined) {
+      warnMissingSchemaExporter(toolName);
+    }
     return undefined;
   }
 
@@ -127,8 +157,16 @@ export const toToolDescriptor = (
     CordieriteRuntimeSchema | undefined
   >
 ): ToolDescriptor => {
-  const inputSchema = exportToolSchema(definition.inputSchema, "input");
-  const outputSchema = exportToolSchema(definition.outputSchema, "output");
+  const inputSchema = exportToolSchema(
+    definition.inputSchema,
+    "input",
+    definition.name
+  );
+  const outputSchema = exportToolSchema(
+    definition.outputSchema,
+    "output",
+    definition.name
+  );
 
   return {
     name: definition.name,

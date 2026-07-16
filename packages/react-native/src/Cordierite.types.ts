@@ -248,3 +248,13 @@ export class CordieriteBootstrapParseError extends Error {
     this.name = "CordieriteBootstrapParseError";
   }
 }
+
+/** `connect()` rejects with this on the `./noop` entry (ARCHITECTURE.md §11: compile-out builds). */
+export class CordieriteDisabledError extends Error {
+  code = "cordierite_disabled" as const;
+
+  constructor() {
+    super("Cordierite is disabled in this build (the ./noop entry is in use).");
+    this.name = "CordieriteDisabledError";
+  }
+}
