@@ -699,6 +699,140 @@ describe("createCordieriteClient: incoming tool calls", () => {
 
     expect(errors.some((e) => e.phase === "tool")).toBe(true);
   });
+
+  test("context.reportProgress sends a tool_call_progress frame carrying the call's session/id", async () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    let capturedReportProgress!: (
+      progress?: number,
+      message?: string
+    ) => Promise<void>;
+    client.registerTool({
+      name: "slow",
+      description: "Slow tool",
+      handler: (_args, context) => {
+        capturedReportProgress = context.reportProgress;
+        // Never resolves: keeps this test focused on the reportProgress frame, not the
+        // eventual tool_result/tool_error the invocation would otherwise also send.
+        return new Promise(() => {});
+      },
+    });
+
+    const connectPromise = client.connect(validBootstrap());
+    fireMessage(nativeModule, buildAck());
+    await connectPromise;
+    nativeModule.sentMessages.length = 0;
+
+    fireMessage(nativeModule, {
+      type: "tool_call",
+      session_id: "session-123",
+      id: "call-1",
+      name: "slow",
+      args: {},
+    });
+    await flushMicrotasks();
+
+    await capturedReportProgress(0.5, "halfway there");
+
+    expect(nativeModule.sentMessages).toContain(
+      JSON.stringify({
+        type: "tool_call_progress",
+        session_id: "session-123",
+        id: "call-1",
+        progress: 0.5,
+        message: "halfway there",
+      })
+    );
+  });
+
+  test("context.reportProgress with no arguments sends a bare progress frame", async () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    let capturedReportProgress!: (
+      progress?: number,
+      message?: string
+    ) => Promise<void>;
+    client.registerTool({
+      name: "slow",
+      description: "Slow tool",
+      handler: (_args, context) => {
+        capturedReportProgress = context.reportProgress;
+        // Never resolves: keeps this test focused on the reportProgress frame, not the
+        // eventual tool_result/tool_error the invocation would otherwise also send.
+        return new Promise(() => {});
+      },
+    });
+
+    const connectPromise = client.connect(validBootstrap());
+    fireMessage(nativeModule, buildAck());
+    await connectPromise;
+    nativeModule.sentMessages.length = 0;
+
+    fireMessage(nativeModule, {
+      type: "tool_call",
+      session_id: "session-123",
+      id: "call-1",
+      name: "slow",
+      args: {},
+    });
+    await flushMicrotasks();
+
+    await capturedReportProgress();
+
+    expect(nativeModule.sentMessages).toContain(
+      JSON.stringify({
+        type: "tool_call_progress",
+        session_id: "session-123",
+        id: "call-1",
+      })
+    );
+  });
+
+  test("a failure to send a progress frame is reported on the unified error channel, not thrown", async () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    let capturedReportProgress!: (
+      progress?: number,
+      message?: string
+    ) => Promise<void>;
+    client.registerTool({
+      name: "slow",
+      description: "Slow tool",
+      handler: (_args, context) => {
+        capturedReportProgress = context.reportProgress;
+        // Never resolves: keeps this test focused on the reportProgress frame, not the
+        // eventual tool_result/tool_error the invocation would otherwise also send.
+        return new Promise(() => {});
+      },
+    });
+
+    const connectPromise = client.connect(validBootstrap());
+    fireMessage(nativeModule, buildAck());
+    await connectPromise;
+
+    nativeModule.send = async () => {
+      throw new Error("socket write failed");
+    };
+
+    const errors: CordieriteUnifiedErrorEvent[] = [];
+    client.addCordieriteListener("error", (e) => errors.push(e));
+
+    fireMessage(nativeModule, {
+      type: "tool_call",
+      session_id: "session-123",
+      id: "call-1",
+      name: "slow",
+      args: {},
+    });
+    await flushMicrotasks();
+
+    await capturedReportProgress(0.1);
+
+    expect(errors.some((e) => e.phase === "tool")).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

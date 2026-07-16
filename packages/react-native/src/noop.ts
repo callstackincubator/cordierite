@@ -8,6 +8,8 @@
  * Typed against the same `CordierePublicApi` interface as `./index.ts` (see
  * `__tests__/noop-parity.test.ts`) so the two cannot drift.
  */
+import type { ToolDescriptor } from "@cordierite/shared";
+
 import type {
   CordieriteClientState,
   CordieriteConnectInput,
@@ -48,6 +50,11 @@ export async function postEvent(
   _name: string,
   _payload?: unknown
 ): Promise<void> {}
+
+/** Always empty: this build never registers any tool anywhere. */
+export function getRegisteredTools(): ToolDescriptor[] {
+  return [];
+}
 
 /** No-op: this build never installs deep-link listeners. */
 export function installCordieriteDeepLinkBootstrap(

@@ -35,6 +35,7 @@ describe("noop parity: type-level (see also public-api.ts's doc comment)", () =>
       "registerTool",
       "useCordieriteTool",
       "postEvent",
+      "getRegisteredTools",
       "installCordieriteDeepLinkBootstrap",
       "addCordieriteListener",
       "getCordieriteState",
@@ -94,6 +95,18 @@ describe("noop entry: runtime no-op behavior", () => {
 
     expect(fired).toBe(false);
     expect(() => subscription.remove()).not.toThrow();
+  });
+
+  test("getRegisteredTools() always returns an empty array, even after registerTool", async () => {
+    const { registerTool, getRegisteredTools } = await import("../noop");
+
+    registerTool({
+      name: "any-tool",
+      description: "d",
+      handler: () => "result",
+    });
+
+    expect(getRegisteredTools()).toEqual([]);
   });
 
   test('getCordieriteState() always returns "idle"', async () => {

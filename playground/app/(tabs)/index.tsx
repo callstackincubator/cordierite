@@ -1,135 +1,134 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { z } from "zod";
 import {
-  cordieriteClient,
-  registerTool,
-  type CordieriteCloseEvent,
-  type CordieriteConnectionState,
-  type CordieriteErrorEvent,
-  type CordieriteMessageEvent,
+  getRegisteredTools,
+  useCordieriteTool,
+  type CordieriteToolExecutionContext,
 } from "@cordierite/react-native";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { Layout, Radius } from "@/constants/theme";
 import { useThemeColor } from "@/hooks/use-theme-color";
 
-const PLAYGROUND_HOST_COMMAND = "cordierite host --tls-key playground/certs/dev-key.pem --scheme playground";
-const PROJECT_KEYGEN_COMMAND = "cordierite keygen";
+const CONNECT_COMMANDS = [
+  "cordierite keygen",
+  "# paste the printed sha256/... pin into app.json's cliPins, then:",
+  "bun expo run:ios   # or: bun expo run:android",
+  "cordierite link --open ios-sim   # or: --open android / --qr",
+].join("\n");
 
-function connectionBadgeColor(
-  state: CordieriteConnectionState,
-  colors: {
-    success: string;
-    warning: string;
-    danger: string;
-    muted: string;
-  },
-): string {
-  switch (state) {
-    case "active":
-      return colors.success;
-    case "connecting":
-      return colors.warning;
-    case "error":
-      return colors.danger;
-    default:
-      return colors.muted;
-  }
+/** Delays `ms` without leaking a dangling timer past the call: each tool invocation owns its own. */
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+type RegisteredTool = ReturnType<typeof getRegisteredTools>[number];
+
+function formatToolLine(tool: RegisteredTool): string {
+  const flags = [
+    tool.annotations?.readOnlyHint && "readOnly",
+    tool.annotations?.destructiveHint && "destructive",
+    tool.annotations?.idempotentHint && "idempotent",
+  ].filter(Boolean);
+  const suffix = flags.length > 0 ? ` [${flags.join(", ")}]` : "";
+  return `${tool.name}${suffix}\n  ${tool.description}`;
 }
 
-export default function HomeScreen() {
+export default function ToolsScreen() {
   const insets = useSafeAreaInsets();
   const border = useThemeColor({}, "border");
   const cardBg = useThemeColor({}, "card");
   const elevated = useThemeColor({}, "backgroundElevated");
-  const success = useThemeColor({}, "success");
-  const warning = useThemeColor({}, "warning");
-  const danger = useThemeColor({}, "danger");
-  const textTertiary = useThemeColor({}, "textTertiary");
 
-  const [connectionState, setConnectionState] = useState<CordieriteConnectionState>(
-    cordieriteClient.getState(),
-  );
-  const [lastMessage, setLastMessage] = useState<string | null>(null);
-  const [lastError, setLastError] = useState<string | null>(null);
-  const [lastClose, setLastClose] = useState<string | null>(null);
+  const [callCount, setCallCount] = useState(0);
+  const [tools, setTools] = useState<RegisteredTool[]>([]);
 
-  const dotColor = useMemo(
-    () =>
-      connectionBadgeColor(connectionState, {
-        success,
-        warning,
-        danger,
-        muted: textTertiary,
+  // A ref (not `callCount` state) so the "sum" and "slow_task" handlers below always see the
+  // latest count without needing to be re-registered on every increment.
+  const callCountRef = useRef(0);
+  const bumpCallCount = () => {
+    callCountRef.current += 1;
+    setCallCount(callCountRef.current);
+  };
+
+  useCordieriteTool(
+    {
+      name: "sum",
+      description: "Adds two numbers.",
+      inputSchema: z.object({
+        a: z.number(),
+        b: z.number(),
       }),
-    [connectionState, success, warning, danger, textTertiary],
+      outputSchema: z.object({
+        total: z.number(),
+      }),
+      handler: (args) => {
+        bumpCallCount();
+        return { total: args.a + args.b };
+      },
+    },
+    []
   );
 
+  useCordieriteTool(
+    {
+      name: "reset_counter",
+      description: "Resets the playground's call counter to zero.",
+      annotations: { destructiveHint: true },
+      outputSchema: z.object({
+        count: z.number(),
+      }),
+      handler: () => {
+        callCountRef.current = 0;
+        setCallCount(0);
+        return { count: 0 };
+      },
+    },
+    []
+  );
+
+  useCordieriteTool(
+    {
+      name: "slow_task",
+      description: "Takes ~1.5s and reports progress along the way.",
+      outputSchema: z.object({
+        done: z.boolean(),
+      }),
+      timeoutMs: 5_000,
+      handler: async (
+        _args,
+        context: CordieriteToolExecutionContext
+      ) => {
+        for (const [progress, message] of [
+          [0.33, "warming up"],
+          [0.66, "almost there"],
+          [1, "done"],
+        ] as const) {
+          await delay(500);
+          await context.reportProgress(progress, message);
+        }
+        bumpCallCount();
+        return { done: true };
+      },
+    },
+    []
+  );
+
+  useCordieriteTool(
+    {
+      name: "throwing_tool",
+      description: "Always throws, to exercise tool_execution_error.",
+      handler: () => {
+        throw new Error("throwing_tool always fails on purpose.");
+      },
+    },
+    []
+  );
+
+  // Reads the client's own registry after the tool-registering effects above have run (React runs
+  // effects in declaration order on mount), so this list is never a hand-maintained duplicate.
   useEffect(() => {
-    const echoRegistration = registerTool(
-      {
-        name: "echo",
-        description: "Echoes arguments back from the Expo app.",
-        inputSchema: z.object({
-          value: z.unknown(),
-        }),
-        outputSchema: z.object({
-          echoed: z.unknown(),
-        }),
-        handler: (args) => ({
-          echoed: args.value,
-        }),
-      }
-    );
-    const sumRegistration = registerTool(
-      {
-        name: "sum",
-        description: "Adds two numeric values in the Expo app.",
-        inputSchema: z.object({
-          a: z.number(),
-          b: z.number(),
-        }),
-        outputSchema: z.object({
-          total: z.number(),
-        }),
-        handler: async (args) => ({
-          total: args.a + args.b,
-        }),
-      }
-    );
-
-    return () => {
-      echoRegistration.remove();
-      sumRegistration.remove();
-    };
-  }, []);
-
-  useEffect(() => {
-    const stateSubscription = cordieriteClient.addListener("stateChange", (event) => {
-      setConnectionState(event.state);
-    });
-    const messageSubscription = cordieriteClient.addListener("message", (event: CordieriteMessageEvent) => {
-      setLastMessage(JSON.stringify(event.message, null, 2));
-    });
-    const errorSubscription = cordieriteClient.addListener("error", (event: CordieriteErrorEvent) => {
-      setLastError(`${event.code}: ${event.message}`);
-    });
-    const closeSubscription = cordieriteClient.addListener("close", (event: CordieriteCloseEvent) => {
-      setLastClose(
-        event.code === undefined
-          ? "closed"
-          : `code=${event.code}${event.reason ? ` reason=${event.reason}` : ""}`,
-      );
-    });
-
-    return () => {
-      stateSubscription.remove();
-      messageSubscription.remove();
-      errorSubscription.remove();
-      closeSubscription.remove();
-    };
+    setTools(getRegisteredTools());
   }, []);
 
   const cardStyle = [styles.card, { borderColor: border, backgroundColor: cardBg }];
@@ -160,25 +159,12 @@ export default function HomeScreen() {
           <ThemedText type="overline">Quick start</ThemedText>
           <View style={monoSurfaceStyle}>
             <ThemedText type="mono" selectable>
-              {PLAYGROUND_HOST_COMMAND}
+              {CONNECT_COMMANDS}
             </ThemedText>
           </View>
           <ThemedText type="caption" style={styles.cardHint}>
-            This playground trusts the checked-in dev key. For a real app, run {PROJECT_KEYGEN_COMMAND},
-            copy the printed fingerprint into cliPins, and rebuild the native app.
-          </ThemedText>
-        </View>
-
-        <View style={cardStyle}>
-          <ThemedText type="overline">Session</ThemedText>
-          <View style={styles.row}>
-            <View style={[styles.statusDot, { backgroundColor: dotColor }]} />
-            <ThemedText type="subtitle" style={styles.stateLabel}>
-              {connectionState}
-            </ThemedText>
-          </View>
-          <ThemedText type="caption" style={styles.cardHint}>
-            Open the app via a bootstrap deep link to connect.
+            Then drive tools from another terminal: cordierite ls / tools / invoke sum --input
+            {" '{\"a\":1,\"b\":2}'"}.
           </ThemedText>
         </View>
 
@@ -186,37 +172,22 @@ export default function HomeScreen() {
           <ThemedText type="overline">Registered tools</ThemedText>
           <View style={monoSurfaceStyle}>
             <ThemedText type="mono" selectable>
-              {"echo  Echoes arguments back from the Expo app.\n"}
-              {"sum   Adds two numeric values in the Expo app."}
+              {tools.length > 0
+                ? tools.map(formatToolLine).join("\n\n")
+                : "No tools registered yet."}
             </ThemedText>
           </View>
         </View>
 
         <View style={cardStyle}>
-          <ThemedText type="overline">Last message</ThemedText>
-          <View style={monoSurfaceStyle}>
-            <ThemedText type="mono" selectable>
-              {lastMessage ?? "No session-bound message received yet."}
-            </ThemedText>
+          <ThemedText type="overline">Call counter</ThemedText>
+          <View style={styles.row}>
+            <ThemedText type="subtitle">{callCount}</ThemedText>
           </View>
-        </View>
-
-        <View style={cardStyle}>
-          <ThemedText type="overline">Last error</ThemedText>
-          <View style={monoSurfaceStyle}>
-            <ThemedText type="mono" selectable>
-              {lastError ?? "No errors."}
-            </ThemedText>
-          </View>
-        </View>
-
-        <View style={cardStyle}>
-          <ThemedText type="overline">Last close</ThemedText>
-          <View style={monoSurfaceStyle}>
-            <ThemedText type="mono" selectable>
-              {lastClose ?? "Socket has not closed yet."}
-            </ThemedText>
-          </View>
+          <ThemedText type="caption" style={styles.cardHint}>
+            Bumped by sum/slow_task; reset_counter (destructive) sets it back to zero. Try denying
+            destructive tools in the daemon config to see it get rejected instead.
+          </ThemedText>
         </View>
       </ScrollView>
     </ThemedView>
@@ -241,10 +212,6 @@ const styles = StyleSheet.create({
   heroEyebrow: {
     marginBottom: -4,
   },
-  heroSub: {
-    marginTop: 4,
-    maxWidth: 480,
-  },
   card: {
     borderRadius: Radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
@@ -255,14 +222,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  stateLabel: {
-    textTransform: "capitalize",
   },
   cardHint: {
     marginTop: -4,

@@ -1,3 +1,5 @@
+import type { ToolDescriptor } from "@cordierite/shared";
+
 import type {
   CordieriteClientState,
   CordieriteConnectInput,
@@ -101,6 +103,15 @@ export function registerTool<
 /** Emits an `event` frame on the default client while active; drops (dev warning) otherwise. */
 export function postEvent(name: string, payload?: unknown): Promise<void> {
   return cordieriteClient.postEvent(name, payload);
+}
+
+/**
+ * Snapshot of tools currently registered on the default client (i.e. exactly what the last
+ * `tool_registry_snapshot`/`tool_registry_delta` sent to the daemon reflects). Useful for rendering
+ * a live tool list in app UI instead of hand-maintaining a duplicate array.
+ */
+export function getRegisteredTools(): ToolDescriptor[] {
+  return cordieriteClient.getRegisteredTools();
 }
 
 /**

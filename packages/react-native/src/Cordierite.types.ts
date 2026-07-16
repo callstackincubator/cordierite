@@ -178,10 +178,22 @@ export type CordieriteUnifiedListenerMap = {
   error: (event: CordieriteUnifiedErrorEvent) => void;
 };
 
+/**
+ * Reports incremental progress for the in-flight tool call (ARCHITECTURE.md §7's
+ * `tool_call_progress` frame). Best-effort: failures are reported on the unified `error` channel
+ * (phase `"tool"`), never thrown back into the handler. Both arguments are optional — call with
+ * neither to send a bare progress ping.
+ */
+export type CordieriteReportProgress = (
+  progress?: number,
+  message?: string
+) => Promise<void>;
+
 export type CordieriteToolExecutionContext = {
   sessionId: SessionId;
   invocationId: string;
   receivedAt: string;
+  reportProgress: CordieriteReportProgress;
 };
 
 export type CordieriteToolHandler<TArgs = unknown, TResult = unknown> = (
