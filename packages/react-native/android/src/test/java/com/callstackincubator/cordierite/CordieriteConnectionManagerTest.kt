@@ -1,27 +1,38 @@
 package com.callstackincubator.cordierite
 
+import android.content.ContextWrapper
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import java.security.MessageDigest
 import java.security.cert.CertificateFactory
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Pure-logic JVM tests for the Android connection layer (task 10). Runs on the plain JVM (no
  * Robolectric, no emulator) via `./gradlew :cordierite_react-native:testDebugUnitTest` from
  * `playground/android` (the autolinked consumer app).
  *
- * Not covered here (documented gap, same category as task 09's iOS commit): the actual
- * `connect()`/`send()`/`close()`/`getState()` state machine driven through real
+ * Not covered here (documented gap, same category as task 09's iOS commit): the actual socket
+ * callback state machine driven through real
  * `okhttp3.WebSocketListener` callbacks, and `PinningTrustManager`/`computeSpkiPin` end-to-end
  * (both ultimately call `android.util.Base64`, which throws "not mocked" on a plain JVM unit-test
  * runtime without Robolectric or a device/emulator). The SPKI test below independently verifies
  * the same SHA-256-over-SPKI-DER math with a standard-library `Base64` encoder instead.
  */
 class CordieriteConnectionManagerTest {
+    @Before
+    fun resetProcessResumeLeaseStore() {
+        CordieriteProcessResumeLeaseStore.resetForTests()
+    }
+
     // MARK: - ALLOW_PRIVATE_LAN_ONLY metadata parsing (item 2)
 
     @Test
@@ -91,6 +102,238 @@ class CordieriteConnectionManagerTest {
 
     private val defaultDeviceFields =
         DefaultSessionClaimDeviceFields(manufacturer = "TestCo", model = "TestModel", os = "Android 99")
+
+    @Test
+    fun `valid claim ack stores schema v1 lease before the raw message callback`() {
+        val options = connectOptions(token = "claim-token")
+        val rawAck =
+            JSONObject()
+                .put("type", "session_ack")
+                .put("session_id", "session-1")
+                .put("status", "ok")
+                .put("alias", "pixel-1")
+                .put("resume_token", "resume-token-1")
+                .put("keepalive_interval_s", 15)
+                .put("grace_s", 600)
+                .toString()
+        val ownerGeneration = CordieriteProcessResumeLeaseStore.newOwnerGeneration()
+        var leaseObservedByMessageCallback: Map<String, Any?>? = null
+
+        val result =
+            commitSessionAck(
+                jsonObject = JSONObject(rawAck),
+                rawText = rawAck,
+                options = options,
+                ownerGeneration = ownerGeneration,
+                onAccepted = {},
+                emitMessageRaw = {
+                    leaseObservedByMessageCallback = CordieriteProcessResumeLeaseStore.getRecord()
+                },
+            )
+
+        assertEquals(SessionAckCommitResult.accepted, result)
+        assertNotNull(leaseObservedByMessageCallback)
+        val record = leaseObservedByMessageCallback!!
+        assertEquals(1, record["schemaVersion"])
+        assertEquals("session-1", record["sessionId"])
+        assertEquals("resume-token-1", record["resumeToken"])
+        assertEquals("pixel-1", record["alias"])
+        assertEquals(mapOf("ip" to "127.0.0.1", "port" to 8443), record["endpoint"])
+        assertEquals(15.0, record["keepaliveIntervalS"])
+        assertEquals(600.0, record["graceS"])
+        assertEquals(null, record["disconnectedAtMs"])
+    }
+
+    @Test
+    fun `resume ack atomically rotates the token and resets the disconnect timestamp`() {
+        val ownerGeneration = CordieriteProcessResumeLeaseStore.newOwnerGeneration()
+        val options = connectOptions(resumeToken = "resume-token-1")
+        val firstAck =
+            JSONObject()
+                .put("type", "session_ack")
+                .put("session_id", "session-1")
+                .put("status", "ok")
+                .put("alias", "pixel-1")
+                .put("resume_token", "resume-token-1")
+                .put("keepalive_interval_s", 15)
+                .put("grace_s", 600)
+
+        assertEquals(
+            SessionAckCommitResult.accepted,
+            commitSessionAck(firstAck, firstAck.toString(), options, ownerGeneration, {}, {}),
+        )
+        assertTrue(CordieriteProcessResumeLeaseStore.markDisconnected(ownerGeneration, "session-1", 1234L))
+        assertEquals(1234L, CordieriteProcessResumeLeaseStore.get()?.disconnectedAtMs)
+
+        val resumedAck =
+            JSONObject(firstAck.toString())
+                .put("resume_token", "resume-token-2")
+        var callbackToken: String? = null
+        val result =
+            commitSessionAck(
+                resumedAck,
+                resumedAck.toString(),
+                options,
+                ownerGeneration,
+                {},
+                { callbackToken = CordieriteProcessResumeLeaseStore.get()?.resumeToken },
+            )
+
+        assertEquals(SessionAckCommitResult.accepted, result)
+        assertEquals("resume-token-2", callbackToken)
+        assertEquals(null, CordieriteProcessResumeLeaseStore.get()?.disconnectedAtMs)
+    }
+
+    @Test
+    fun `stale teardown cannot mark or clear a newer manager lease`() {
+        val olderOwner = CordieriteProcessResumeLeaseStore.newOwnerGeneration()
+        val newerOwner = CordieriteProcessResumeLeaseStore.newOwnerGeneration()
+        val options = connectOptions(resumeToken = "resume-token")
+
+        fun ack(token: String) =
+            JSONObject()
+                .put("type", "session_ack")
+                .put("session_id", "session-1")
+                .put("status", "ok")
+                .put("alias", "pixel-1")
+                .put("resume_token", token)
+                .put("keepalive_interval_s", 15)
+                .put("grace_s", 600)
+
+        val oldAck = ack("resume-token-old")
+        val newAck = ack("resume-token-new")
+        assertEquals(
+            SessionAckCommitResult.accepted,
+            commitSessionAck(oldAck, oldAck.toString(), options, olderOwner, {}, {}),
+        )
+        assertEquals(
+            SessionAckCommitResult.accepted,
+            commitSessionAck(newAck, newAck.toString(), options, newerOwner, {}, {}),
+        )
+        val staleAck = ack("resume-token-stale")
+        assertEquals(
+            SessionAckCommitResult.stale,
+            commitSessionAck(staleAck, staleAck.toString(), options, olderOwner, {}, {}),
+        )
+
+        assertFalse(CordieriteProcessResumeLeaseStore.markDisconnected(olderOwner, "session-1", 1000L))
+        assertFalse(CordieriteProcessResumeLeaseStore.clear(olderOwner))
+        assertEquals("resume-token-new", CordieriteProcessResumeLeaseStore.get()?.resumeToken)
+        assertEquals(null, CordieriteProcessResumeLeaseStore.get()?.disconnectedAtMs)
+
+        assertTrue(CordieriteProcessResumeLeaseStore.markDisconnected(newerOwner, "session-1", 2000L))
+        assertEquals(2000L, CordieriteProcessResumeLeaseStore.get()?.disconnectedAtMs)
+        assertTrue(CordieriteProcessResumeLeaseStore.clear(newerOwner))
+        assertEquals(null, CordieriteProcessResumeLeaseStore.get())
+    }
+
+    @Test
+    fun `manager invalidation preserves and marks the lease while explicit close clears it`() {
+        val invalidatedOwner = CordieriteProcessResumeLeaseStore.newOwnerGeneration()
+        val options = connectOptions(token = "claim-token")
+        val ack =
+            JSONObject()
+                .put("type", "session_ack")
+                .put("session_id", "session-1")
+                .put("status", "ok")
+                .put("alias", "pixel-1")
+                .put("resume_token", "resume-token-1")
+                .put("keepalive_interval_s", 15)
+                .put("grace_s", 600)
+        assertEquals(
+            SessionAckCommitResult.accepted,
+            commitSessionAck(ack, ack.toString(), options, invalidatedOwner, {}, {}),
+        )
+
+        val invalidatedManager = managerForTest(invalidatedOwner)
+        invalidatedManager.javaClass.getDeclaredField("activeSessionId").apply {
+            isAccessible = true
+            set(invalidatedManager, "session-1")
+        }
+        val invalidated = CountDownLatch(1)
+        invalidatedManager.invalidate { invalidated.countDown() }
+        assertTrue(invalidated.await(2, TimeUnit.SECONDS))
+        assertEquals("resume-token-1", CordieriteProcessResumeLeaseStore.get()?.resumeToken)
+        assertNotNull(CordieriteProcessResumeLeaseStore.get()?.disconnectedAtMs)
+        val firstDisconnectedAtMs = CordieriteProcessResumeLeaseStore.get()?.disconnectedAtMs
+        val invalidatedAgain = CountDownLatch(1)
+        invalidatedManager.invalidate { invalidatedAgain.countDown() }
+        assertTrue(invalidatedAgain.await(2, TimeUnit.SECONDS))
+        assertEquals(firstDisconnectedAtMs, CordieriteProcessResumeLeaseStore.get()?.disconnectedAtMs)
+
+        val explicitlyClosedOwner = CordieriteProcessResumeLeaseStore.newOwnerGeneration()
+        val nextAck = JSONObject(ack.toString()).put("resume_token", "resume-token-2")
+        assertEquals(
+            SessionAckCommitResult.accepted,
+            commitSessionAck(nextAck, nextAck.toString(), options, explicitlyClosedOwner, {}, {}),
+        )
+        val explicitlyClosedManager = managerForTest(explicitlyClosedOwner)
+        val closed = CountDownLatch(1)
+        explicitlyClosedManager.close { closed.countDown() }
+        assertTrue(closed.await(2, TimeUnit.SECONDS))
+        assertNull(CordieriteProcessResumeLeaseStore.get())
+    }
+
+    @Test
+    fun `malformed or incomplete ack neither replaces the lease nor becomes accepted`() {
+        val options = connectOptions(resumeToken = "resume-token-old")
+        val validAck =
+            JSONObject()
+                .put("type", "session_ack")
+                .put("session_id", "session-1")
+                .put("status", "ok")
+                .put("alias", "pixel-1")
+                .put("resume_token", "resume-token-old")
+                .put("keepalive_interval_s", 15)
+                .put("grace_s", 600)
+        val malformedAcks =
+            listOf(
+                JSONObject(validAck.toString()).apply { remove("alias") },
+                JSONObject(validAck.toString()).put("resume_token", ""),
+                JSONObject(validAck.toString()).put("alias", "x".repeat(129)),
+                JSONObject(validAck.toString()).put("keepalive_interval_s", "15"),
+                JSONObject(validAck.toString()).put("keepalive_interval_s", 0),
+                JSONObject(validAck.toString()).put("grace_s", -1),
+                JSONObject(validAck.toString()).put("session_id", "wrong-session"),
+                JSONObject(validAck.toString()).put("status", "rejected"),
+            )
+
+        malformedAcks.forEach { malformedAck ->
+            CordieriteProcessResumeLeaseStore.resetForTests()
+            val ownerGeneration = CordieriteProcessResumeLeaseStore.newOwnerGeneration()
+            assertEquals(
+                SessionAckCommitResult.accepted,
+                commitSessionAck(validAck, validAck.toString(), options, ownerGeneration, {}, {}),
+            )
+            var transitioned = false
+            var emitted = false
+
+            val result =
+                commitSessionAck(
+                    malformedAck,
+                    malformedAck.toString(),
+                    options,
+                    ownerGeneration,
+                    { transitioned = true },
+                    { emitted = true },
+                )
+
+            assertEquals(SessionAckCommitResult.invalid, result)
+            assertFalse(transitioned)
+            assertFalse(emitted)
+            assertEquals("resume-token-old", CordieriteProcessResumeLeaseStore.get()?.resumeToken)
+        }
+    }
+
+    private fun managerForTest(ownerGeneration: Long) =
+        CordieriteConnectionManager(
+            context = ContextWrapper(null),
+            emitStateChange = {},
+            emitMessageRaw = {},
+            emitError = {},
+            emitClose = {},
+            ownerGeneration = ownerGeneration,
+        )
 
     @Test
     fun `claim frame carries protocol_version 2 and the token`() {

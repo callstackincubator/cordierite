@@ -95,7 +95,7 @@ class NativeCordieriteModule(
     override fun getState(): String = manager.getState()
 
     override fun invalidate() {
-        manager.close {}
+        manager.invalidate()
         super.invalidate()
     }
 }

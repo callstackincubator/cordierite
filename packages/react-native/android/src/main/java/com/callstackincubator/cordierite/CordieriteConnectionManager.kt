@@ -15,7 +15,9 @@ import java.security.SecureRandom
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocketFactory
@@ -28,6 +30,7 @@ private const val PROTOCOL_VERSION = 2
 
 /** Matches `config.json`'s `keepaliveIntervalSeconds` default (ARCHITECTURE §3). */
 private const val DEFAULT_PING_INTERVAL_SECONDS = 15L
+private const val MILLIS_PER_SECOND = 1000.0
 
 private enum class CordieriteConnectionState {
     idle,
@@ -226,6 +229,7 @@ internal class CordieriteConnectionManager(
     private val emitMessageRaw: (String) -> Unit,
     private val emitError: (CordieriteErrorDetails) -> Unit,
     private val emitClose: (Map<String, Any?>) -> Unit,
+    private val ownerGeneration: Long = CordieriteProcessResumeLeaseStore.newOwnerGeneration(),
 ) {
     /**
      * Every mutation and read of connection state goes through this single-thread executor — the
@@ -244,7 +248,9 @@ internal class CordieriteConnectionManager(
         set(value) {
             field = value
             stateSnapshot = value.name
-            emitStateChange(value.name)
+            if (!invalidationRequested.get()) {
+                emitStateChange(value.name)
+            }
         }
 
     /**
@@ -259,10 +265,11 @@ internal class CordieriteConnectionManager(
     private var sharedOkHttpClient: OkHttpClient? = null
     private var webSocket: WebSocket? = null
     private var activeSessionId: String? = null
-    private var pendingSessionId: String? = null
+    private var pendingOptions: CordieriteConnectOptions? = null
     private var configuredPins: Set<String> = emptySet()
     private var allowPrivateLanOnly = true
     private var closeEventPending = false
+    private val invalidationRequested = AtomicBoolean(false)
 
     /** Resolves/rejects the in-flight `connect()` promise; consumed exactly once per attempt. */
     private var pendingConnectCompletion: ((Throwable?) -> Unit)? = null
@@ -274,12 +281,17 @@ internal class CordieriteConnectionManager(
      * from each ack's `keepalive_interval_s` (native parses the ack it already forwards, mirroring
      * the iOS plumbing choice from task 09) so the *next* connect/resume uses the negotiated value.
      */
-    private var negotiatedPingIntervalSeconds = DEFAULT_PING_INTERVAL_SECONDS
+    private var negotiatedPingIntervalMillis = TimeUnit.SECONDS.toMillis(DEFAULT_PING_INTERVAL_SECONDS)
 
     fun connect(
         rawOptions: com.facebook.react.bridge.ReadableMap,
         completion: (Throwable?) -> Unit,
     ) {
+        if (invalidationRequested.get()) {
+            completion(IllegalStateException("Cordierite native module has been invalidated."))
+            return
+        }
+
         val options =
             try {
                 CordieriteConnectOptions.fromReadableMap(rawOptions)
@@ -301,6 +313,11 @@ internal class CordieriteConnectionManager(
         message: String,
         completion: (Throwable?) -> Unit,
     ) {
+        if (invalidationRequested.get()) {
+            completion(IllegalStateException("Cordierite native module has been invalidated."))
+            return
+        }
+
         executor.execute {
             try {
                 performSend(message)
@@ -312,10 +329,26 @@ internal class CordieriteConnectionManager(
     }
 
     fun close(completion: () -> Unit) {
+        if (invalidationRequested.get()) {
+            completion()
+            return
+        }
+
         executor.execute {
             performClose()
             completion()
         }
+    }
+
+    /** Metro/TurboModule teardown: preserve recovery data, release transport, and emit nothing. */
+    fun invalidate(completion: () -> Unit = {}) {
+        if (!invalidationRequested.compareAndSet(false, true)) {
+            completion()
+            return
+        }
+
+        val disconnectedAtMs = System.currentTimeMillis()
+        executor.execute { performInvalidation(disconnectedAtMs, completion) }
     }
 
     fun getState(): String = stateSnapshot
@@ -349,7 +382,7 @@ internal class CordieriteConnectionManager(
 
         cleanup()
 
-        pendingSessionId = options.sessionId
+        pendingOptions = options
         closeEventPending = true
         pendingConnectCompletion = completion
         state = CordieriteConnectionState.connecting
@@ -369,7 +402,7 @@ internal class CordieriteConnectionManager(
                     .newBuilder()
                     .sslSocketFactory(sslSocketFactory, trustManager)
                     .hostnameVerifier(HostnameVerifier { _, _ -> true })
-                    .pingInterval(negotiatedPingIntervalSeconds, TimeUnit.SECONDS)
+                    .pingInterval(negotiatedPingIntervalMillis, TimeUnit.MILLISECONDS)
                     .build()
 
             val request =
@@ -382,6 +415,7 @@ internal class CordieriteConnectionManager(
         } catch (e: Exception) {
             state = CordieriteConnectionState.error
             closeEventPending = false
+            markCurrentLeaseDisconnected(System.currentTimeMillis())
             cleanup()
             completeConnect(e)
         }
@@ -414,6 +448,7 @@ internal class CordieriteConnectionManager(
     }
 
     private fun performClose() {
+        CordieriteProcessResumeLeaseStore.clear(ownerGeneration)
         val socket = webSocket
 
         if (socket == null) {
@@ -431,6 +466,19 @@ internal class CordieriteConnectionManager(
         socket.close(1000, "client_close")
     }
 
+    private fun performInvalidation(
+        disconnectedAtMs: Long,
+        completion: () -> Unit,
+    ) {
+        markCurrentLeaseDisconnected(disconnectedAtMs)
+        closeEventPending = false
+        pendingConnectCompletion = null
+        cleanup()
+        state = CordieriteConnectionState.closed
+        completion()
+        executor.shutdown()
+    }
+
     /** All `WebSocketListener` callbacks re-enter [executor] before touching any state. */
     private inner class ConnectionListener(
         private val options: CordieriteConnectOptions,
@@ -439,21 +487,21 @@ internal class CordieriteConnectionManager(
             webSocket: WebSocket,
             response: Response,
         ) {
-            executor.execute { handleOpen(webSocket, options) }
+            enqueueSocketCallback { handleOpen(webSocket, options) }
         }
 
         override fun onMessage(
             webSocket: WebSocket,
             text: String,
         ) {
-            executor.execute { handleIncomingMessage(webSocket, text) }
+            enqueueSocketCallback { handleIncomingMessage(webSocket, text) }
         }
 
         override fun onMessage(
             webSocket: WebSocket,
             bytes: ByteString,
         ) {
-            executor.execute { handleBinaryMessage(webSocket) }
+            enqueueSocketCallback { handleBinaryMessage(webSocket) }
         }
 
         override fun onClosing(
@@ -461,7 +509,7 @@ internal class CordieriteConnectionManager(
             code: Int,
             reason: String,
         ) {
-            executor.execute {
+            enqueueSocketCallback {
                 if (webSocket === this@CordieriteConnectionManager.webSocket) {
                     // Acknowledge the peer's close handshake; the terminal `close` event (and its
                     // dedupe against `onFailure`) is emitted from `onClosed` only.
@@ -475,7 +523,7 @@ internal class CordieriteConnectionManager(
             code: Int,
             reason: String,
         ) {
-            executor.execute { handleClosed(webSocket, code, reason) }
+            enqueueSocketCallback { handleClosed(webSocket, code, reason) }
         }
 
         override fun onFailure(
@@ -483,7 +531,24 @@ internal class CordieriteConnectionManager(
             t: Throwable,
             response: Response?,
         ) {
-            executor.execute { handleFailure(webSocket, t, response) }
+            enqueueSocketCallback { handleFailure(webSocket, t, response) }
+        }
+    }
+
+    /** Invalidation may cancel the socket immediately before shutting down this executor. */
+    private fun enqueueSocketCallback(block: () -> Unit) {
+        if (invalidationRequested.get()) {
+            return
+        }
+
+        try {
+            executor.execute {
+                if (!invalidationRequested.get()) {
+                    block()
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // Expected only when invalidation won the race between the check and submission.
         }
     }
 
@@ -491,7 +556,7 @@ internal class CordieriteConnectionManager(
         socket: WebSocket,
         options: CordieriteConnectOptions,
     ) {
-        if (socket !== webSocket) {
+        if (invalidationRequested.get() || socket !== webSocket) {
             // Stale callback from a socket superseded by a later connect()/cleanup().
             return
         }
@@ -509,7 +574,7 @@ internal class CordieriteConnectionManager(
     }
 
     private fun handleBinaryMessage(socket: WebSocket) {
-        if (socket !== webSocket) {
+        if (invalidationRequested.get() || socket !== webSocket) {
             return
         }
 
@@ -530,10 +595,15 @@ internal class CordieriteConnectionManager(
         code: Int,
         reason: String,
     ) {
-        if (socket !== webSocket) {
+        if (invalidationRequested.get() || socket !== webSocket) {
             return
         }
 
+        if (code == 1000) {
+            CordieriteProcessResumeLeaseStore.clear(ownerGeneration)
+        } else {
+            markCurrentLeaseDisconnected(System.currentTimeMillis())
+        }
         cleanup()
         if (state != CordieriteConnectionState.error) {
             state = CordieriteConnectionState.closed
@@ -554,7 +624,7 @@ internal class CordieriteConnectionManager(
         t: Throwable,
         response: Response?,
     ) {
-        if (socket !== webSocket) {
+        if (invalidationRequested.get() || socket !== webSocket) {
             return
         }
 
@@ -563,6 +633,7 @@ internal class CordieriteConnectionManager(
         // Reject the in-flight connect() promise (pin mismatch, TLS failure, timeout, abrupt
         // transport death before a claim/resume ack ever arrived). No-op if already resolved.
         completeConnect(t)
+        markCurrentLeaseDisconnected(System.currentTimeMillis())
         cleanup()
         if (closeEventPending) {
             emitClose(emptyMap())
@@ -574,7 +645,7 @@ internal class CordieriteConnectionManager(
         socket: WebSocket,
         text: String,
     ) {
-        if (socket !== webSocket) {
+        if (invalidationRequested.get() || socket !== webSocket) {
             return
         }
 
@@ -596,35 +667,40 @@ internal class CordieriteConnectionManager(
             }
 
         if (state == CordieriteConnectionState.connecting) {
-            val sessionId = jsonObject.optString("session_id")
-            val isValidAck =
-                jsonObject.optString("type") == "session_ack" &&
-                    jsonObject.optString("status") == "ok" &&
-                    sessionId == pendingSessionId
+            val options = pendingOptions
+            val result =
+                if (options == null) {
+                    SessionAckCommitResult.invalid
+                } else {
+                    commitSessionAck(
+                        jsonObject = jsonObject,
+                        rawText = text,
+                        options = options,
+                        ownerGeneration = ownerGeneration,
+                        onAccepted = { lease ->
+                            activeSessionId = lease.sessionId
+                            pendingOptions = null
+                            negotiatedPingIntervalMillis = pingIntervalMillis(lease.keepaliveIntervalS)
+                            state = CordieriteConnectionState.active
+                        },
+                        emitMessageRaw = emitMessageRaw,
+                    )
+                }
 
-            if (!isValidAck) {
-                state = CordieriteConnectionState.error
-                val closeReason = ackCloseReason(jsonObject)
-                publishError(classifyHandshakeCloseReason(closeReason))
-                socket.close(1008, closeReason ?: "invalid_ack")
-                return
+            when (result) {
+                SessionAckCommitResult.accepted -> return
+                SessionAckCommitResult.stale -> {
+                    socket.close(1000, "module_replaced")
+                    return
+                }
+                SessionAckCommitResult.invalid -> {
+                    state = CordieriteConnectionState.error
+                    val closeReason = ackCloseReason(jsonObject)
+                    publishError(classifyHandshakeCloseReason(closeReason))
+                    socket.close(1008, closeReason ?: "invalid_ack")
+                    return
+                }
             }
-
-            activeSessionId = pendingSessionId
-            pendingSessionId = null
-            state = CordieriteConnectionState.active
-
-            val keepaliveIntervalSeconds = jsonObject.optLong("keepalive_interval_s", -1)
-            if (keepaliveIntervalSeconds > 0) {
-                negotiatedPingIntervalSeconds = keepaliveIntervalSeconds
-            }
-
-            // Forward the raw session_ack frame to JS, symmetric with every other post-claim
-            // message: the client needs `resume_token`/`alias`/`grace_s` to drive resume/reconnect
-            // logic (v2 SDK spec, ARCHITECTURE.md §11). All native-side ack handling above (state
-            // flip, keepalive scheduling) already ran before this point. Parity with iOS.
-            emitMessageRaw(text)
-            return
         }
 
         val currentSessionId = activeSessionId
@@ -710,7 +786,21 @@ internal class CordieriteConnectionManager(
         webSocket = null
         sharedOkHttpClient?.connectionPool?.evictAll()
         activeSessionId = null
-        pendingSessionId = null
+        pendingOptions = null
+    }
+
+    private fun markCurrentLeaseDisconnected(disconnectedAtMs: Long) {
+        val sessionId = activeSessionId ?: pendingOptions?.sessionId ?: return
+        CordieriteProcessResumeLeaseStore.markDisconnected(ownerGeneration, sessionId, disconnectedAtMs)
+    }
+
+    private fun pingIntervalMillis(seconds: Double): Long {
+        val millis = seconds * MILLIS_PER_SECOND
+        return when {
+            millis >= Long.MAX_VALUE.toDouble() -> Long.MAX_VALUE
+            millis < 1.0 -> 1L
+            else -> millis.toLong()
+        }
     }
 
     private fun failSocketSend(
@@ -732,7 +822,9 @@ internal class CordieriteConnectionManager(
     }
 
     private fun publishError(details: CordieriteErrorDetails) {
-        emitError(details)
+        if (!invalidationRequested.get()) {
+            emitError(details)
+        }
     }
 
     private fun classifyConnectionFailure(
