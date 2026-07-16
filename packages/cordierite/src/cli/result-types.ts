@@ -116,4 +116,14 @@ export type DaemonStatusCommandData = {
     pinned_keys: string[];
     session_count: number;
   };
+  /** Effective policy + audit surfacing (ARCHITECTURE.md §12). */
+  policy: {
+    default: "allow" | "deny";
+    destructive: "allow" | "deny";
+    tools?: Record<string, "allow" | "deny">;
+  };
+  audit: {
+    path: string;
+    failed_writes: number;
+  };
 };

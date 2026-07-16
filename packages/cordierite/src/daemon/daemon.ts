@@ -2,8 +2,9 @@
  * Daemon composition root (ARCHITECTURE.md §4): state dir → config → pidfile → TLS → session
  * engine → listener → RPC server. Implements `daemon.status`/`daemon.shutdown`, the session RPC
  * surface (`link.create`, `sessions.list`, `sessions.describe`, `sessions.revoke`), and the
- * invocation surface (`tools.list`, `tools.call`, `events.subscribe`; policy/audit land in task
- * 13, which wraps the `tools.call` handler below — that handler is the single seam it hooks).
+ * invocation surface (`tools.list`, `tools.call`, `events.subscribe`), and policy + audit
+ * (ARCHITECTURE.md §12): every `tools.call` attempt is evaluated against `config.policy` and
+ * recorded to the audit log inline in the `tools.call` handler below.
  */
 
 import { readFileSync } from "node:fs";
@@ -14,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import {
   RPC_METHODS,
   type EventKind,
+  type ErrorType,
   type DaemonShutdownResult,
   type DaemonStatusResult,
   type EventsSubscribeParams,
@@ -33,10 +35,12 @@ import {
 
 import type { Clock } from "../cli/types.js";
 import { detectAdvertisedAddress } from "./address.js";
+import { argsSha256, createAuditLogger, type AuditLogger } from "./audit.js";
 import { createCallsManager, type CallsManager } from "./calls.js";
 import { loadConfig, type CordieriteConfig, type ConfigWarnFn } from "./config.js";
 import { createEventBus, type EventBus } from "./event-bus.js";
 import { startListener, type DaemonListener } from "./listener.js";
+import { evaluate as evaluatePolicy } from "./policy.js";
 import { acquirePidfile, type PidfileHandle } from "./pidfile.js";
 import { RpcApplicationError, startRpcServer, type RpcServer } from "./rpc-server.js";
 import { createSessionManager, type SessionManager } from "./sessions.js";
@@ -99,6 +103,8 @@ const buildStatusResult = (
   startedAt: Date,
   tls: TlsManager,
   sessionManager: SessionManager,
+  auditLogger: AuditLogger,
+  auditDir: string,
 ): DaemonStatusResult => {
   return {
     version: packageVersion,
@@ -107,6 +113,8 @@ const buildStatusResult = (
     wssPort: config.wssPort,
     pinnedKeys: tls.pinnedKeys(),
     sessions: sessionManager.list(),
+    policy: config.policy,
+    audit: { path: auditDir, failedWrites: auditLogger.failedWrites() },
   };
 };
 
@@ -165,11 +173,18 @@ const asToolsCallParams = (params: unknown): ToolsCallParams => {
     throw new RpcApplicationError("invalid_request", '"timeoutMs" must be a number.');
   }
 
+  const caller = record.caller;
+
+  if (caller !== undefined && caller !== "cli" && caller !== "mcp") {
+    throw new RpcApplicationError("invalid_request", '"caller" must be "cli" or "mcp".');
+  }
+
   return {
     selector: selector as string | undefined,
     name: record.name,
     args: args as Record<string, unknown>,
     timeoutMs: timeoutMs as number | undefined,
+    caller: caller as "cli" | "mcp" | undefined,
   };
 };
 
@@ -229,6 +244,9 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
 
   const config = await loadConfig(paths, { warn: options.warn });
   const startedAt = clock.now();
+  // Created eagerly (before anything else can fail) so shutdown can always flush it, and so a
+  // startup failure before the RPC server exists still gets a chance to record what happened.
+  const auditLogger = createAuditLogger({ auditDir: paths.auditDir, clock });
 
   let pidfile: PidfileHandle | undefined;
   let server: RpcServer | undefined;
@@ -258,6 +276,9 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
       await server?.close();
       await pidfile?.release();
       await rm(getSocketPath(paths), { force: true });
+      // Flush the audit queue last: nothing else here writes audit records, but this makes sure a
+      // record enqueued by the very last `tools.call` before shutdown actually lands on disk.
+      await auditLogger.flush();
     } finally {
       resolveExited();
     }
@@ -355,7 +376,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
       socketPath: getSocketPath(paths),
       dispatch: {
         [RPC_METHODS.daemonStatus]: (): DaemonStatusResult => {
-          return buildStatusResult(config, startedAt, tls, activeSessionManager);
+          return buildStatusResult(config, startedAt, tls, activeSessionManager, auditLogger, paths.auditDir);
         },
         [RPC_METHODS.daemonShutdown]: (_params, context): DaemonShutdownResult => {
           context.afterSend(() => {
@@ -399,24 +420,60 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           // retained registry survives suspend); only tools.call requires ACTIVE.
           return activeSessionManager.resolveForTools(selector).registry.list();
         },
-        // This handler is the single seam every `tools.call` passes through — task 13 inserts
-        // policy checks and audit records here, wrapping (not duplicating) this logic.
+        // This handler is the single seam every `tools.call` passes through: policy (ARCHITECTURE.md
+        // §12) is evaluated once the target tool descriptor is known, and one audit record is
+        // written for every attempt that reaches a resolved session, across ok/error/denied.
         [RPC_METHODS.toolsCall]: async (params): Promise<ToolsCallResult> => {
-          const { selector, name, args, timeoutMs } = asToolsCallParams(params);
+          const { selector, name, args, timeoutMs, caller } = asToolsCallParams(params);
+          const effectiveCaller = caller ?? "cli";
           const resolved = activeSessionManager.resolveForTools(selector);
+          const auditStartedAt = clock.now().getTime();
+
+          const writeAudit = (outcome: "ok" | "error" | "denied", errorType?: ErrorType): void => {
+            auditLogger.record({
+              sessionId: resolved.sessionId,
+              alias: resolved.alias,
+              tool: name,
+              argsSha256: argsSha256(args),
+              outcome,
+              errorType,
+              durationMs: clock.now().getTime() - auditStartedAt,
+              caller: effectiveCaller,
+            });
+          };
 
           if (resolved.state !== "active") {
-            throw new RpcApplicationError(
-              resolved.state === "suspended" ? "session_suspended" : "session_not_active",
-              `Session "${resolved.alias}" is not active.`,
-            );
+            const errorType = resolved.state === "suspended" ? "session_suspended" : "session_not_active";
+            writeAudit("error", errorType);
+            throw new RpcApplicationError(errorType, `Session "${resolved.alias}" is not active.`);
           }
 
           const tool = resolved.registry.get(name);
 
           if (!tool) {
             // Deliberately no frame is sent to the app for an unknown tool (task 05 scope item 3).
+            writeAudit("error", "tool_not_found");
             throw new RpcApplicationError("tool_not_found", `Tool "${name}" is not registered.`);
+          }
+
+          const policyDecision = evaluatePolicy(tool, { alias: resolved.alias }, config.policy);
+
+          if (policyDecision === "deny") {
+            // Denied → no frame reaches the app, and the call never starts (task 13 scope item 1).
+            activeEventBus.emit({
+              kind: "tool_call_finished",
+              sessionId: resolved.sessionId,
+              alias: resolved.alias,
+              data: { name, outcome: "denied" },
+            });
+            writeAudit("denied");
+
+            throw new RpcApplicationError(
+              "policy_denied",
+              `Policy denies calling "${name}" on session "${resolved.alias}".`,
+              -32000,
+              { hint: `Edit "policy" in ${paths.configPath} (policy.default/policy.destructive/policy.tools) to change this.` },
+            );
           }
 
           const startedAt = clock.now().getTime();
@@ -443,6 +500,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               alias: resolved.alias,
               data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome: "ok" },
             });
+            writeAudit("ok");
 
             return { result, callId };
           } catch (error) {
@@ -454,6 +512,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               alias: resolved.alias,
               data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome: "error", errorType },
             });
+            writeAudit("error", errorType);
 
             throw error;
           }

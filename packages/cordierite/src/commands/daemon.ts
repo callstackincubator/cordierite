@@ -134,6 +134,8 @@ export const handleDaemonStatusCommand = async (
         pinned_keys: status.pinnedKeys,
         session_count: status.sessions.length,
       },
+      policy: status.policy,
+      audit: { path: status.audit.path, failed_writes: status.audit.failedWrites },
     },
   };
 };
