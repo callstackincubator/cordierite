@@ -54,6 +54,7 @@ const createMockClient = (
   return {
     connects,
     bootstrapErrors,
+    restoreSession: async () => false,
     setState(s: CordieriteConnectionState) {
       state = s;
     },
@@ -161,6 +162,7 @@ describe("cordierite deep-link bootstrap", () => {
     const bootstrapErrors: { phase: "parse" | "connect"; error: unknown }[] =
       [];
     const client: CordieriteAutoBootstrapClient = {
+      restoreSession: async () => false,
       getState: (): CordieriteConnectionState => "idle",
       async connect() {
         throw new Error("native failed");
@@ -186,6 +188,7 @@ describe("cordierite deep-link bootstrap", () => {
     // now returns "idle" instead of throwing, and handleCordieriteDeepLinkUrl defensively catches
     // any client whose getState() still throws and reports it instead of propagating.
     const client: CordieriteAutoBootstrapClient = {
+      restoreSession: async () => false,
       getState() {
         throw new Error("getState is not available on this platform");
       },

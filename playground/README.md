@@ -16,7 +16,8 @@ screens in the app, same ideas as in **production** builds.
 - **Safe local defaults**: `allowPrivateLanOnly` stays enabled while iterating—same knob as
   production, not a statement that Cordierite only works offline or on one subnet.
 - **Resume smoke test**: the app uses `@cordierite/react-native/auto`, so a Metro reload suspends
-  and resumes the session automatically—no new deep link needed.
+  and resumes the session automatically with the same alias—no new deep link needed while the
+  native app process stays alive.
 - **UI sandbox** (Expo Router) with two tabs: **Tools** (registers demo tools, renders the live
   registry) and **Status** (connection state, alias, error feed, and a manual event post).
 
@@ -76,8 +77,10 @@ Tap **Send playground_ping** on the Status tab while `events --follow` is runnin
 
 With a session active, trigger a Metro reload (press `r` in the Metro terminal, or shake the
 device and choose Reload). The Status tab should show `reconnecting` then `active` again with the
-**same alias**—no new `cordierite link` needed. This is the daemon-side session grace window
-(`graceSeconds` in `config.json`) doing its job.
+**same alias**—no new `cordierite link` needed. Keep the native app process alive: the resume
+lease exists only in native process memory, so killing/relaunching the app requires a new link.
+The daemon-side session grace window (`graceSeconds` in `config.json`) starts when the transport
+suspends/disconnects.
 
 ## Platform compatibility
 

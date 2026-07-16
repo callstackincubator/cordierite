@@ -18,12 +18,15 @@ anonymous remote access.
 UI-driven mobile automation is slow, brittle, and expensive to maintain. Many useful
 test, support, and diagnostics flows are easier to express as app-defined tools, but
 those tools need a secure transport, a clear trust model, and — as soon as more than one
-device or more than one churn event (a reload, a crash, a network flap) enters the
-picture — a session model that survives that churn without operator intervention.
+device or more than one churn event (a Metro reload, background transition, or network
+flap) enters the picture — a session model that survives that churn without operator
+intervention.
 
 Cordierite provides that model by moving control outside the UI, exposing only the tool
 surface the app explicitly registers, and running a long-lived local daemon that absorbs
-device churn instead of requiring a fresh process and a fresh deep link every time.
+device churn instead of requiring a fresh daemon process and deep link every time. The
+app resume lease is process-memory-only, so native app process death still requires a
+fresh bootstrap.
 
 ## Current product shape
 
@@ -48,9 +51,9 @@ tools, through the same session model, with the same policy and audit applied.
 
 - Let React Native apps expose internal tools to external operators, tests, and agents.
 - Keep the exposed surface explicit and allowlisted — only what the app registers.
-- Survive the churn a real dev/CI loop produces (Metro reloads, crashes, backgrounding,
-  network flaps, CI restarts) without requiring a new daemon process or a new deep link
-  for a reconnect within the grace window.
+- Survive the churn a real dev loop produces (Metro reloads, backgrounding, and network
+  flaps) without requiring a new daemon process or a new deep link for a reconnect within
+  the grace window while the native app process stays alive.
 - Serve multiple concurrent devices from one daemon process.
 - Make MCP the primary machine-consumption surface (`cordierite mcp` in a Claude
   Code/Cursor-style MCP config) while keeping the CLI as the human-first surface — both
@@ -133,6 +136,11 @@ tools, through the same session model, with the same policy and audit applied.
   `resume_token`.
 - On socket loss the session suspends (not terminates) and can resume with
   `session_resume` within a configurable grace window, without a new deep link.
+- The native client stores the latest acknowledged resume lease in process memory only,
+  before JS observes the acknowledgement. The grace window is measured from transport
+  suspension/disconnection, not acknowledgement time. A fresh Metro runtime restores
+  that lease automatically when bootstrap installation starts; native process death
+  erases it and requires a fresh bootstrap.
 - The daemon serves any number of concurrent sessions, each independently claimable,
   suspendable, and resumable; sessions never collide on id or alias.
 
@@ -209,8 +217,9 @@ them:
   `0600` — see `docs/SECURITY.md`'s "localhost/UDS trust boundary" section.
 - **Reconnection.** v1 had no session survival story: any socket loss ended the session.
   v2's suspend/resume state machine (`docs/PROTOCOL.md` §6) with a rotating resume token
-  and a configurable grace window lets an app recover from a reload, a background/
-  foreground cycle, or a network flap without a new deep link.
+  and a configurable grace window lets an app recover from a Metro reload, a background/
+  foreground cycle, or a network flap without a new deep link while its native process
+  stays alive. The lease is not persisted, so process death requires a fresh bootstrap.
 - **Multi-host / multi-device.** v1 ran one host process per device with one active
   claimed session. v2 runs one daemon serving any number of concurrent device sessions
   on the same `wss://` port.

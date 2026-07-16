@@ -77,9 +77,10 @@ export const cordieriteClient = new Proxy(
 );
 
 /**
- * Subscribes the default client to deep links (initial URL + runtime `url` events). Safe to call
- * once; a later call with different `options` logs a dev warning instead of silently keeping the
- * first installation's options (see `deep-link-install.ts`).
+ * Subscribes the default client to runtime deep links and attempts native-lease recovery before
+ * processing the initial URL. Safe to call once; a later call with different `options` logs a dev
+ * warning instead of silently keeping the first installation's options (see
+ * `deep-link-install.ts`).
  */
 export function installCordieriteDeepLinkBootstrap(
   options?: InstallCordieriteDeepLinkBootstrapOptions
