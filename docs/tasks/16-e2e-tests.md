@@ -1,5 +1,7 @@
 # 16 — End-to-end integration test suite
 
+> Status: done (ca5182f)
+
 ## Goal
 
 One suite that exercises the whole operator-machine stack — CLI ⇄ auto-spawned daemon

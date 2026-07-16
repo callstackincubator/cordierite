@@ -1,5 +1,7 @@
 # 11 — React Native JS client v2: resume, reconnect, unified events
 
+> Status: done (eedb1b9)
+
 ## Goal
 
 Rewrite the JS client core of `@cordierite/react-native` for protocol v2: claim →

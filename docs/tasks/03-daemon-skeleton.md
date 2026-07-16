@@ -1,5 +1,7 @@
 # 03 — Daemon skeleton: state dir, config, lifecycle, UDS RPC, auto-spawn
 
+> Status: done (10bab6a)
+
 ## Goal
 
 Stand up the long-lived daemon process and its control plane: state directory, config

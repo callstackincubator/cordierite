@@ -1,5 +1,7 @@
 # 02 — @cordierite/shared: protocol v2 replaces v1
 
+> Status: done (038c160)
+
 ## Goal
 
 Rewrite `@cordierite/shared` as **v2-only**: wire messages, bootstrap codec, tool

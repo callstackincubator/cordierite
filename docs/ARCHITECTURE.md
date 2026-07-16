@@ -79,9 +79,15 @@ The daemon refuses to load a key file that is group/world-readable.
   "graceSeconds": 600,
   "linkTtlSeconds": 300,
   "keepaliveIntervalSeconds": 15,
-  "policy": { "default": "allow", "destructive": "allow" }
+  "policy": { "default": "allow", "destructive": "allow" },
+  "advertisedIp": null,
+  "scheme": null
 }
 ```
+
+`advertisedIp` overrides auto-detection of the address advertised in minted bootstrap
+payloads. `scheme` is the deep-link URI scheme composed into `cordierite link`'s output
+when `--scheme` is not passed (§10) — set it once here instead of on every invocation.
 
 ## 4. Daemon lifecycle
 
@@ -121,21 +127,25 @@ Methods:
 | --- | --- | --- |
 | `daemon.status` | — | `{ version, pid, startedAt, wssPort, pinnedKeys: [spkiPin], sessions: SessionSummary[] }` |
 | `daemon.shutdown` | — | `{ ok: true }` (then exits) |
-| `link.create` | `{ ttlSeconds? }` | `{ sessionId, deepLinkPayload, endpoint: { family, address, port }, expiresAt }` — `deepLinkPayload` is the base64url bootstrap blob; callers compose `<scheme>:///?cordierite=<payload>` |
+| `link.create` | `{ ttlSeconds?, addressOverride? }` | `{ sessionId, deepLinkPayload, endpoint: { family, address, port }, expiresAt }` — `deepLinkPayload` is the base64url bootstrap blob; callers compose `<scheme>:///?cordierite=<payload>`. `addressOverride` forces the advertised address (the emulator/simulator fast path uses it to force `127.0.0.1`). |
 | `sessions.list` | — | `SessionSummary[]` |
 | `sessions.describe` | `{ selector? }` | full session detail incl. device metadata, state timestamps, tool count |
 | `sessions.revoke` | `{ selector? }` | `{ ok: true }` — closes socket (code 1000), frees alias |
 | `tools.list` | `{ selector? }` | `ToolDescriptor[]` (full schemas + annotations) |
-| `tools.call` | `{ selector?, name, args, timeoutMs? }` | `{ result }` on success; JSON-RPC error with `data.type` preserving the wire error type on failure |
+| `tools.call` | `{ selector?, name, args, timeoutMs? }` | `{ result, callId }` on success — `callId` lets a caller with several in-flight calls match `tool_call_progress`/`tool_call_finished` events back to this call; JSON-RPC error with `data.type` preserving the wire error type on failure |
 | `events.subscribe` | `{ sessionSelector?, kinds? }` | `{ ok: true }`, then `event` notifications on this connection |
 
 `SessionSummary`: `{ sessionId, alias, state, device: { manufacturer?, model?, os? },
 createdAt, claimedAt?, suspendedAt?, toolCount }`.
 
+`daemon.status`'s result also reports the effective policy config and audit surfacing:
+`{ ..., policy: { default, destructive, tools? }, audit: { path, failedWrites } }` (§12).
+
 Event notification payload: `{ kind, sessionId?, alias?, ts, data }` where `kind` is one
-of `daemon_started`, `link_created`, `session_claimed`, `session_suspended`,
-`session_resumed`, `session_revoked`, `session_expired`, `tools_changed`, `app_event`,
-`tool_call_started`, `tool_call_finished`.
+of `daemon_started`, `link_created`, `link_expired`, `session_claimed`,
+`session_suspended`, `session_resumed`, `session_revoked`, `session_expired`,
+`tools_changed`, `app_event`, `tool_call_started`, `tool_call_progress`,
+`tool_call_finished`.
 
 **Error codes** (JSON-RPC `error.data.type`): `no_session`, `ambiguous_session`,
 `unknown_session`, `session_not_active`, `tool_not_found`,
@@ -278,10 +288,12 @@ proxies daemon RPC (auto-spawning the daemon like any client):
 - `tools/call` → `tools.call`; `tool_call_progress` frames map to MCP progress
   notifications. Errors surface as MCP tool errors carrying the preserved `type`.
 - Descriptor `annotations` map to MCP tool annotations verbatim.
-- One built-in management tool, `cordierite_connect`: mints a link (`link.create`) and,
+- Two built-in management tools. `cordierite_connect` mints a link (`link.create`) and,
   when a target argument is given (`android` / `ios-sim`), delivers it via the fast
-  path; returns the deep link + QR text otherwise. This lets an agent bootstrap a device
-  session without shell access.
+  path; returns the deep link + QR text otherwise. `cordierite_wait_for_session` then
+  blocks (up to a `timeoutMs`) until that session is claimed, or resolves immediately if
+  it already has been. Together these let an agent bootstrap a device session and know
+  when it's ready without shell access.
 
 ## 10. CLI surface
 

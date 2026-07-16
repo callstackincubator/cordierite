@@ -1,5 +1,7 @@
 # 06 — CLI v2: thin client rewrite
 
+> Status: done (5f53684)
+
 ## Goal
 
 Build the full v2 CLI as a thin renderer over the daemon RPC per ARCHITECTURE §10.

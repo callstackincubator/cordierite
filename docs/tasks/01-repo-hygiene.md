@@ -1,5 +1,7 @@
 # 01 — Repo hygiene & v1 demolition
 
+> Status: done (a521d09)
+
 ## Goal
 
 Start the refactor with a clean slate: remove the committed trust-anchor key, then

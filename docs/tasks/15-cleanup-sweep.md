@@ -1,5 +1,7 @@
 # 15 — Cleanup sweep & release prep
 
+> Status: done (994335f)
+
 ## Goal
 
 A repo-wide consistency pass now that all v2 pieces have landed: verify no v1

@@ -1,5 +1,7 @@
 # 05 — Daemon: tool invocation path + full RPC surface
 
+> Status: done (8c05242)
+
 ## Goal
 
 Complete the daemon RPC: `tools.list`, `tools.call` with correlation/timeout/progress,

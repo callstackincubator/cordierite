@@ -1,5 +1,7 @@
 # 08 — MCP server (`cordierite mcp`)
 
+> Status: done (5b10b62)
+
 ## Goal
 
 Expose connected apps' tools to MCP clients (Claude Code, Cursor, CI agents) via a

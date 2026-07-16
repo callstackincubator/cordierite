@@ -1,5 +1,7 @@
 # 14 — Playground update
 
+> Status: done (445bf95)
+
 ## Goal
 
 Make the playground the reference consumer of the v2 SDK and the manual test bed for

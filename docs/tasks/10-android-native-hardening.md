@@ -1,5 +1,7 @@
 # 10 — Android native hardening
 
+> Status: done (2755608)
+
 ## Goal
 
 Bring the Android connection layer to the same contract as iOS (task 09):
