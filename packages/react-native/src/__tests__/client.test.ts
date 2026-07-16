@@ -164,6 +164,17 @@ const buildAck = (
   ...overrides,
 });
 
+const validResumeLease = () => ({
+  schemaVersion: 1 as const,
+  sessionId: "session-123",
+  resumeToken: "resume-token-1",
+  alias: "device-1",
+  endpoint: { ip: "192.168.1.42", port: 8443 },
+  keepaliveIntervalS: 15,
+  graceS: 600,
+  disconnectedAtMs: null,
+});
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -317,6 +328,173 @@ describe("createCordieriteClient: claim handshake", () => {
 });
 
 // ---------------------------------------------------------------------------
+// runtime replacement -> restore native-owned resume lease
+// ---------------------------------------------------------------------------
+
+describe("createCordieriteClient: restore session after runtime replacement", () => {
+  test("a fresh client resumes from the shared lease and sends a full registry snapshot", async () => {
+    let storedLease: unknown = null;
+    const resumeLeaseStore = {
+      get: () => storedLease,
+      clear: () => {
+        storedLease = null;
+      },
+    };
+
+    const firstNativeModule = createMockModule();
+    const firstClient = createCordieriteClient(firstNativeModule, {
+      resumeLeaseStore,
+    });
+    const firstConnect = firstClient.connect(validBootstrap());
+    fireMessage(firstNativeModule, buildAck());
+    await firstConnect;
+
+    // Native will own this write in production. The shared fake models its process-memory lease.
+    storedLease = validResumeLease();
+    firstClient.destroy();
+
+    const replacementNativeModule = createMockModule();
+    const replacementClient = createCordieriteClient(replacementNativeModule, {
+      resumeLeaseStore,
+    });
+    replacementClient.registerTool({
+      name: "echo",
+      description: "Echo tool",
+      handler: () => {},
+    });
+    const sessionEvents: CordieriteSessionChangeEvent[] = [];
+    replacementClient.addCordieriteListener("sessionChange", (event) =>
+      sessionEvents.push(event)
+    );
+
+    await expect(replacementClient.restoreSession()).resolves.toBe(true);
+    expect(replacementClient.getClientState()).toBe("reconnecting");
+    expect(replacementNativeModule.connectCalls).toHaveLength(1);
+    expect(replacementNativeModule.connectCalls[0]).toMatchObject({
+      ip: "192.168.1.42",
+      port: 8443,
+      sessionId: "session-123",
+      resumeToken: "resume-token-1",
+    });
+
+    fireMessage(
+      replacementNativeModule,
+      buildAck({ resume_token: "resume-token-2" })
+    );
+    await flushMicrotasks();
+
+    expect(replacementClient.getClientState()).toBe("active");
+    expect(sessionEvents).toEqual([
+      { type: "resumed", sessionId: "session-123", alias: "device-1" },
+    ]);
+    expect(replacementNativeModule.sentMessages).toContain(
+      JSON.stringify({
+        type: "tool_registry_snapshot",
+        session_id: "session-123",
+        tools: [{ name: "echo", description: "Echo tool" }],
+      })
+    );
+  });
+
+  test("a malformed stored lease is cleared and ignored", async () => {
+    let storedLease: unknown = {
+      ...validResumeLease(),
+      resumeToken: "x".repeat(129),
+    };
+    let clearCalls = 0;
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule, {
+      resumeLeaseStore: {
+        get: () => storedLease,
+        clear: () => {
+          clearCalls += 1;
+          storedLease = null;
+        },
+      },
+    });
+
+    await expect(client.restoreSession()).resolves.toBe(false);
+    expect(client.getClientState()).toBe("idle");
+    expect(nativeModule.connectCalls).toEqual([]);
+    expect(clearCalls).toBe(1);
+  });
+
+  test("an expired stored lease is cleared without starting recovery", async () => {
+    let storedLease: unknown = {
+      ...validResumeLease(),
+      graceS: 2,
+      disconnectedAtMs: 1_000,
+    };
+    let clearCalls = 0;
+    const timers = createFakeTimers();
+    timers.advance(3_000);
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule, {
+      timers,
+      resumeLeaseStore: {
+        get: () => storedLease,
+        clear: () => {
+          clearCalls += 1;
+          storedLease = null;
+        },
+      },
+    });
+
+    await expect(client.restoreSession()).resolves.toBe(false);
+    expect(client.getClientState()).toBe("idle");
+    expect(nativeModule.connectCalls).toEqual([]);
+    expect(clearCalls).toBe(1);
+  });
+
+  test("explicit close clears a restored lease", async () => {
+    let storedLease: unknown = validResumeLease();
+    let clearCalls = 0;
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule, {
+      resumeLeaseStore: {
+        get: () => storedLease,
+        clear: () => {
+          clearCalls += 1;
+          storedLease = null;
+        },
+      },
+    });
+
+    await client.restoreSession();
+    await client.close();
+
+    expect(storedLease).toBeNull();
+    expect(clearCalls).toBe(1);
+  });
+
+  test("a fresh manual connect supersedes an in-flight restoration", async () => {
+    let storedLease: unknown = validResumeLease();
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule, {
+      resumeLeaseStore: {
+        get: () => storedLease,
+        clear: () => {
+          storedLease = null;
+        },
+      },
+    });
+
+    await client.restoreSession();
+    const freshConnect = client.connect({
+      ...validBootstrap(),
+      sessionId: "session-fresh",
+    });
+    await flushMicrotasks();
+    fireMessage(nativeModule, buildAck({ session_id: "session-fresh" }));
+    await freshConnect;
+
+    expect(nativeModule.connectCalls).toHaveLength(2);
+    expect(client.getClientState()).toBe("active");
+    expect(storedLease).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // socket loss -> resume -> rotated token -> fresh snapshot
 // ---------------------------------------------------------------------------
 
@@ -384,7 +562,16 @@ describe("createCordieriteClient: resume after socket loss", () => {
   test("code 1000 (sessions.revoke) ends the session immediately without scheduling a retry", async () => {
     const nativeModule = createMockModule();
     const timers = createFakeTimers();
-    const client = createCordieriteClient(nativeModule, { timers });
+    let storedLease: unknown = validResumeLease();
+    const client = createCordieriteClient(nativeModule, {
+      timers,
+      resumeLeaseStore: {
+        get: () => storedLease,
+        clear: () => {
+          storedLease = null;
+        },
+      },
+    });
 
     const connectPromise = client.connect(validBootstrap());
     fireMessage(nativeModule, buildAck());
@@ -405,6 +592,7 @@ describe("createCordieriteClient: resume after socket loss", () => {
       },
     ]);
     expect(timers.pendingCount()).toBe(0);
+    expect(storedLease).toBeNull();
   });
 
   test("a fresh connect() supersedes and stops any in-flight reconnect loop", async () => {
@@ -435,6 +623,23 @@ describe("createCordieriteClient: resume after socket loss", () => {
 // ---------------------------------------------------------------------------
 
 describe("createCordieriteClient: grace expiry", () => {
+  test("the first socket loss gets a full grace window after a long active session", async () => {
+    const nativeModule = createMockModule();
+    const timers = createFakeTimers({ randomValues: [0] });
+    const client = createCordieriteClient(nativeModule, { timers });
+
+    const connectPromise = client.connect(validBootstrap());
+    fireMessage(nativeModule, buildAck({ grace_s: 2 }));
+    await connectPromise;
+
+    timers.advance(60_000);
+    fireClose(nativeModule, { code: 1006 });
+
+    expect(client.getClientState()).toBe("reconnecting");
+    timers.advance(1);
+    expect(nativeModule.connectCalls).toHaveLength(2);
+  });
+
   test("stops retries and emits a terminal stateChange once grace_s has elapsed", async () => {
     const nativeModule = createMockModule();
     const timers = createFakeTimers({ randomValues: [0] });
@@ -454,7 +659,8 @@ describe("createCordieriteClient: grace expiry", () => {
     client.addCordieriteListener("sessionChange", (e) => sessionEvents.push(e));
 
     fireClose(nativeModule, { code: 1006 });
-    timers.advance(2_000);
+    timers.advance(1); // start the hanging resume attempt
+    timers.advance(1_999); // let its grace budget expire while the handshake is in flight
 
     expect(client.getClientState()).toBe("closed");
     expect(stateEvents.at(-1)).toEqual({
@@ -470,6 +676,12 @@ describe("createCordieriteClient: grace expiry", () => {
       },
     ]);
     expect(timers.pendingCount()).toBe(0);
+
+    // A late ack from the resume attempt must not resurrect a terminally expired session.
+    fireMessage(nativeModule, buildAck({ resume_token: "late-token" }));
+    await flushMicrotasks();
+    expect(client.getClientState()).toBe("closed");
+    expect(sessionEvents).toHaveLength(1);
   });
 });
 

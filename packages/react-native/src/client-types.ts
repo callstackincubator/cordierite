@@ -4,6 +4,7 @@ import type {
   CordieriteModuleEvents,
 } from "./Cordierite.types";
 import type { AppStateLike } from "./client/app-state";
+import type { ResumeLeaseStore } from "./client/resume-lease";
 import type { ClientTimers } from "./client/timers";
 
 export type EventSubscription = {
@@ -39,4 +40,6 @@ export type CreateCordieriteClientOptions = {
   timers?: ClientTimers;
   /** Test seam for AppState background/foreground gating. Defaults to react-native's `AppState`. */
   appState?: AppStateLike;
+  /** @internal Synchronous process-memory recovery seam. No production default is wired yet. */
+  resumeLeaseStore?: ResumeLeaseStore;
 };
