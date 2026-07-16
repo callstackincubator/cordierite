@@ -353,6 +353,11 @@ internal class CordieriteConnectionManager(
 
     fun getState(): String = stateSnapshot
 
+    /** Synchronous TurboModule bridge wrappers; clear retains this manager's generation guard. */
+    fun getResumeLeaseRecord(): Map<String, Any?>? = CordieriteProcessResumeLeaseStore.getRecord()
+
+    fun clearResumeLease(): Boolean = CordieriteProcessResumeLeaseStore.clear(ownerGeneration)
+
     private fun performConnect(
         options: CordieriteConnectOptions,
         completion: (Throwable?) -> Unit,

@@ -42,6 +42,23 @@ export type CordieriteCloseEventNative = {
   reason: string | null;
 };
 
+export type CordieriteResumeEndpointNative = {
+  ip: string;
+  port: CodegenTypes.Int32;
+};
+
+/** Exact process-memory lease shape exposed synchronously by the native implementations. */
+export type CordieriteResumeLeaseV1Native = {
+  schemaVersion: CodegenTypes.Int32;
+  sessionId: string;
+  resumeToken: string;
+  alias: string;
+  endpoint: CordieriteResumeEndpointNative;
+  keepaliveIntervalS: number;
+  graceS: number;
+  disconnectedAtMs: number | null;
+};
+
 export interface Spec extends TurboModule {
   /**
    * Starts the TLS + WebSocket connection and sends the first protocol v2 frame: `session_claim`
@@ -54,6 +71,8 @@ export interface Spec extends TurboModule {
   send(message: string): Promise<void>;
   close(): Promise<void>;
   getState(): string;
+  getResumeLease(): CordieriteResumeLeaseV1Native | null;
+  clearResumeLease(): void;
 
   readonly onStateChange: CodegenTypes.EventEmitter<CordieriteStateChangeEventNative>;
   readonly onMessage: CodegenTypes.EventEmitter<CordieriteMessageEventNative>;

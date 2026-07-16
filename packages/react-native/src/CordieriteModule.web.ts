@@ -11,6 +11,7 @@
  * `cordieriteClient` at import time, which registers internal listeners.
  */
 import type { CordieriteConnectionState } from "./Cordierite.types";
+import type { ResumeLeaseStore } from "./client/resume-lease";
 import type { CordieriteNativeModuleLike } from "./client-types";
 import { logger } from "./logger";
 
@@ -39,4 +40,10 @@ export const cordieriteNativeModule: CordieriteNativeModuleLike = {
       remove() {},
     };
   },
+};
+
+/** @internal Unsupported platforms never have a native process-memory lease. */
+export const cordieriteNativeResumeLeaseStore: ResumeLeaseStore = {
+  get: () => null,
+  clear() {},
 };

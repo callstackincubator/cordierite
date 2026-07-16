@@ -109,6 +109,16 @@ RCT_EXPORT_MODULE(Cordierite)
   return (NSString *)[_swift getState];
 }
 
+- (NSDictionary *)getResumeLease
+{
+  return [_swift getResumeLease];
+}
+
+- (void)clearResumeLease
+{
+  [_swift clearResumeLease];
+}
+
 #pragma mark - RCTInvalidating
 
 - (void)invalidate

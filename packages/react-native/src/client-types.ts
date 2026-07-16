@@ -40,6 +40,6 @@ export type CreateCordieriteClientOptions = {
   timers?: ClientTimers;
   /** Test seam for AppState background/foreground gating. Defaults to react-native's `AppState`. */
   appState?: AppStateLike;
-  /** @internal Synchronous process-memory recovery seam. No production default is wired yet. */
+  /** @internal Synchronous process-memory recovery seam. */
   resumeLeaseStore?: ResumeLeaseStore;
 };

@@ -228,6 +228,69 @@ class CordieriteConnectionManagerTest {
     }
 
     @Test
+    fun `manager resume lease getter returns null then the exact schema record`() {
+        val ownerGeneration = CordieriteProcessResumeLeaseStore.newOwnerGeneration()
+        val manager = managerForTest(ownerGeneration)
+
+        assertNull(manager.getResumeLeaseRecord())
+        assertTrue(
+            CordieriteProcessResumeLeaseStore.replace(
+                ownerGeneration,
+                CordieriteResumeLeaseV1(
+                    sessionId = "session-1",
+                    resumeToken = "resume-token-1",
+                    alias = "pixel-1",
+                    endpoint = CordieriteResumeEndpoint("127.0.0.1", 8443),
+                    keepaliveIntervalS = 15.0,
+                    graceS = 600.0,
+                    disconnectedAtMs = 1_234L,
+                ),
+            ),
+        )
+
+        assertEquals(
+            linkedMapOf(
+                "schemaVersion" to 1,
+                "sessionId" to "session-1",
+                "resumeToken" to "resume-token-1",
+                "alias" to "pixel-1",
+                "endpoint" to linkedMapOf("ip" to "127.0.0.1", "port" to 8443),
+                "keepaliveIntervalS" to 15.0,
+                "graceS" to 600.0,
+                "disconnectedAtMs" to 1_234L,
+            ),
+            manager.getResumeLeaseRecord(),
+        )
+    }
+
+    @Test
+    fun `manager resume lease clear is guarded by its owner generation`() {
+        val olderOwner = CordieriteProcessResumeLeaseStore.newOwnerGeneration()
+        val newerOwner = CordieriteProcessResumeLeaseStore.newOwnerGeneration()
+        val oldManager = managerForTest(olderOwner)
+        val newManager = managerForTest(newerOwner)
+        assertTrue(
+            CordieriteProcessResumeLeaseStore.replace(
+                newerOwner,
+                CordieriteResumeLeaseV1(
+                    sessionId = "session-1",
+                    resumeToken = "resume-token-new",
+                    alias = "pixel-1",
+                    endpoint = CordieriteResumeEndpoint("127.0.0.1", 8443),
+                    keepaliveIntervalS = 15.0,
+                    graceS = 600.0,
+                    disconnectedAtMs = null,
+                ),
+            ),
+        )
+
+        assertFalse(oldManager.clearResumeLease())
+        assertEquals("resume-token-new", CordieriteProcessResumeLeaseStore.get()?.resumeToken)
+        assertTrue(newManager.clearResumeLease())
+        assertNull(CordieriteProcessResumeLeaseStore.get())
+    }
+
+    @Test
     fun `manager invalidation preserves and marks the lease while explicit close clears it`() {
         val invalidatedOwner = CordieriteProcessResumeLeaseStore.newOwnerGeneration()
         val options = connectOptions(token = "claim-token")
