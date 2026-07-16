@@ -3,9 +3,11 @@ import { isToolCallMessage } from "@cordierite/shared";
 import type {
   CordieriteRegisteredTool,
   CordieriteToolExecutionContext,
-} from "./Cordierite.types";
-import { logger } from "./logger";
-import { validateStandardSchema } from "./schema";
+  CordieriteUnifiedErrorEvent,
+} from "../Cordierite.types";
+import { logger } from "../logger";
+import { validateStandardSchema } from "../schema";
+import type { ClientTimers } from "./timers";
 
 export const normalizeThrownError = (error: unknown) => {
   if (error instanceof Error) {
@@ -29,12 +31,33 @@ export type ToolInvocationDeps = {
   getSessionId: () => string | null;
   getRegistry: () => Map<string, CordieriteRegisteredTool>;
   sendWire: (json: string) => Promise<void>;
+  timers: ClientTimers;
+  onError: (event: CordieriteUnifiedErrorEvent) => void;
+};
+
+/** Best-effort send: logs and reports to the unified error channel instead of throwing. */
+const sendWireSafely = async (
+  sendWire: (json: string) => Promise<void>,
+  json: string,
+  onError: ToolInvocationDeps["onError"]
+): Promise<void> => {
+  try {
+    await sendWire(json);
+  } catch (error) {
+    logger.warn("Cordierite failed to send a tool response", error);
+    onError({
+      phase: "tool",
+      message: "Failed to send a tool response frame.",
+      cause: error,
+    });
+  }
 };
 
 export const createToolMessageHandler = (deps: ToolInvocationDeps) => {
-  const { getSessionId, getRegistry, sendWire } = deps;
+  const { getSessionId, getRegistry, sendWire, timers, onError } = deps;
+  const send = (json: string) => sendWireSafely(sendWire, json, onError);
 
-  return async (rawMessage: unknown) => {
+  return async (rawMessage: unknown): Promise<void> => {
     const currentSessionId = getSessionId();
     if (!currentSessionId || !isToolCallMessage(rawMessage)) {
       return;
@@ -47,7 +70,7 @@ export const createToolMessageHandler = (deps: ToolInvocationDeps) => {
       logger.warn(
         `tool call for unregistered tool "${rawMessage.name}" (id ${rawMessage.id})`
       );
-      await sendWire(
+      await send(
         JSON.stringify({
           type: "tool_error",
           session_id: currentSessionId,
@@ -73,21 +96,21 @@ export const createToolMessageHandler = (deps: ToolInvocationDeps) => {
       const parsedArgs = tool.inputSchema
         ? await validateStandardSchema(tool.inputSchema, rawMessage.args)
         : Object.keys(rawMessage.args).length === 0
-          ? {
-              ok: true as const,
-              value: undefined,
-            }
-          : {
-              ok: false as const,
-              issues: [
-                {
-                  message: `Tool "${rawMessage.name}" does not accept input arguments.`,
-                },
-              ],
-            };
+        ? {
+            ok: true as const,
+            value: undefined,
+          }
+        : {
+            ok: false as const,
+            issues: [
+              {
+                message: `Tool "${rawMessage.name}" does not accept input arguments.`,
+              },
+            ],
+          };
 
       if (!parsedArgs.ok) {
-        await sendWire(
+        await send(
           JSON.stringify({
             type: "tool_error",
             session_id: currentSessionId,
@@ -104,25 +127,62 @@ export const createToolMessageHandler = (deps: ToolInvocationDeps) => {
         return;
       }
 
-      const result = await tool.handler(parsedArgs.value, context);
+      let timedOut = false;
+      const timeoutHandle = timers.setTimeout(() => {
+        timedOut = true;
+        void send(
+          JSON.stringify({
+            type: "tool_error",
+            session_id: currentSessionId,
+            id: rawMessage.id,
+            error: {
+              type: "tool_timeout",
+              message: `Tool "${rawMessage.name}" did not respond within ${tool.timeoutMs}ms.`,
+            },
+          })
+        );
+      }, tool.timeoutMs);
+
+      let result: unknown;
+      try {
+        result = await tool.handler(parsedArgs.value, context);
+      } catch (error) {
+        timers.clearTimeout(timeoutHandle);
+        if (timedOut) {
+          logger.devWarn(
+            `tool "${rawMessage.name}" threw after its ${tool.timeoutMs}ms timeout (id ${rawMessage.id}); ignoring the late result.`
+          );
+          return;
+        }
+        throw error;
+      }
+
+      timers.clearTimeout(timeoutHandle);
+      if (timedOut) {
+        logger.devWarn(
+          `tool "${rawMessage.name}" resolved after its ${tool.timeoutMs}ms timeout (id ${rawMessage.id}); ignoring the late result.`
+        );
+        return;
+      }
+
       const parsedResult = tool.outputSchema
         ? await validateStandardSchema(tool.outputSchema, result)
         : result === undefined
-          ? {
-              ok: true as const,
-              value: null,
-            }
-          : {
-              ok: false as const,
-              issues: [
-                {
-                  message: `Tool "${rawMessage.name}" must not return a result when outputSchema is omitted.`,
-                },
-              ],
-            };
+        ? {
+            ok: true as const,
+            value: null,
+          }
+        : {
+            ok: false as const,
+            issues: [
+              {
+                message: `Tool "${rawMessage.name}" must not return a result when outputSchema is omitted.`,
+              },
+            ],
+          };
 
       if (!parsedResult.ok) {
-        await sendWire(
+        await send(
           JSON.stringify({
             type: "tool_error",
             session_id: currentSessionId,
@@ -146,7 +206,7 @@ export const createToolMessageHandler = (deps: ToolInvocationDeps) => {
           `tool "${rawMessage.name}" result not JSON-serializable (id ${rawMessage.id})`,
           error
         );
-        await sendWire(
+        await send(
           JSON.stringify({
             type: "tool_error",
             session_id: currentSessionId,
@@ -161,7 +221,7 @@ export const createToolMessageHandler = (deps: ToolInvocationDeps) => {
         return;
       }
 
-      await sendWire(
+      await send(
         JSON.stringify({
           type: "tool_result",
           session_id: currentSessionId,
@@ -174,7 +234,14 @@ export const createToolMessageHandler = (deps: ToolInvocationDeps) => {
         `tool "${rawMessage.name}" handler threw (id ${rawMessage.id})`,
         error
       );
-      await sendWire(
+      onError({
+        phase: "tool",
+        message: `Tool "${rawMessage.name}" handler threw.`,
+        cause: error,
+        toolName: rawMessage.name,
+        invocationId: rawMessage.id,
+      });
+      await send(
         JSON.stringify({
           type: "tool_error",
           session_id: currentSessionId,

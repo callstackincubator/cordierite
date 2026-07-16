@@ -31,4 +31,19 @@ describe("CordieriteConnectOptions vs CordieriteConnectOptionsNative", () => {
     const asJs: CordieriteConnectOptions = minimalNative;
     expect(asJs.deviceManufacturer).toBeUndefined();
   });
+
+  test("resumeToken-only shape (session_resume) is assignable both ways", () => {
+    const withResumeToken: CordieriteConnectOptions = {
+      ip: "10.0.0.1",
+      port: 8443,
+      sessionId: "session-abc",
+      resumeToken: "resume-token-xyz",
+      expiresAt: 1_800_000_000,
+    };
+
+    const asNative: CordieriteConnectOptionsNative = withResumeToken;
+    const roundTrip: CordieriteConnectOptions = asNative;
+    expect(roundTrip.resumeToken).toBe("resume-token-xyz");
+    expect(roundTrip.token).toBeUndefined();
+  });
 });

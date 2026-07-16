@@ -3,6 +3,7 @@ import type {
   SessionBoundMessage,
   SessionId,
   StandardSchemaV1,
+  ToolAnnotations,
   ToolCallMessage,
   ToolDescriptor,
   ToolErrorMessage,
@@ -10,7 +11,10 @@ import type {
   WireMessage,
 } from "@cordierite/shared";
 
-/** Mirrors native connection lifecycle; see `cordieriteClient.connect` JSDoc for promise semantics. */
+/** Local app-side ceiling for a tool handler, matching the daemon's `tools.call` default (§5/§11). */
+export const CORDIERITE_DEFAULT_TOOL_TIMEOUT_MS = 10_000;
+
+/** Mirrors the raw native TurboModule connection lifecycle (one native socket, no resume concept). */
 export type CordieriteConnectionState =
   | "idle"
   | "connecting"
@@ -19,19 +23,32 @@ export type CordieriteConnectionState =
   | "error";
 
 /**
+ * Unified JS-level client state (ARCHITECTURE.md §11): adds `reconnecting` for the
+ * resume/backoff loop that lives entirely in JS, on top of the raw native states above.
+ */
+export type CordieriteClientState =
+  | "idle"
+  | "connecting"
+  | "active"
+  | "reconnecting"
+  | "closed";
+
+/**
  * Options passed to the TurboModule `connect` method. Must stay aligned with
  * `CordieriteConnectOptionsNative` in `NativeCordierite.ts` (Codegen).
  *
  * NOTE: the native layer still speaks this single-`ip` shape internally (v1-era claim building);
- * it does not yet carry the v2 bootstrap `family`/`address` split. Native hardening for the v2
- * wire protocol is tasks 09/10 — this type is left compiling against the current native surface.
+ * it does not yet carry the v2 bootstrap `family`/`address` split — the JS client maps a v2
+ * `BootstrapPayload` (`family`/`address`) onto `ip` before calling native (`connect-helpers.ts`).
  */
 export type CordieriteConnectOptions = {
   ip: string;
   port: number;
   sessionId: SessionId;
-  /** Base64url, 32 raw bytes. */
-  token: string;
+  /** Base64url, 32 raw bytes. Required unless `resumeToken` is given. */
+  token?: string;
+  /** Base64url, 32 raw bytes. When present, native sends `session_resume` instead of `session_claim`. */
+  resumeToken?: string;
   expiresAt: number;
   /** Optional overrides for `session_claim`; native fills defaults when omitted. */
   deviceManufacturer?: string;
@@ -124,6 +141,43 @@ export type CordieriteBootstrapParseErrorCode =
   | "invalid_payload"
   | "expired_payload";
 
+/** Unified listener kinds (ARCHITECTURE.md §11): `addCordieriteListener(kind, cb)`. */
+export type CordieriteListenerKind = "stateChange" | "sessionChange" | "error";
+
+export type CordieriteUnifiedStateChangeEvent = {
+  state: CordieriteClientState;
+  /** Set on transitions into `closed`/`reconnecting`: `revoked`, `grace_expired`, `closed_by_app`, `socket_error`, `connect_error`, `background`, `foreground`. */
+  reason?: string;
+};
+
+export type CordieriteSessionChangeEvent = {
+  type: "claimed" | "resumed" | "lost";
+  sessionId: string | null;
+  alias: string | null;
+  /** Set when `type` is `"lost"`: `revoked`, `grace_expired`, or `closed_by_app`. */
+  reason?: string;
+};
+
+/** One error channel for bootstrap parse/connect, socket, and tool-handler failures (§11). */
+export type CordieriteUnifiedErrorEvent = {
+  phase: "bootstrap" | "connect" | "socket" | "tool";
+  message: string;
+  cause?: unknown;
+  code?: string;
+  nativeCode?: string;
+  closeReason?: string;
+  isRetryable?: boolean;
+  hint?: string;
+  toolName?: string;
+  invocationId?: string;
+};
+
+export type CordieriteUnifiedListenerMap = {
+  stateChange: (event: CordieriteUnifiedStateChangeEvent) => void;
+  sessionChange: (event: CordieriteSessionChangeEvent) => void;
+  error: (event: CordieriteUnifiedErrorEvent) => void;
+};
+
 export type CordieriteToolExecutionContext = {
   sessionId: SessionId;
   invocationId: string;
@@ -156,6 +210,13 @@ export type CordieriteToolDefinition<
   description: string;
   inputSchema?: TInputSchema;
   outputSchema?: TOutputSchema;
+  annotations?: ToolAnnotations;
+  /**
+   * Overrides the default 10 s app-side handler timeout (matches the daemon's `tools.call`
+   * default ceiling, ARCHITECTURE.md §11). On timeout the app replies `tool_timeout`; a later
+   * result from the same invocation is ignored with a dev warning.
+   */
+  timeoutMs?: number;
 };
 
 export type CordieriteToolRegistration<
@@ -169,10 +230,13 @@ export type CordieriteToolRegistration<
 };
 
 export type CordieriteRegisteredTool = {
+  /** Registration identity: `remove()` disposers compare this, not the tool name (stale-disposer fix). */
+  id: symbol;
   descriptor: ToolDescriptor;
   inputSchema?: CordieriteRuntimeSchema;
   outputSchema?: CordieriteRuntimeSchema;
   handler: CordieriteToolHandler;
+  timeoutMs: number;
 };
 
 export class CordieriteBootstrapParseError extends Error {

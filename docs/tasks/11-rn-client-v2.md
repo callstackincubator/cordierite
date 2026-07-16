@@ -97,3 +97,5 @@ connect semantics).
 Extend the existing mocked-native test harness (`src/__tests__/client.test.ts` shows
 the pattern). Fake timers for backoff/grace. Keep the connect-options parity test
 concept updated for the v2 option surface.
+
+> Status: DONE. See commit for details.

@@ -135,5 +135,8 @@ export const toToolDescriptor = (
     description: definition.description,
     ...(inputSchema !== undefined ? { input_schema: inputSchema } : {}),
     ...(outputSchema !== undefined ? { output_schema: outputSchema } : {}),
+    ...(definition.annotations !== undefined
+      ? { annotations: definition.annotations }
+      : {}),
   };
 };

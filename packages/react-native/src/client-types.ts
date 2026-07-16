@@ -3,6 +3,8 @@ import type {
   CordieriteConnectOptions,
   CordieriteModuleEvents,
 } from "./Cordierite.types";
+import type { AppStateLike } from "./client/app-state";
+import type { ClientTimers } from "./client/timers";
 
 export type EventSubscription = {
   remove(): void;
@@ -31,4 +33,10 @@ export type CreateCordieriteClientOptions = {
         "deviceManufacturer" | "deviceModel" | "deviceOs"
       >
     | undefined;
+  /** Default app-side handler timeout (ms) when a tool registration omits its own `timeoutMs`. */
+  defaultToolTimeoutMs?: number;
+  /** Test seam for the reconnect/backoff/grace timers and jitter source. Defaults to real timers. */
+  timers?: ClientTimers;
+  /** Test seam for AppState background/foreground gating. Defaults to react-native's `AppState`. */
+  appState?: AppStateLike;
 };
