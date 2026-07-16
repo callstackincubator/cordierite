@@ -7,7 +7,7 @@
  * tests, which always pin `advertisedIp` for determinism).
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import { detectAdvertisedAddress, isCgnatIpv4Address, isDockerDefaultBridgeAddress, isExcludedIpv4Address } from "../daemon/address.js";
 

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import { isToolDescriptor, MAX_TOOL_DESCRIPTION_LENGTH, TOOL_NAME_PATTERN } from "../domains/tool-descriptor.js";
 

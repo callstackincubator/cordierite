@@ -2,7 +2,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import { handleKeygenCommand } from "../commands/keygen.js";
 

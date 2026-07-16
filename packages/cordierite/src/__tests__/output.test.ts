@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import { renderEventLine, renderResult } from "../output.js";
 import { FIXED_NOW } from "./fixtures.js";

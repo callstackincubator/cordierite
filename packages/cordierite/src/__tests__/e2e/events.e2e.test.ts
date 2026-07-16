@@ -5,7 +5,7 @@
  * `session_suspended`, in that order, on one persistent `events --json` subprocess.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 
 import { FakeAppClient } from "./app-client.js";
 import {
@@ -16,6 +16,7 @@ import {
   mintLink,
   runCliJson,
   spawnCli,
+  waitForExit,
 } from "./harness.js";
 
 afterEach(cleanupAfterEach);
@@ -118,7 +119,7 @@ describe("e2e: events --json", () => {
 
       stop();
       eventsProcess.kill("SIGINT");
-      const exitCode = await eventsProcess.exited;
+      const exitCode = await waitForExit(eventsProcess);
       expect(exitCode).toBe(0);
     },
     20_000,

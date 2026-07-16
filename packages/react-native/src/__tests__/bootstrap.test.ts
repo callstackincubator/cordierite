@@ -1,5 +1,5 @@
 import { encodeBootstrap, type BootstrapPayload } from "@cordierite/shared";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { randomBytes } from "node:crypto";
 
 import { CordieriteBootstrapParseError } from "../Cordierite.types";

@@ -1,5 +1,5 @@
 import { encodeBootstrap } from "@cordierite/shared";
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, vi, test } from "vitest";
 
 import type { CordieriteConnectionState } from "../Cordierite.types";
 
@@ -12,10 +12,10 @@ let getInitialURLImpl: () => Promise<string | null> = () =>
 let urlListeners: UrlListener[] = [];
 
 // `deep-link-install.ts` imports `Linking` from "react-native" at module scope; "react-native"'s
-// own source cannot be parsed under plain `bun test` (it is Flow-typed), so it must be mocked
+// own source cannot be parsed under a Node test runner (it is Flow-typed), so it must be mocked
 // before the module under test is imported. See the module comment on `client/app-state.ts` for
 // the same constraint on `AppState`.
-void mock.module("react-native", () => ({
+vi.mock("react-native", () => ({
   Linking: {
     getInitialURL: () => getInitialURLImpl(),
     addEventListener: (_type: "url", listener: UrlListener) => {
@@ -96,8 +96,8 @@ describe("installCordieriteDeepLinkBootstrap", () => {
     }).not.toThrow();
 
     await flushMicrotasks();
-    // No uncaught rejection reaches the test runner (bun would report it as an unhandled error
-    // between tests, which is exactly the failure mode this covers).
+    // No uncaught rejection reaches the test runner between tests, which is exactly the failure
+    // mode this covers.
     expect(client.connects).toEqual([]);
   });
 

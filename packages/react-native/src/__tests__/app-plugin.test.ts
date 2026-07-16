@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { createRequire } from "node:module";
 
 // `app.plugin.js` is a CommonJS Expo config plugin at the package root, not a TS module under

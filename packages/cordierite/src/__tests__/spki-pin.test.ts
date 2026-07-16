@@ -1,6 +1,6 @@
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import { getSpkiPinFromPrivateKeyPem } from "../spki-pin.js";
 

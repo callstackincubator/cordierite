@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 
 import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { callDaemon, DaemonUnavailableError, openDaemonStream, type SpawnFn } from "../rpc/client.js";

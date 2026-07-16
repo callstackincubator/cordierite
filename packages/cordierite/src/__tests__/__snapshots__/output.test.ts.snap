@@ -1,18 +1,86 @@
-// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`output rendering tools list output stays structured 1`] = `
-"Tools
-  Name  Description
-  echo  Echo a payload on the connected device.
+exports[`output rendering > human errors render on stderr 1`] = `
+"Command Failed
+Error
+  Type     tool_execution_error
+  Message  The tool handler threw.
+  Details  {
+  "hint": "test"
+}
 
 Meta
-  Command: tools
+  Command: invoke
   Timestamp: 2026-03-17T10:00:00.000Z
-  Duration: 4 ms
+  Duration: 2 ms
 "
 `;
 
-exports[`output rendering tools detail output renders full schema/annotations 1`] = `
+exports[`output rendering > invoke human output prints the raw tool result 1`] = `
+"Result
+{
+  "echoed": "hello"
+}
+
+Meta
+  Command: invoke
+  Timestamp: 2026-03-17T10:00:00.000Z
+  Duration: 6 ms
+"
+`;
+
+exports[`output rendering > keygen success output includes the key path and fingerprint 1`] = `
+"Key Ready
+Key
+  Path         /tmp/cordierite-key.pem
+  Fingerprint  sha256/example
+
+Meta
+  Command: keygen
+  Timestamp: 2026-03-17T10:00:00.000Z
+  Duration: 3 ms
+"
+`;
+
+exports[`output rendering > link human output includes the deep link and expiry 1`] = `
+"Link Created
+Link
+  Session    LinkOutputTestSess1
+  Deep link  playground:///?cordierite=abc123
+  Endpoint   wss://192.168.1.10:8443
+  Expires    2026-03-17T10:00:30.000Z
+
+Meta
+  Command: link
+  Timestamp: 2026-03-17T10:00:00.000Z
+  Duration: 5 ms
+"
+`;
+
+exports[`output rendering > ls human output handles an empty session list 1`] = `
+"Sessions
+  No Cordierite sessions are registered.
+
+Meta
+  Command: ls
+  Timestamp: 2026-03-17T10:00:00.000Z
+  Duration: 1 ms
+"
+`;
+
+exports[`output rendering > ls human output includes alias, state, device, tools, and age 1`] = `
+"Sessions
+  Alias    State   Device                       Tools  Age
+  pixel-8  active  Google Pixel 8 (Android 14)  3      1m 
+
+Meta
+  Command: ls
+  Timestamp: 2026-03-17T10:00:00.000Z
+  Duration: 2 ms
+"
+`;
+
+exports[`output rendering > tools detail output renders full schema/annotations 1`] = `
 "Tool: echo
   Description   Echo a payload on the connected device.
   Input schema  {
@@ -29,82 +97,14 @@ Meta
 "
 `;
 
-exports[`output rendering link human output includes the deep link and expiry 1`] = `
-"Link Created
-Link
-  Session    LinkOutputTestSess1
-  Deep link  playground:///?cordierite=abc123
-  Endpoint   wss://192.168.1.10:8443
-  Expires    2026-03-17T10:00:30.000Z
+exports[`output rendering > tools list output stays structured 1`] = `
+"Tools
+  Name  Description
+  echo  Echo a payload on the connected device.
 
 Meta
-  Command: link
+  Command: tools
   Timestamp: 2026-03-17T10:00:00.000Z
-  Duration: 5 ms
-"
-`;
-
-exports[`output rendering ls human output includes alias, state, device, tools, and age 1`] = `
-"Sessions
-  Alias    State   Device                       Tools  Age
-  pixel-8  active  Google Pixel 8 (Android 14)  3      1m 
-
-Meta
-  Command: ls
-  Timestamp: 2026-03-17T10:00:00.000Z
-  Duration: 2 ms
-"
-`;
-
-exports[`output rendering ls human output handles an empty session list 1`] = `
-"Sessions
-  No Cordierite sessions are registered.
-
-Meta
-  Command: ls
-  Timestamp: 2026-03-17T10:00:00.000Z
-  Duration: 1 ms
-"
-`;
-
-exports[`output rendering keygen success output includes the key path and fingerprint 1`] = `
-"Key Ready
-Key
-  Path         /tmp/cordierite-key.pem
-  Fingerprint  sha256/example
-
-Meta
-  Command: keygen
-  Timestamp: 2026-03-17T10:00:00.000Z
-  Duration: 3 ms
-"
-`;
-
-exports[`output rendering invoke human output prints the raw tool result 1`] = `
-"Result
-{
-  "echoed": "hello"
-}
-
-Meta
-  Command: invoke
-  Timestamp: 2026-03-17T10:00:00.000Z
-  Duration: 6 ms
-"
-`;
-
-exports[`output rendering human errors render on stderr 1`] = `
-"Command Failed
-Error
-  Type     tool_execution_error
-  Message  The tool handler threw.
-  Details  {
-  "hint": "test"
-}
-
-Meta
-  Command: invoke
-  Timestamp: 2026-03-17T10:00:00.000Z
-  Duration: 2 ms
+  Duration: 4 ms
 "
 `;

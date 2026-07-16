@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { describe, expect, vi, test } from "vitest";
 
 import { CordieriteDisabledError } from "../Cordierite.types";
 import type { CordierePublicApi } from "../public-api";
@@ -6,10 +6,10 @@ import type { CordierePublicApi } from "../public-api";
 (globalThis as { __DEV__?: boolean }).__DEV__ = true;
 
 // The root (`.`) entry pulls in `react-native` (for `AppState`/`Linking`), whose own source cannot
-// be parsed under plain `bun test` (Flow-typed; see `deep-link-install.test.ts`); `./noop` never
+// be parsed under a Node test runner (Flow-typed; see `deep-link-install.test.ts`); `./noop` never
 // touches `react-native` at all, but this file imports both entries side by side, so the mock is
 // needed regardless.
-void mock.module("react-native", () => ({
+vi.mock("react-native", () => ({
   AppState: {
     currentState: "active",
     addEventListener: () => ({ remove() {} }),
@@ -25,8 +25,9 @@ describe("noop parity: type-level (see also public-api.ts's doc comment)", () =>
     const realModule = await import("../index");
     const noopModule = await import("../noop");
 
-    // The meaningful check here is `tsc` (`bun run build`) accepting these two assignments — bun
-    // strips types at runtime, so this is a signpost for the reader, not the enforcement, mirroring
+    // The meaningful check here is `tsc` (`pnpm run build`) accepting these two assignments —
+    // Vitest strips types at runtime, so this is a signpost for the reader, not the enforcement,
+    // mirroring
     // `connect-options-parity.test.ts`'s pattern.
     const realSatisfiesPublicApi: CordierePublicApi = realModule;
     const noopSatisfiesPublicApi: CordierePublicApi = noopModule;
@@ -49,19 +50,6 @@ describe("noop parity: type-level (see also public-api.ts's doc comment)", () =>
 });
 
 describe("noop entry: runtime no-op behavior", () => {
-  beforeEach(() => {
-    void mock.module("react-native", () => ({
-      AppState: {
-        currentState: "active",
-        addEventListener: () => ({ remove() {} }),
-      },
-      Linking: {
-        getInitialURL: () => Promise.resolve(null),
-        addEventListener: () => ({ remove() {} }),
-      },
-    }));
-  });
-
   test("registerTool returns a disposer but registers nothing observable", async () => {
     const { registerTool } = await import("../noop");
 

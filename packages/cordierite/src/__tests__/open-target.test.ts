@@ -3,7 +3,7 @@
  * injectable `ExecFn` seam — no real `adb`/`xcrun` process is ever spawned.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import { deliverToOpenTarget, isOpenTarget, type ExecFn } from "../cli/open-target.js";
 

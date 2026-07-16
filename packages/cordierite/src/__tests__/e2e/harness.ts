@@ -10,7 +10,7 @@
  *   real CLI subprocess or the fake app client's WebSocket, per the task's "not imported" rule).
  *
  * Every e2e test file is expected to import {@link cleanupAfterEach} and call it from its own
- * top-level `afterEach` (bun:test hooks are file-scoped).
+ * top-level `afterEach` (test hooks are file-scoped).
  */
 
 import { createHash, X509Certificate } from "node:crypto";
@@ -18,22 +18,23 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { connect as connectUds, createServer as createNetServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { text } from "node:stream/consumers";
 import { connect as tlsConnect } from "node:tls";
 
 import { decodeBootstrap, type EventKind, type EventNotification } from "@cordierite/shared";
 
 import { getStateDirPaths } from "../../daemon/state-dir.js";
-import { binEntry, packageRoot, writeTestHostKey } from "../fixtures.js";
+import { binEntry, packageRoot, spawnCliBinary, waitForExit, writeTestHostKey } from "../fixtures.js";
 
 export { binEntry, packageRoot, writeTestHostKey };
+export { waitForExit } from "../fixtures.js";
 
-// Bun's client-side `ws` shim does not honor a per-connection `rejectUnauthorized`/
-// `checkServerIdentity` (see every other integration test file in this package for the same note),
-// so the built-in TLS verification is disabled process-wide here too. This suite does not rely on
+// This suite uses throwaway self-signed certificates, so built-in TLS verification is disabled
+// process-wide. It does not rely on
 // that verification for its pinning guarantee: `FakeAppClient` (app-client.ts) independently
 // verifies the daemon's SPKI pin over a raw `tls` socket (`verifyServerPin` below) before ever
 // trusting the `ws` connection used for the wire protocol — that is the real trust decision an app
-// SDK makes, and it does not depend on Bun's `ws` shim at all.
+// SDK makes.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const stateDirs: string[] = [];
@@ -49,7 +50,7 @@ export const isPidAlive = (pid: number): boolean => {
   }
 };
 
-/** Call from every e2e test file's own top-level `afterEach` (bun:test hooks are per-file). */
+/** Call from every e2e test file's own top-level `afterEach` (test hooks are per-file). */
 export const cleanupAfterEach = async (): Promise<void> => {
   while (extraCleanups.length > 0) {
     await extraCleanups.pop()?.();
@@ -108,7 +109,7 @@ export type TestStateDir = {
 };
 
 /** Always pins a free port and a throwaway host key: every e2e scenario runs several concurrent
- * `bun test` files, each with its own real daemon subprocess/listener. */
+ * test files, each with its own real daemon subprocess/listener. */
 export const makeTempStateDir = async (configOverrides: Record<string, unknown> = {}): Promise<TestStateDir> => {
   const directory = await mkdtemp(path.join(tmpdir(), "cordierite-e2e-"));
   await writeTestHostKey(path.join(directory, "key.pem"));
@@ -131,27 +132,21 @@ export type CliJsonResult<T = unknown> = {
 };
 
 /**
- * Runs the built CLI entry (`bin.ts`, via `bun`) as a real subprocess and parses its `--json`
+ * Runs the built Node CLI as a real subprocess and parses its `--json`
  * stdout — task 16 scope: "built CLI invoked as a subprocess — not imported — so argv parsing, exit
- * codes, and auto-spawn are covered for real." Uses `Bun.spawn` (async), never `Bun.spawnSync`:
+ * codes, and auto-spawn are covered for real. It uses an async process because
  * several scenarios need the daemon to round-trip through this test's own fake app WebSocket client
  * while the CLI subprocess is in flight, and a sync spawn would block this process's event loop for
  * the subprocess's entire lifetime, deadlocking that round-trip (see `cli-v2.integration.test.ts`).
  */
 export const runCliJson = async <T = unknown>(args: string[], stateDir: string): Promise<CliJsonResult<T>> => {
-  const proc = Bun.spawn({
-    cmd: ["bun", binEntry, ...args, "--json"],
-    cwd: packageRoot,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CORDIERITE_STATE_DIR: stateDir },
-  });
+  const proc = spawnCliBinary([...args, "--json"], { stateDir });
 
   const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
+    text(proc.stdout),
+    text(proc.stderr),
   ]);
-  const exitCode = await proc.exited;
+  const exitCode = await waitForExit(proc);
 
   try {
     return { ...(JSON.parse(stdout) as CliJsonResult<T>), exitCode };
@@ -164,13 +159,7 @@ export const runCliJson = async <T = unknown>(args: string[], stateDir: string):
 
 /** Spawns the CLI without waiting for exit — for long-running subcommands (`events`, `daemon run`). */
 export const spawnCli = (args: string[], stateDir: string, extraEnv: Record<string, string> = {}) => {
-  return Bun.spawn({
-    cmd: ["bun", binEntry, ...args],
-    cwd: packageRoot,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CORDIERITE_STATE_DIR: stateDir, ...extraEnv },
-  });
+  return spawnCliBinary(args, { stateDir, extraEnv });
 };
 
 /** Ensures a daemon is up for `stateDir` (auto-spawns via `daemon status`), returning its pid
@@ -251,16 +240,14 @@ export const computeSpkiPinFromCertDer = (certDer: Buffer): string => {
  * of `expectedPins` — the actual trust decision a real app SDK makes (ARCHITECTURE.md: "Apps
  * authenticate the host via SPKI pin-sets over `wss://`"). Rejects on mismatch or on no
  * certificate at all. Kept as a standalone TLS connection (rather than piggy-backing on the `ws`
- * client used for the protocol) because Bun's client-side `ws` shim does not plumb per-connection
- * TLS callbacks through to the underlying socket.
+ * client used for the protocol) to keep this pin verification independent from the protocol
+ * connection.
  */
 export const verifyServerPin = (port: number, expectedPins: readonly string[]): Promise<void> => {
   return new Promise((resolve, reject) => {
     const socket = tlsConnect({ host: "127.0.0.1", port, rejectUnauthorized: false }, () => {
       try {
-        // `detailed: true` matters under Bun's `tls` implementation: `getPeerCertificate(false)`
-        // returns a certificate object with no fields populated at all (not even `.raw`), so the
-        // detailed form is required to get real certificate bytes to hash.
+        // The detailed form provides the DER certificate bytes needed for pin verification.
         const peerCert = socket.getPeerCertificate(true);
 
         if (!peerCert || !peerCert.raw) {

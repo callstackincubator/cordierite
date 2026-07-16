@@ -11,7 +11,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import WebSocket from "ws";
 
 import { decodeBootstrap, type EventKind, type EventNotification } from "@cordierite/shared";
@@ -20,9 +20,8 @@ import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { writeTestHostKey } from "./fixtures.js";
 
 // Client pinning is the app's job (ARCHITECTURE.md task notes); tests skip it client-side. Under
-// `bun test`, Bun's client-side `ws` shim does not honor the per-client `rejectUnauthorized`
-// option, so the leaf-cert check is disabled process-wide here instead (this file's only TLS
-// clients are the ones below, against a throwaway self-signed key).
+// Vitest runs these clients against a throwaway self-signed key, so the leaf-cert check is
+// disabled process-wide for this file.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const runningDaemons: RunningDaemon[] = [];

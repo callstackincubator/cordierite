@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, vi, test } from "vitest";
 
 const lease = {
   schemaVersion: 1,
@@ -15,42 +15,47 @@ let nativeModuleReads = 0;
 let getCalls = 0;
 let clearCalls = 0;
 
-await mock.module("../NativeCordierite", () => {
-  return {
-    get NativeCordierite() {
-      nativeModuleReads += 1;
-      return {
-        connect: async () => {},
-        send: async () => {},
-        close: async () => {},
-        getState: () => "idle",
-        addListener: () => ({ remove() {} }),
-        getResumeLease: () => {
-          getCalls += 1;
-          return lease;
-        },
-        clearResumeLease: () => {
-          clearCalls += 1;
-        },
-      };
-    },
-  };
-});
-
-const nativeModuleReadsAfterMockSetup = nativeModuleReads;
-
-await mock.module("react-native", () => ({
-  AppState: {
-    currentState: "active",
-    addEventListener: () => ({ remove() {} }),
-  },
-  Linking: {
-    getInitialURL: () => Promise.resolve(null),
-    addEventListener: () => ({ remove() {} }),
-  },
-}));
+let nativeModuleReadsAfterMockSetup = 0;
 
 describe("native resume lease adapter", () => {
+  beforeEach(async () => {
+    nativeModuleReads = 0;
+    getCalls = 0;
+    clearCalls = 0;
+    vi.resetModules();
+    vi.doMock("react-native", () => ({
+      AppState: {
+        currentState: "active",
+        addEventListener: () => ({ remove() {} }),
+      },
+      Linking: {
+        getInitialURL: () => Promise.resolve(null),
+        addEventListener: () => ({ remove() {} }),
+      },
+    }));
+
+    const { __cordieriteSetNativeModuleLoaderForTests } = await import("../CordieriteModule");
+    __cordieriteSetNativeModuleLoaderForTests(() => ({
+      get NativeCordierite() {
+        nativeModuleReads += 1;
+        return {
+          connect: async () => {},
+          send: async () => {},
+          close: async () => {},
+          getState: () => "idle",
+          addListener: () => ({ remove() {} }),
+          getResumeLease: () => {
+            getCalls += 1;
+            return lease;
+          },
+          clearResumeLease: () => {
+            clearCalls += 1;
+          },
+        };
+      },
+    }));
+    nativeModuleReadsAfterMockSetup = nativeModuleReads;
+  });
   test("module import does not resolve the TurboModule", async () => {
     await import("../CordieriteModule");
     expect(nativeModuleReads).toBe(nativeModuleReadsAfterMockSetup);

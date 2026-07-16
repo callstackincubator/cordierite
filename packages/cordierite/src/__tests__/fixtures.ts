@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -13,7 +14,52 @@ export const fixedClock = {
 /** Package root: `packages/cordierite` (this file lives in `src/__tests__`). */
 export const packageRoot = path.resolve(import.meta.dirname, "..", "..");
 
-export const binEntry = path.join(packageRoot, "src/bin.ts");
+export const binEntry = path.join(packageRoot, "bin.js");
+
+type CliProcessOptions = {
+  stateDir?: string;
+  extraEnv?: NodeJS.ProcessEnv;
+};
+
+const cliEnvironment = ({ stateDir, extraEnv }: CliProcessOptions): NodeJS.ProcessEnv => ({
+  ...process.env,
+  ...extraEnv,
+  ...(stateDir ? { CORDIERITE_STATE_DIR: stateDir } : {}),
+});
+
+/** Runs the built Node CLI as a subprocess, mirroring the published executable. */
+export const runCliBinary = (args: string[], options: CliProcessOptions = {}) => {
+  const result = spawnSync(process.execPath, [binEntry, ...args], {
+    cwd: packageRoot,
+    encoding: "utf8",
+    env: cliEnvironment(options),
+  });
+
+  return {
+    exitCode: result.status ?? 1,
+    stderr: result.stderr ?? "",
+    stdout: result.stdout ?? "",
+  };
+};
+
+/** Starts the built Node CLI without waiting for it to exit. */
+export const spawnCliBinary = (
+  args: string[],
+  options: CliProcessOptions = {},
+): ChildProcessWithoutNullStreams => {
+  return spawn(process.execPath, [binEntry, ...args], {
+    cwd: packageRoot,
+    env: cliEnvironment(options),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+};
+
+export const waitForExit = (process: ChildProcessWithoutNullStreams): Promise<number> => {
+  return new Promise((resolve, reject) => {
+    process.once("error", reject);
+    process.once("exit", (code) => resolve(code ?? 1));
+  });
+};
 
 /**
  * Generates a throwaway EC host key directly into a temp state dir with mode 0600 — the daemon's

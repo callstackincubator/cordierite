@@ -41,9 +41,9 @@ generated `.pem` stays gitignored—never commit it.
 ### 2. Build and run the dev client
 
 ```sh
-bun expo run:ios
+pnpm exec expo run:ios
 # or
-bun expo run:android
+pnpm exec expo run:android
 ```
 
 This also starts Metro. The daemon auto-spawns on first CLI/MCP use—no separate `daemon start`

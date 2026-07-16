@@ -25,7 +25,7 @@ Shipping ad-hoc debug UIs in production builds is risky: they leak intent, widen
 | [`@cordierite/shared`](packages/shared/README.md) | Wire protocol v2 types shared by the CLI and React Native |
 | [`@cordierite/react-native`](packages/react-native/README.md) | TurboModule client + Expo config plugin |
 
-Clone the repo and install with your usual workspace workflow (`bun install`). The [playground](playground/README.md) is the reference dev app - it's also the fastest way to see the whole flow working end to end.
+Clone the repo and install with pnpm (`pnpm install`). The [playground](playground/README.md) is the reference dev app - it's also the fastest way to see the whole flow working end to end.
 
 ## Getting started
 

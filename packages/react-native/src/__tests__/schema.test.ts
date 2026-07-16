@@ -1,5 +1,5 @@
 import type { StandardSchemaV1 } from "@cordierite/shared";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import { exportToolSchema, toToolDescriptor } from "../schema";
 

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import type { CordieriteConnectOptions } from "../Cordierite.types";
 import type { CordieriteConnectOptionsNative } from "../NativeCordierite";

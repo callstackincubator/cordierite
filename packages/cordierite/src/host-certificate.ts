@@ -30,9 +30,9 @@ type GeneratedHostCertificate = {
 
 type ImportedKeyPair = {
   keyType: "rsa" | "ec";
-  privateKey: CryptoKey;
-  publicKey: CryptoKey;
-  signingAlgorithm: Algorithm | EcdsaParams;
+  privateKey: webcrypto.CryptoKey;
+  publicKey: webcrypto.CryptoKey;
+  signingAlgorithm: webcrypto.Algorithm | webcrypto.EcdsaParams;
 };
 
 const CERT_VALIDITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -46,7 +46,7 @@ const decodeBase64Url = (value: string): Uint8Array => {
   return Uint8Array.from(Buffer.from(value, "base64url"));
 };
 
-const resolveEcHash = (curve: string): AlgorithmIdentifier => {
+const resolveEcHash = (curve: string): webcrypto.AlgorithmIdentifier => {
   switch (curve) {
     case "P-256":
       return "SHA-256";
@@ -79,7 +79,7 @@ const importSigningKeyPair = async (keyPem: string): Promise<ImportedKeyPair> =>
       hash: "SHA-256",
       modulusLength,
       publicExponent,
-    } satisfies RsaHashedImportParams & RsaHashedKeyGenParams;
+    } satisfies webcrypto.RsaHashedImportParams & webcrypto.RsaHashedKeyGenParams;
 
     return {
       keyType: "rsa",
@@ -114,11 +114,11 @@ const importSigningKeyPair = async (keyPem: string): Promise<ImportedKeyPair> =>
     const importAlgorithm = {
       name: "ECDSA",
       namedCurve,
-    } satisfies EcKeyImportParams;
+    } satisfies webcrypto.EcKeyImportParams;
     const signingAlgorithm = {
       ...importAlgorithm,
       hash: resolveEcHash(namedCurve),
-    } satisfies EcKeyImportParams & EcdsaParams;
+    } satisfies webcrypto.EcKeyImportParams & webcrypto.EcdsaParams;
 
     return {
       keyType: "ec",

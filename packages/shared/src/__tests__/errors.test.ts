@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import { ERROR_TYPES, isKnownErrorType, isToolErrorType, TOOL_ERROR_TYPES } from "../domains/errors.js";
 

@@ -39,7 +39,7 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
   const cli = createCli();
 
   try {
-    cli.parse(["bun", "cordierite", ...argv], {
+    cli.parse(["node", "cordierite", ...argv], {
       run: false,
     });
   } catch (error) {

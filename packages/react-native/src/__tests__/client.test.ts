@@ -3,7 +3,7 @@ import type {
   StandardSchemaV1,
   StandardSchemaV1JsonSchema,
 } from "@cordierite/shared";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import type {
   CordieriteConnectionState,

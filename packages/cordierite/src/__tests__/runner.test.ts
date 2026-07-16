@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import { executeHostedCommand } from "../cli/runner.js";
 import { sessionError } from "../errors.js";

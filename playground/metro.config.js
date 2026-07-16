@@ -12,11 +12,9 @@ config.resolver.nodeModulesPaths = [
 	path.resolve(workspaceRoot, "node_modules"),
 ];
 
-// Bun installs separate physical copies of these packages per workspace (different
-// content-addressable store hashes), which causes Metro to treat them as distinct
-// module instances. We intercept resolution before Metro follows any symlinks and
-// re-root the lookup to playground's node_modules so every workspace file gets the
-// same single instance.
+// Workspace dependencies can resolve through different symlink paths, which causes Metro to
+// treat them as distinct module instances. Intercept resolution before Metro follows symlinks and
+// re-root the lookup to playground's node_modules so every workspace file gets the same instance.
 const SHARED_DEPS = [
 	"react",
 	"react-dom",

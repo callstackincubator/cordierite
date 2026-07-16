@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { X509Certificate } from "node:crypto";
 
 import { generateHostCertificate } from "../host-certificate.js";

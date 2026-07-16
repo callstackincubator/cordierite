@@ -12,7 +12,7 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 
 import { FakeAppClient } from "./app-client.js";
 import {

@@ -32,7 +32,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
-    "test": "bun test"
+    "test": "vitest run --config ../../vitest.config.ts src/__tests__"
   },
   "dependencies": {
     "@cordierite/shared": "workspace:*",

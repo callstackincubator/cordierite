@@ -13,7 +13,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { createServer as createNetServer } from "node:net";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import WebSocket from "ws";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";

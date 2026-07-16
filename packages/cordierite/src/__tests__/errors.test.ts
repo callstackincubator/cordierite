@@ -5,7 +5,7 @@
  * round-trip through a real daemon is covered by `tool-invocation.integration.test.ts`-style flows
  * in `cli-v2.integration.test.ts`; this file pins the mapping table itself.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import { ERROR_TYPES, type ErrorType } from "@cordierite/shared";
 

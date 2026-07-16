@@ -5,7 +5,7 @@
  * cases that would be awkward to hit reliably over a real socket.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import { dedupeAlias, slugifyDeviceModel } from "../daemon/sessions.js";
 
