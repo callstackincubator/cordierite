@@ -182,7 +182,9 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
   private(set) var state: CordieriteConnectionState = .idle {
     didSet {
       stateSnapshot = state.rawValue
-      emitStateChange?(state.rawValue)
+      if !isInvalidated {
+        emitStateChange?(state.rawValue)
+      }
     }
   }
 
@@ -195,7 +197,9 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
   private var session: URLSession?
   private var socketTask: URLSessionWebSocketTask?
   private var activeSessionId: String?
-  private var pendingSessionId: String?
+  private var pendingOptions: CordieriteConnectOptions?
+  private let ownerGeneration: Int64
+  private var isInvalidated = false
   /// Written once per `connect()` (inside `configureFromBundle`, before the socket exists) and
   /// read from the `nonisolated` TLS challenge delegate callback, which must respond
   /// synchronously and therefore cannot hop onto the actor. Never mutated concurrently with a
@@ -206,6 +210,17 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
   private var lastErrorDetails: CordieriteErrorDetails?
   private var keepaliveTask: Task<Void, Never>?
   private var pingFailureCount = 0
+
+  override init() {
+    ownerGeneration = CordieriteProcessResumeLeaseStore.shared.newOwnerGeneration()
+    super.init()
+  }
+
+  init(ownerGeneration: Int64, activeSessionId: String? = nil) {
+    self.ownerGeneration = ownerGeneration
+    self.activeSessionId = activeSessionId
+    super.init()
+  }
 
   func configureFromBundle() throws {
     let info = Bundle.main.infoDictionary ?? [:]
@@ -221,6 +236,10 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
   }
 
   func connect(options: CordieriteConnectOptions) async throws {
+    guard !isInvalidated else {
+      throw CordieriteModuleError(message: "Cordierite native module has been invalidated.")
+    }
+
     if state == .connecting || state == .active {
       throw CordieriteModuleError(message: "A Cordierite session is already connecting or active.")
     }
@@ -254,7 +273,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
     // throws `already_connecting` instead of racing to create a second socket.
     cleanup()
 
-    pendingSessionId = options.sessionId
+    pendingOptions = options
     closeEventPending = true
     state = .connecting
 
@@ -317,6 +336,8 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
   }
 
   func close() async {
+    CordieriteProcessResumeLeaseStore.shared.clear(ownerGeneration: ownerGeneration)
+
     guard let socketTask else {
       cleanup()
       state = .closed
@@ -335,14 +356,20 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
   /// so the socket is released promptly and the daemon observes the disconnect and suspends the
   /// session.
   func invalidate() {
+    guard !isInvalidated else {
+      return
+    }
+
+    isInvalidated = true
+    markCurrentLeaseDisconnected(at: epochMilliseconds())
     closeEventPending = false
     socketTask?.cancel(with: .goingAway, reason: nil)
     cleanup()
-    state = .closed
     emitStateChange = nil
     emitMessageRaw = nil
     emitError = nil
     emitClose = nil
+    state = .closed
   }
 
   /// Synchronous, non-isolated read of the current state for the TurboModule's `getState()`,
@@ -359,11 +386,43 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
     session?.invalidateAndCancel()
     session = nil
     activeSessionId = nil
-    pendingSessionId = nil
+    pendingOptions = nil
     lastErrorDetails = nil
   }
 
+  private func markCurrentLeaseDisconnected(at disconnectedAtMs: Int64) {
+    let sessionId = activeSessionId ?? pendingOptions?.sessionId
+    guard let sessionId else {
+      return
+    }
+    CordieriteProcessResumeLeaseStore.shared.markDisconnected(
+      ownerGeneration: ownerGeneration,
+      sessionId: sessionId,
+      disconnectedAtMs: disconnectedAtMs
+    )
+  }
+
+  private func epochMilliseconds() -> Int64 {
+    Int64(Date().timeIntervalSince1970 * 1_000)
+  }
+
+  private func cancelTransport(
+    with closeCode: URLSessionWebSocketTask.CloseCode,
+    reason: Data?
+  ) {
+    updateResumeLeaseForTransportTeardown(
+      ownerGeneration: ownerGeneration,
+      sessionId: activeSessionId ?? pendingOptions?.sessionId,
+      closeCode: Int(closeCode.rawValue),
+      disconnectedAtMs: epochMilliseconds()
+    )
+    socketTask?.cancel(with: closeCode, reason: reason)
+  }
+
   private func publishError(_ details: CordieriteErrorDetails) {
+    guard !isInvalidated else {
+      return
+    }
     lastErrorDetails = details
     emitError?(details)
   }
@@ -422,7 +481,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
   }
 
   private func handleReceivedMessage(_ message: URLSessionWebSocketTask.Message, from task: URLSessionWebSocketTask) async {
-    guard task === socketTask else {
+    guard !isInvalidated, task === socketTask else {
       // Stale read loop from a socket that has since been replaced or torn down.
       return
     }
@@ -444,7 +503,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
           hint: nil
         )
       )
-      await close()
+      cancelTransport(with: .unsupportedData, reason: Data("binary_not_supported".utf8))
     @unknown default:
       state = .error
       publishError(
@@ -458,12 +517,12 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
           hint: nil
         )
       )
-      await close()
+      cancelTransport(with: .policyViolation, reason: Data("invalid_message".utf8))
     }
   }
 
   private func handleReceiveFailure(_ error: Error, from task: URLSessionWebSocketTask) async {
-    guard task === socketTask else {
+    guard !isInvalidated, task === socketTask else {
       return
     }
 
@@ -477,10 +536,14 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
         )
       )
     }
-    await close()
+    cancelTransport(with: .abnormalClosure, reason: nil)
   }
 
   private func handleIncomingText(_ text: String) async {
+    guard !isInvalidated else {
+      return
+    }
+
     guard
       let data = text.data(using: .utf8),
       let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -497,7 +560,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
           hint: nil
         )
       )
-      await close()
+      cancelTransport(with: .policyViolation, reason: Data("invalid_message".utf8))
       return
     }
 
@@ -523,7 +586,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
           hint: nil
         )
       )
-      await close()
+      cancelTransport(with: .policyViolation, reason: Data("session_mismatch".utf8))
       return
     }
 
@@ -531,44 +594,54 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
   }
 
   private func handleSessionAck(_ message: [String: Any], rawText: String) async {
-    guard
-      let pendingSessionId,
-      let type = message["type"] as? String,
-      type == "session_ack",
-      let sessionId = message["session_id"] as? String,
-      sessionId == pendingSessionId,
-      let status = message["status"] as? String,
-      status == "ok"
-    else {
+    guard let pendingOptions else {
       state = .error
-      let closeReason = (message["reason"] as? String)?.isEmpty == false ? message["reason"] as? String : nil
-      publishError(classifyHandshakeCloseReason(closeReason))
-      await close()
+      publishError(classifyHandshakeCloseReason(nil))
+      cancelTransport(with: .policyViolation, reason: Data("invalid_ack".utf8))
       return
     }
 
-    activeSessionId = pendingSessionId
-    self.pendingSessionId = nil
-    state = .active
+    let result = commitSessionAck(
+      message: message,
+      rawText: rawText,
+      options: pendingOptions,
+      ownerGeneration: ownerGeneration,
+      onAccepted: { lease in
+        activeSessionId = lease.sessionId
+        self.pendingOptions = nil
+        state = .active
+        scheduleKeepalive(intervalSeconds: lease.keepaliveIntervalS)
+      },
+      emitMessageRaw: { text in
+        emitMessageRaw?(text)
+      }
+    )
 
-    if let intervalSeconds = cordieriteIntFromBridge(message["keepalive_interval_s"]), intervalSeconds > 0 {
-      scheduleKeepalive(intervalSeconds: intervalSeconds)
+    switch result {
+    case .accepted:
+      return
+    case .stale:
+      cancelTransport(with: .normalClosure, reason: Data("module_replaced".utf8))
+    case .invalid:
+      state = .error
+      let closeReason = (message["reason"] as? String)?.isEmpty == false ? message["reason"] as? String : nil
+      publishError(classifyHandshakeCloseReason(closeReason))
+      cancelTransport(with: .policyViolation, reason: Data((closeReason ?? "invalid_ack").utf8))
     }
-
-    // Forward the raw session_ack frame to JS, symmetric with every other post-claim message:
-    // the client needs `resume_token`/`alias`/`grace_s` to drive resume/reconnect logic (v2 SDK
-    // spec, ARCHITECTURE.md §11). All native-side ack handling above (state flip, keepalive
-    // scheduling) already ran before this point.
-    emitMessageRaw?(rawText)
   }
 
-  private func scheduleKeepalive(intervalSeconds: Int) {
+  private func scheduleKeepalive(intervalSeconds: Double) {
     keepaliveTask?.cancel()
     pingFailureCount = 0
 
+    let requestedNanoseconds = intervalSeconds * 1_000_000_000
+    let nanoseconds = requestedNanoseconds >= Double(UInt64.max)
+      ? UInt64.max
+      : UInt64(max(1, requestedNanoseconds))
+
     keepaliveTask = Task { [weak self] in
       while !Task.isCancelled {
-        try? await Task.sleep(nanoseconds: UInt64(intervalSeconds) * 1_000_000_000)
+        try? await Task.sleep(nanoseconds: nanoseconds)
         if Task.isCancelled {
           return
         }
@@ -608,7 +681,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
             closeReason: nil
           )
         )
-        socketTask.cancel(with: .abnormalClosure, reason: nil)
+        cancelTransport(with: .abnormalClosure, reason: nil)
       }
     }
   }
@@ -753,7 +826,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
     closeCode: URLSessionWebSocketTask.CloseCode,
     reason: Data?
   ) async {
-    guard task === socketTask else {
+    guard !isInvalidated, task === socketTask else {
       return
     }
 
@@ -768,7 +841,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
   }
 
   private func handleTaskCompleted(task: URLSessionTask, error: Error?) async {
-    guard task === socketTask else {
+    guard !isInvalidated, task === socketTask else {
       return
     }
 
@@ -790,6 +863,14 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
       // Already handled by the other delegate path (or by an explicit close()/invalidate()).
       return
     }
+
+    let leaseSessionId = activeSessionId ?? pendingOptions?.sessionId
+    updateResumeLeaseForTransportTeardown(
+      ownerGeneration: ownerGeneration,
+      sessionId: leaseSessionId,
+      closeCode: emitCode,
+      disconnectedAtMs: epochMilliseconds()
+    )
 
     cleanup()
 
