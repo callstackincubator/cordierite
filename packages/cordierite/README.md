@@ -4,54 +4,76 @@
 
 [![MIT license][license-badge]][license] [![npm downloads][npm-downloads-badge]][npm-downloads] [![PRs Welcome][prs-welcome-badge]][prs-welcome]
 
-The **`cordierite`** package is the **operator side** of Cordierite: run a **TLS-terminated WebSocket host**, create **bootstrap sessions**, and **list, inspect, and invoke tools** registered in the React Native app—so **developers, QA, and agents** can steer state from a terminal or script **instead of hidden in-app debug menus**.
+The **`cordierite`** package is the operator/agent side of Cordierite: a long-lived **daemon** that owns a TLS-terminated `wss://` listener and any number of device sessions, a **CLI** and an **MCP server** that are both thin RPC clients of that daemon, and the **key management** that ties it all together — so **developers, QA, and agents** can steer app state from a terminal or an MCP-speaking client **instead of a hidden in-app debug menu**.
 
 ## Why use this package
 
-- **Host + session flow**: `host` serves **`wss://`** with a certificate generated from your private key and the resolved local IP; the app follows the deep link and claims a **short-lived** pending session.
-- **Tooling from the shell**: `tools` and `invoke` talk to the device-side registry once the session is active—same conceptual surface **automation** uses.
-- **Fits production-minded apps**: the app still only exposes **what you register**; trust boundaries are **pins + TLS** on the client (see [HANDSHAKE.md][handshake]).
-
-## Security notes
-
-- **You hold the private key** for the host cert; the app pins the matching **SPKI**—no cleartext control plane, no trust in “just” the deep link or LAN.
-- **Bootstrap payloads** are **hints**; authorization to speak to your host comes from **TLS + pinning**, not from payload secrecy alone.
+- **One daemon, many devices**: `cordierite` auto-spawns its daemon on first use; it serves every connected device on one `wss://` port and survives Metro reloads, backgrounding, and network flaps by suspending and resuming sessions instead of dying with them.
+- **Same surface for humans and agents**: the CLI (`tools`, `invoke`, `events`, ...) and `cordierite mcp` both talk to the daemon over the same RPC methods — an agent sees the same tools a human operator does.
+- **Hardened control plane**: the CLI/MCP never touch sockets, keys, or state files directly; everything goes through a Unix-domain-socket RPC surface gated by filesystem permissions (see [docs/SECURITY.md][security]).
+- **Fits production-minded apps**: the app still only exposes what you register; trust boundaries are pins + TLS, and production deployments can gate tools with policy and get every call audited (see [docs/ARCHITECTURE.md][architecture] §12).
 
 ## Key setup
 
-Generate a host key with:
+Generate a daemon key with:
 
 ```bash
 cordierite keygen
 ```
 
-The command writes an unencrypted PEM private key (PKCS#8) and prints the exact `sha256/...` SPKI fingerprint your app should place into `cliPins`. Use the generated file with `cordierite host --tls-key ...`.
+The command writes an unencrypted PEM private key (PKCS#8) to `<state-dir>/key.pem` by default (override with `--out`; add `--force` to overwrite) and prints the exact `sha256/...` SPKI fingerprint your app should place into `cliPins`. It runs non-interactively — safe to call from CI or a setup script.
 
-## Commands (overview)
+## Commands
 
 | Command | Role |
 | --- | --- |
-| `host` | Start the Cordierite **`wss://`** host (generated cert, private key, scheme, optional open-on-macOS). |
-| `connect` | Validate a **base64url binary v1** bootstrap payload. |
-| `keygen` | Interactively generate a host private key and print the app fingerprint for `cliPins`. |
-| `session` | Show the currently active host session. |
-| `tools` | **List** tools on the connected device or **inspect** one by name. |
-| `invoke` | **Invoke** a device tool with JSON input. |
+| `cordierite keygen [--out <path>] [--force]` | generate a daemon private key, print its app pin |
+| `cordierite link [--ttl <s>] [--qr] [--open android\|ios-sim] [--scheme <s>]` | mint a pending session and print its deep link |
+| `cordierite ls` | list sessions: alias, state, device, tool count |
+| `cordierite tools [selector] [name] [--full]` | list a session's tools, or show one tool's full schema |
+| `cordierite invoke [selector] <tool> --input '<json>' [--timeout <ms>]` | call a tool |
+| `cordierite events [selector] [--follow]` | stream session/tool events; `--json` emits NDJSON |
+| `cordierite revoke [selector]` | revoke a session |
+| `cordierite daemon run\|start\|stop\|status` | daemon lifecycle |
+| `cordierite mcp` | start a stdio MCP server proxying connected apps' tools to MCP clients |
 
-Global options include **`--json`** for machine-readable output. See **`cordierite --help`** after install.
+Every command that targets a session accepts an optional `selector` (a session id or an alias from `cordierite ls`); omit it when exactly one session is active. Global flags: `--json` (machine-readable output), `--no-color`, `--state-dir <path>` (default `~/.cordierite`). Run `cordierite <command> --help` for the exact flags of any command, or `cordierite --help` for the full list.
+
+## Daemon lifecycle
+
+The daemon auto-starts the first time any CLI or MCP command needs it — you don't normally run `cordierite daemon start` yourself. It writes its state to `<state-dir>/` (`daemon.sock`, `daemon.pid`, `daemon.log`, `key.pem`, `config.json`, `audit/`), holds a single-instance lock via the pidfile, and keeps running independently of any one device's connection so a reload or crash on the device side never costs you the daemon process. Use `cordierite daemon status` to see what's running (version, pid, `wssPort`, pinned keys, live sessions, effective policy) and `cordierite daemon stop` to shut it down explicitly.
+
+## MCP setup (Claude Code, Cursor, and similar)
+
+Add `cordierite mcp` to the agent's MCP server config — no separate server process to manage; it auto-spawns the daemon the same way the CLI does:
+
+```json
+{
+  "mcpServers": {
+    "cordierite": {
+      "command": "cordierite",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Once configured, the connected app's tools appear as MCP tools automatically: `tools/list` mirrors the live registry (namespaced `<alias>__<name>` when more than one session is active), and `tools/call` proxies straight to the app with progress and errors preserved. Two built-in management tools let an agent bootstrap a session without shell access: `cordierite_connect` mints a link (optionally delivering it directly to a booted `android`/`ios-sim` target), and `cordierite_wait_for_session` waits for that session to be claimed.
 
 ## Programmatic use
 
-The package exports **`runCli`**, **`createCli`**, and command helpers from [`src/index.ts`](src/index.ts) so you can embed the same behavior in **Node, Bun, Deno, or other JS runtimes** that can execute the bundle and open TLS sockets.
+The package exports `runCli` and command handlers from [`src/index.ts`](src/index.ts) so you can embed the same behavior in Node or Bun scripts that need to drive Cordierite without shelling out.
 
 ## Related packages
 
 - **[@cordierite/react-native](../react-native/README.md)** — native app client + Expo plugin.
-- **[@cordierite/shared](../shared/README.md)** — shared library used by the CLI and React Native integration (dependency of this package).
+- **[@cordierite/shared](../shared/README.md)** — wire protocol v2 types used by this package and the React Native client.
 
 ## Documentation
 
-- [Handshake & security model][handshake]
+- [Architecture][architecture]
+- [Wire protocol][protocol]
+- [Security model & key rotation][security]
 - [Monorepo README](../../README.md)
 
 ## Made with ❤️ at Callstack
@@ -63,7 +85,9 @@ Like the project? ⚛️ [Join the team](https://callstack.com/careers/?utm_camp
 [cordierite-banner]: https://img.shields.io/badge/Cordierite-callstack%2Fincubator-111827?style=for-the-badge&logo=github&logoColor=white
 [repo]: https://github.com/callstackincubator/cordierite
 [callstack-readme-with-love]: https://callstack.com/?utm_source=github.com&utm_medium=referral&utm_campaign=cordierite&utm_term=readme-with-love
-[handshake]: https://github.com/callstackincubator/cordierite/blob/main/docs/HANDSHAKE.md
+[architecture]: https://github.com/callstackincubator/cordierite/blob/main/docs/ARCHITECTURE.md
+[protocol]: https://github.com/callstackincubator/cordierite/blob/main/docs/PROTOCOL.md
+[security]: https://github.com/callstackincubator/cordierite/blob/main/docs/SECURITY.md
 [license-badge]: https://img.shields.io/npm/l/cordierite?style=for-the-badge
 [license]: https://github.com/callstackincubator/cordierite/blob/main/LICENSE
 [npm-downloads-badge]: https://img.shields.io/npm/dm/cordierite?style=for-the-badge

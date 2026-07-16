@@ -1,5 +1,7 @@
 # 07 — Emulator/simulator fast path (`link --open`)
 
+> Status: done (91e30e1)
+
 ## Goal
 
 Zero-friction bootstrap for emulators and simulators: `cordierite link --open

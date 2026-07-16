@@ -1,5 +1,7 @@
 # 09 — iOS native hardening
 
+> Status: done (a170a1c)
+
 ## Goal
 
 Make the iOS connection layer correct under concurrency and app lifecycle: serialize

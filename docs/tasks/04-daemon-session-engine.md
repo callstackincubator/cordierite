@@ -1,5 +1,7 @@
 # 04 — Daemon session engine: TLS listener, links, claim/resume, state machine
 
+> Status: done (f54b09a)
+
 ## Goal
 
 The heart of v2: the single pinned-TLS WebSocket listener, pending-link minting,

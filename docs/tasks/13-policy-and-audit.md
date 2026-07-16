@@ -1,5 +1,7 @@
 # 13 — Daemon policy engine & audit log
 
+> Status: done (a1f4149)
+
 ## Goal
 
 Production-posture controls in the daemon: annotation-based tool-call policy and an

@@ -70,3 +70,8 @@ Everything (01–16).
 ## Testing
 
 Documentation task — the acceptance criteria's cross-check passes are the review.
+
+> Status: DONE. See commit `task(17): ...` for details, including a small documented
+> ARCHITECTURE.md §3/§5/§9 drift fix (code won, per this task's own rule) and the
+> `skills/cordierite/` v1→v2 sweep (outside this task's Scope list but required by its
+> own "no v1 references outside docs/tasks/" acceptance criterion).

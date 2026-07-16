@@ -1,83 +1,130 @@
 ---
 name: cordierite
-description: Connect a Cordierite-enabled React Native app to your machine and drive it from the terminal using tools the app registers — useful for agents, scripts, and dev automation. Reach for this when the user mentions Cordierite, host/session pairing with the app, or invoking app-defined capabilities from the CLI.
+description: Connect a Cordierite-enabled React Native app to your machine and drive it from the terminal (or MCP) using tools the app registers — useful for agents, scripts, and dev automation. Reach for this when the user mentions Cordierite, bootstrapping/pairing with the app, or invoking app-defined capabilities from the CLI or MCP.
 ---
 
 # Cordierite
 
-Cordierite is a CLI and host workflow for connecting to a Cordierite-enabled React Native app, discovering its registered tools, invoking those tools from the terminal, and ending the session cleanly after use.
+Cordierite is a CLI/daemon/MCP workflow for connecting to a Cordierite-enabled React
+Native app, discovering its registered tools, invoking those tools, and ending the
+session cleanly after use. A single `cordierite` daemon on this machine owns the
+`wss://` listener and every device session; the CLI (and `cordierite mcp`, if this
+agent is invoked as an MCP client instead of a shell) are both thin RPC clients of it and
+auto-spawn it on first use — there is no separate "start the host" step to manage.
 
-## Agent workflow
+## Agent workflow (CLI)
 
-1. Run **`cordierite session --json`**. The response includes **`data.sessions`** (each entry has **`session_id`**, status, endpoint info, etc.). If **`sessions`** is empty, no Cordierite host is registered for this machine (for this registry).
-2. If you need a new session for a device, follow **Establish a session** below. **Record `host.session_id`** from the host JSON—you must pass it to **`tools`** and **`invoke`**.
-3. After the user opens the deep link on the device and the app connects, confirm with **`cordierite session --session-id <session_id> --json`** until **`data.selected`** reflects an **active** connection (or re-check **`session --json`** and infer from the listed session).
-4. **`cordierite tools --session-id <session_id> --json`** — list tools registered in the app.
-5. **`cordierite tools --session-id <session_id> <tool-name> --json`** — inspect one tool’s input/output schema before calling it.
-6. **`cordierite invoke --session-id <session_id> <tool-name> --input '{"key":"value"}' --json`** — invoke the tool with JSON args.
+1. Run **`cordierite ls --json`**. `data` is a list of sessions, each with `sessionId`,
+   `alias`, `state`, `device`, `toolCount`. An empty list means no device has claimed a
+   session yet — go to **Establish a session** below.
+2. Every session-targeting command takes an optional **selector** (a session id or
+   `alias` from step 1) as its first positional argument. **Omit it** when exactly one
+   session is active — the CLI picks it automatically; pass it explicitly when several
+   sessions exist (the CLI errors with `ambiguous_session` and lists the aliases if you
+   don't).
+3. **`cordierite tools [selector] --json`** — list tools registered in the app.
+4. **`cordierite tools [selector] <tool-name> --full --json`** — inspect one tool's
+   input/output schema before calling it.
+5. **`cordierite invoke [selector] <tool-name> --input '{"key":"value"}' --json`** —
+   invoke the tool with JSON args.
+6. **`cordierite events [selector] --json`** — stream session/tool events (NDJSON) if you
+   need to watch for `session_claimed`, `tools_changed`, or `app_event` without polling.
+
+There is no `--session-id` flag in v2 — use the positional selector instead.
 
 ## Establish a session
 
-Start the host with **`--json`** using the same TLS key and app URL scheme as the project (see **Setup** if you are wiring Cordierite into an app). The CLI generates the host certificate automatically from the resolved local IP. If the project does not already have a trusted host key, create one first with **`cordierite keygen`** in an interactive terminal and add the printed fingerprint to the app’s **`cliPins`**. If the default listen port is in use, add **`--port <port>`**.
+If no session is active yet, mint a bootstrap link. Requires a deep-link scheme; pass
+`--scheme` or make sure `~/.cordierite/config.json` already has one set:
 
 ```bash
-cordierite host --tls-key /path/to/key.pem --scheme myapp --json
+cordierite link --scheme myapp --json
 ```
 
-**Run `cordierite host` in the background.** It blocks; keep the foreground shell free for `session`, `tools`, and `invoke`.
+If the project has no daemon key yet, generate one first — this is non-interactive and
+safe to run from an agent or script:
 
-From the host JSON output, use at least:
+```bash
+cordierite keygen --out ~/.cordierite/key.pem
+```
 
-- **`host.deep_link`** — full URL (e.g. `myapp:///?cordierite=…`) for the app to open.
-- **`host.session_id`** — pass this as **`--session-id`** to **`tools`** / **`invoke`** / **`session --session-id`**.
+Add the printed `sha256/...` fingerprint to the app's `cliPins` (see **Setup** below if
+you are wiring Cordierite into an app for the first time — that step needs a native
+rebuild, so it isn't a fast in-session action).
 
-Then:
+From `link`'s JSON output, use:
 
-1. **Give the user the deep link** (or QR from interactive host UI on a TTY) so they can open it on a device or simulator.
-2. **Or open it yourself** when you know the target (e.g. iOS Simulator `xcrun simctl openurl booted '<url>'`, Android via `adb`, or device automation skills).
+- **`data.deepLinkPayload`** to compose the full URL yourself, or just print/relay
+  **`data`**'s rendered deep link (`<scheme>:///?cordierite=<deepLinkPayload>`) for a
+  human to open, or scan the QR from `cordierite link --scheme myapp --qr` on a TTY.
+- **`data.sessionId`** — the selector to poll with in the next step.
 
-After the app opens the link and claims the session, poll **`cordierite session --session-id <session_id> --json`** (or **`session --json`**) until the session is active.
+For a simulator/emulator you control directly, skip the deep link entirely:
+
+```bash
+cordierite link --scheme myapp --open ios-sim     # or: --open android
+```
+
+Then poll (or use `cordierite events <sessionId> --json` to avoid polling) until the
+session shows `state: "active"` in `cordierite ls --json` or
+`cordierite tools <sessionId>` stops erroring.
+
+## Establish a session (MCP)
+
+If this agent is talking to Cordierite over MCP instead of a shell, use the built-in
+management tools instead of the CLI commands above: `cordierite_connect` (optionally with
+`target: "android"` or `"ios-sim"`) mints and, for a target, delivers the link without any
+shell access; `cordierite_wait_for_session({ sessionId })` blocks until that session is
+claimed (or returns immediately if it already was). After that, the app's own tools
+appear directly in `tools/list` — call them with `tools/call` like any other MCP tool.
 
 ## Terminate the connection
 
-When the user wants to disconnect or stop Cordierite for **that** session: **stop the matching background `cordierite host` process** (end the job, SIGTERM, etc.). That tears down the host and the session. If several hosts run (e.g. different **`--port`**), stop the one that corresponds to the **`session_id`** you were using.
+**`cordierite revoke [selector]`** ends one session (closes its socket, frees its
+alias) without touching the daemon or any other session. There is normally no reason to
+stop the daemon itself — `cordierite daemon stop` only if you specifically need to free
+the `wss://` port or the daemon's key is being rotated.
 
 ## Declaring tools
 
-The app must register tools before **`cordierite tools`** / **`cordierite invoke`** can do anything useful. Define schemas with **Zod** and register with **`registerTool`**:
+The app must register tools before `cordierite tools` / `cordierite invoke` (or MCP
+`tools/call`) can do anything useful. Define schemas with **Zod v4** (its built-in JSON
+Schema exporter means agents see a real tool shape) and register with `registerTool` or
+`useCordieriteTool`:
 
 ```ts
 import { registerTool } from "@cordierite/react-native";
 import { z } from "zod";
 
-const echoInput = z.object({
-  value: z.unknown(),
-});
+const echoInput = z.object({ value: z.unknown() });
+const echoOutput = z.object({ echoed: z.unknown() });
 
-const echoOutput = z.object({
-  echoed: z.unknown(),
+registerTool({
+  name: "echo",
+  description: "Return the input unchanged",
+  inputSchema: echoInput,
+  outputSchema: echoOutput,
+  handler: async (args) => ({ echoed: args.value }),
 });
-
-registerTool(
-  {
-    name: "echo",
-    description: "Return the input unchanged",
-    inputSchema: echoInput,
-    outputSchema: echoOutput,
-    handler: async (args) => ({ echoed: args.value }),
-  },
-);
 ```
 
 ## Notes
 
-- Use **`--json`** for structured CLI output in agent flows.
-- **`cordierite keygen`** is the normal setup command for new host keys. It is interactive-only in v1: it writes a PEM private key and prints the exact **`sha256/...`** fingerprint the app should trust.
-- **`tools`** and **`invoke`** always require **`--session-id`** (the value from **`host.session_id`** or **`sessions[].session_id`**).
-- Prefer **`cordierite session --json`** first rather than assuming a session exists.
-- If **`sessions`** is empty or **`tools`** / **`invoke`** fail with connection or session errors, establish a session (host running, deep link opened on the correct device).
-- If the app registers no tools, **`cordierite tools`** returns an empty list.
-- You may run **multiple** **`cordierite host`** processes (e.g. different **`--port`** for different devices); use the **`session_id`** that belongs to the host you care about.
+- Use **`--json`** for structured CLI output in agent flows; runtime failures in
+  `--json` mode are JSON on stderr, not bare text.
+- `cordierite keygen` is non-interactive when given `--out`; safe to run unattended.
+- Selectors (session id or alias), not `--session-id`, target a specific session; omit
+  the selector when only one session is live.
+- If `cordierite ls` is empty or `tools`/`invoke` fail with `no_session` or
+  `unknown_session`, establish a session first (see above).
+- If the app registers no tools, `cordierite tools` returns an empty list — that's not an
+  error.
+- The daemon serves **every** connected device on one process; there's no need to run
+  more than one `cordierite` daemon, and no `--port` flag to juggle between devices —
+  use the selector instead.
+- A denied call (production policy set to `"deny"` for that tool/class) surfaces as
+  `policy_denied`, not a generic failure — if you see that error type, the fix is a
+  policy/config change, not a retry.
 
 ## Setup
 

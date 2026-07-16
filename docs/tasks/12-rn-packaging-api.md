@@ -1,5 +1,7 @@
 # 12 — React Native packaging & public API surface
 
+> Status: done (648909c)
+
 ## Goal
 
 Ship the developer-facing shape of the SDK: side-effect-free root entry, `/auto` and
