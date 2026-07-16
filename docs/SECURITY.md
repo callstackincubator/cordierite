@@ -90,7 +90,7 @@ production just turns on the pieces below rather than using a different architec
   arbitrary caller invoking against a production build. Every `tools.call` — CLI and MCP
   alike — is evaluated against this before it ever reaches the app; a denial returns
   `policy_denied` and never sends a `tool_call` frame. Interactive consent prompting is
-  explicitly out of scope for v2.0 (the policy enum reserves a future `"prompt"` value);
+  not implemented (the policy configuration reserves a future `"prompt"` value);
   until then, `"deny"` is the only way to gate a tool that needs human sign-off.
 - **Audit.** Every `tools.call` attempt — regardless of outcome — appends one line to
   `audit/<YYYY-MM-DD>.jsonl`: timestamp, session, alias, tool name, a sha256 of the

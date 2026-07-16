@@ -2,13 +2,11 @@
 
 This document describes the protocol exactly as implemented: the bootstrap payload byte
 layout, every message the daemon and app exchange after a pinned `wss://` connection is
-established, the session state machine, and the close-code table. It replaces
-`HANDSHAKE.md` (v1), which described a different, single-session-per-process model.
+established, the session state machine, and the close-code table.
 
 Every type and validator referenced below lives in `@cordierite/shared`
-(`packages/shared/src/domains/*.ts`) — that package, not this document, is authoritative
-if the two ever disagree again in the future. See `docs/ARCHITECTURE.md` for the design
-rationale; this document is the field-level reference.
+(`packages/shared/src/domains/*.ts`) and is authoritative if this reference ever drifts.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for design rationale.
 
 ## Topology in one sentence
 
@@ -295,10 +293,9 @@ not prose. Grouped by trigger:
 
 The CLI and MCP server never touch the `wss://` listener, the private key, or state
 files directly — every operation goes through newline-delimited JSON-RPC 2.0 over the
-daemon's Unix domain socket. See `docs/ARCHITECTURE.md` §5 for the full method table,
-selector/alias rules, and event-kind list; that table is normative for the RPC surface.
-Two additions the architecture doc's prose doesn't spell out (confirmed against
-`packages/shared/src/domains/rpc.ts`, which wins over prose per this task's rule):
+daemon's Unix domain socket. See [ARCHITECTURE.md](ARCHITECTURE.md#5-control-plane-rpc-uds)
+for the complete method table, selector/alias rules, and event-kind list. The shared RPC
+types also establish these details:
 
 - `link.create` also accepts `addressOverride` (forces the bootstrap payload's advertised
   address — used by the emulator/simulator fast path to force `127.0.0.1`).
@@ -308,10 +305,5 @@ Two additions the architecture doc's prose doesn't spell out (confirmed against
   them without guessing from data shape.
 - `daemon.status`'s result additionally reports the effective `policy` config and
   `audit: { path, failedWrites }` (ARCHITECTURE.md §12's audit surfacing).
-- `events.subscribe`'s `EventKind` union additionally includes `link_expired` (a pending
-  link's TTL elapsed with no claim) and `tool_call_progress` (mirrors the wire
-  `tool_call_progress` message, §4) alongside the kinds ARCHITECTURE.md §5 lists.
-
-`docs/ARCHITECTURE.md` §5 has been updated to fold these into its tables directly (see
-that document's own text) rather than leaving this document as the only place they're
-recorded.
+- `events.subscribe` includes `link_expired` (a pending link's TTL elapsed with no
+  claim) and `tool_call_progress` (mirroring the wire message in §4).

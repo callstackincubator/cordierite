@@ -180,7 +180,7 @@ Full threat model, key-handling rules, and a rotation runbook: [`docs/SECURITY.m
 
 ## Documentation
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - the v2 design specification
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - the current architecture reference
 - [`docs/PROTOCOL.md`](docs/PROTOCOL.md) - the wire protocol, byte layouts, message catalog, state machine, close codes
 - [`docs/SECURITY.md`](docs/SECURITY.md) - threat model and key rotation runbook
 - [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) - product requirements

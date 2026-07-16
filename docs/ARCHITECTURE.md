@@ -1,18 +1,9 @@
-# Cordierite v2 Architecture
+# Cordierite Architecture
 
-Status: **approved for implementation**. This document is the canonical specification
-for the v2 refactor. Task files under `docs/tasks/` reference sections of this document
-by heading; when a task file and this document disagree, this document wins.
-
-Decisions already made (do not re-litigate in implementation):
-
-- **Breaking changes are allowed.** There are no external users. Wire protocol v1, the
-  `cordierite host` command, and any v1 compatibility shims are removed, not deprecated.
-- **The daemon auto-starts.** The CLI (and MCP entry) transparently spawn the daemon on
-  first use. `cordierite daemon` subcommands exist for explicit control.
-- **The trust model is unchanged.** Apps authenticate the host via SPKI pin-sets over
-  `wss://`; session bootstrap uses short-lived single-use tokens delivered out-of-band
-  (deep link / QR / adb). This part of v1 is correct and is carried forward.
+This is the canonical architecture reference for the current Cordierite implementation.
+It describes the daemon-based v2 protocol and public surfaces. For field-level wire
+details, see [PROTOCOL.md](PROTOCOL.md); for operational security guidance, see
+[SECURITY.md](SECURITY.md).
 
 ## 1. Goals
 
@@ -299,21 +290,18 @@ proxies daemon RPC (auto-spawning the daemon like any client):
 ## 10. CLI surface
 
 Thin renderer over the RPC. Global flags: `--json` (machine output; NDJSON for
-streams), `--state-dir`. Exit codes keep the current sysexits mapping (`errors.ts`).
+streams), `--no-color`, and `--state-dir`.
 
 | Command | Behavior |
 | --- | --- |
 | `cordierite keygen [--out <path>] [--force]` | non-interactive with `--out`; default writes `<state-dir>/key.pem`; prints `sha256/…` pin |
-| `cordierite link [--ttl <s>] [--qr] [--open android\|ios-sim] [--scheme <s>]` | mint pending session, print deep link (+QR / deliver) |
+| `cordierite link [--ttl <s>] [--qr] [--open android\|ios-sim] [--device <serial>] [--scheme <s>]` | mint a pending session, print its deep link, QR code, or deliver it to an emulator/simulator; `--device` applies only to `--open android` |
 | `cordierite ls` | sessions with alias, state, device, tool count |
-| `cordierite tools [selector] [--full]` | list tools; `--full`/named tool shows schemas + annotations |
+| `cordierite tools [selector] [name] [--full]` | list tools, or show one tool's schemas and annotations |
 | `cordierite invoke [selector] <tool> --input '<json>' [--timeout <ms>]` | call a tool |
 | `cordierite events [--follow] [selector]` | subscribe to the event bus; `--json` → NDJSON |
 | `cordierite revoke [selector]` | revoke a session |
 | `cordierite daemon run\|start\|stop\|status` | lifecycle (§4) |
-
-Removed from v1: `host`, `connect`, `session` (replaced by `ls`/`describe` via `ls
---json`), mandatory `--session-id` (replaced by optional selectors).
 
 The `--scheme` needed to compose the deep link is taken from the flag, else
 `config.json`, else the CLI errors with a clear message.
@@ -322,10 +310,12 @@ The `--scheme` needed to compose the deep link is taken from the flag, else
 
 Package `@cordierite/react-native`. Entry points:
 
-- `@cordierite/react-native` — **side-effect-free**. Exports `registerTool`,
-  `useCordieriteTool`, `postEvent`, `installCordieriteDeepLinkBootstrap(options?)`,
-  `addCordieriteListener`, `getCordieriteState`, types. TurboModule lookup is lazy
-  (first native call), never at import time.
+- `@cordierite/react-native` — **side-effect-free**. Its default API includes
+  `registerTool`, `useCordieriteTool`, `postEvent`, `getRegisteredTools`,
+  `installCordieriteDeepLinkBootstrap(options?)`, `addCordieriteListener`,
+  `getCordieriteState`, and `connect`; it also exports `cordieriteClient`, parsing
+  helpers, and types for advanced integrations. TurboModule lookup is lazy (first
+  native call), never at import time.
 - `@cordierite/react-native/auto` — side-effect entry: installs the deep-link bootstrap
   with defaults and starts native-lease recovery on import (the v1 root-import behavior,
   now opt-in).
@@ -378,8 +368,8 @@ with `getBoolean`; non-`ServerTrust` auth challenges get `.performDefaultHandlin
   descriptor's `annotations`: `policy.default` (`allow`/`deny`) for tools without
   `destructiveHint`, `policy.destructive` (`allow`/`deny`) for tools with it, plus
   per-tool overrides `policy.tools["<alias>/<name>"]`. Denied calls return
-  `policy_denied` and are audited. (Interactive prompting is out of scope for v2.0;
-  the enum leaves room for a future `prompt` value.)
+  `policy_denied` and are audited. Interactive prompting is not implemented; the
+  policy configuration leaves room for a future `prompt` value.
 - Audit: every `tools.call` appends one JSONL record to `audit/<date>.jsonl`:
   `{ ts, sessionId, alias, tool, argsSha256, outcome: "ok"|"error"|"denied",
   errorType?, durationMs, caller: "cli"|"mcp" }`. Raw args are never logged.
@@ -403,14 +393,14 @@ playground/        reference app (Expo dev build)
 ```
 
 Tooling stays: bun workspaces, turbo, `bun test`, tsc builds. Node ≥ 20 for the daemon
-(UDS + `AF_UNIX` on Windows). Windows support is best-effort in v2.0 (named-pipe path
-`\\.\pipe\cordierite-<user>` behind the same client API); do not block on it.
+(UDS + `AF_UNIX` on Windows). Windows support is best-effort; the control plane uses the
+named-pipe path `\\.\pipe\cordierite-<user>` behind the same client API.
 
-## 14. Out of scope for v2.0
+## 14. Current limitations
 
-- Interactive consent prompts (policy enum reserves `prompt`).
+- Interactive consent prompts (the policy configuration reserves `prompt`).
 - Remote relay / hosts outside the operator machine.
 - Pinning an offline anchor CA that signs short-lived leaves (rotation uses overlapping
-  pin-sets; the anchor-CA design is a documented future option).
+  pin sets; the anchor-CA design is a future option).
 - Web/browser client (safe no-op stub only).
 - Multiple endpoint candidates in the bootstrap payload.

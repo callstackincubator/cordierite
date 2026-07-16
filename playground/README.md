@@ -90,7 +90,7 @@ suspends/disconnects.
 ## Documentation
 
 - [Monorepo README](../README.md)
-- [v2 architecture](../docs/ARCHITECTURE.md)
+- [Architecture](../docs/ARCHITECTURE.md)
 - [@cordierite/react-native](../packages/react-native/README.md)
 - [cordierite (CLI/daemon/MCP)](../packages/cordierite/README.md)
 
