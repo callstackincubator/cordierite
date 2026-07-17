@@ -104,11 +104,12 @@ jobs:
           LANG: en_US.UTF-8
         run: pnpm exec expo prebuild --platform ios
       - name: Test Cordierite native library
-        working-directory: playground/ios
-        run: >-
-          xcodebuild test -workspace playground.xcworkspace -scheme Cordierite-Unit-Tests
-          -destination 'platform=iOS Simulator,name=iPhone 16'
-          CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO
+        run: |
+          ruby playground/scripts/create-cordierite-test-scheme.rb playground/ios/Pods/Pods.xcodeproj
+          cd playground/ios
+          xcodebuild test -workspace playground.xcworkspace -scheme Cordierite-Native-Tests \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO
       - name: Build playground for iOS Simulator
         working-directory: playground/ios
         run: >-

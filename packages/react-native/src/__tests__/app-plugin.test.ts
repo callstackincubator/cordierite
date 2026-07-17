@@ -30,6 +30,8 @@ const cordieritePlugin = require("../../app.plugin.js") as {
       androidManifest: unknown,
       options: { cliPins: string[]; allowPrivateLanOnly: boolean }
     ) => unknown;
+    NATIVE_TESTS_PODFILE_MARKER: string;
+    addNativeTestsPodToPodfile: (podfile: string, podPath: string) => string;
   };
 };
 
@@ -39,6 +41,8 @@ const {
   normalizeOptions,
   applyInfoPlistChanges,
   applyAndroidManifestChanges,
+  NATIVE_TESTS_PODFILE_MARKER,
+  addNativeTestsPodToPodfile,
 } = cordieritePlugin.__internal;
 
 // A real SHA-256 digest, base64-encoded: 32 bytes -> 44 base64 characters (one `=` pad).
@@ -187,5 +191,33 @@ describe("app.plugin.js: applyAndroidManifestChanges", () => {
         { cliPins: [VALID_PIN], allowPrivateLanOnly: true }
       )
     ).toThrow();
+  });
+});
+
+describe("app.plugin.js: addNativeTestsPodToPodfile", () => {
+  const podfile = `target 'playground' do\n  use_expo_modules!\nend\n`;
+
+  test("adds the Cordierite test spec after Expo module setup", () => {
+    expect(
+      addNativeTestsPodToPodfile(podfile, "../../packages/react-native"),
+    ).toContain(
+      `${NATIVE_TESTS_PODFILE_MARKER}\n  pod 'Cordierite', :path => '../../packages/react-native', :testspecs => ['Tests']`,
+    );
+  });
+
+  test("does not duplicate the test-spec pod on repeated prebuilds", () => {
+    const once = addNativeTestsPodToPodfile(
+      podfile,
+      "../../packages/react-native",
+    );
+    expect(addNativeTestsPodToPodfile(once, "../../packages/react-native")).toBe(
+      once,
+    );
+  });
+
+  test("fails clearly when Expo changes the Podfile shape", () => {
+    expect(() =>
+      addNativeTestsPodToPodfile("target 'playground' do\nend\n", "../module"),
+    ).toThrow(/no "  use_expo_modules!" anchor/);
   });
 });
