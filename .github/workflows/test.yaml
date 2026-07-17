@@ -1,0 +1,99 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  js:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+        with:
+          version: 11.5.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: "pnpm build -- --cache=local:,remote:"
+      - run: "pnpm test -- --cache=local:,remote:"
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+        with:
+          version: 11.5.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: "pnpm build -- --cache=local:,remote:"
+      - name: Prebuild Android
+        working-directory: playground
+        env:
+          CI: "true"
+          EXPO_NO_TELEMETRY: "1"
+        run: pnpm exec expo prebuild --platform android --no-install
+      - name: Test and assemble Android
+        working-directory: playground/android
+        run: >-
+          ./gradlew :cordierite_react-native:testDebugUnitTest assembleDebug
+          --no-daemon --no-build-cache --no-configuration-cache
+
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+        with:
+          version: 11.5.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: "pnpm build -- --cache=local:,remote:"
+      - name: Prebuild iOS
+        working-directory: playground
+        env:
+          CI: "true"
+          EXPO_NO_TELEMETRY: "1"
+          LANG: en_US.UTF-8
+        run: pnpm exec expo prebuild --platform ios
+      - name: Test Cordierite native library
+        working-directory: playground/ios
+        run: >-
+          xcodebuild test -workspace playground.xcworkspace -scheme Cordierite-Unit-Tests
+          -destination 'platform=iOS Simulator,name=iPhone 16'
+          CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO
+      - name: Build playground for iOS Simulator
+        working-directory: playground/ios
+        run: >-
+          xcodebuild build -workspace playground.xcworkspace -scheme playground -configuration Debug
+          -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO
