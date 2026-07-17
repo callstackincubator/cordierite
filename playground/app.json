@@ -12,6 +12,11 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.aitwar.playground"
     },
+    "autolinking": {
+      "ios": {
+        "exclude": ["@cordierite/react-native"]
+      }
+    },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -35,7 +40,8 @@
           "cliPins": [
             "sha256/jMvNOyMBXvRaZlyrje70/867kKkSA/qTlu30xCrTk4s="
           ],
-          "allowPrivateLanOnly": true
+          "allowPrivateLanOnly": true,
+          "enableNativeTests": true
         }
       ],
       [
