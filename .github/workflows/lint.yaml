@@ -32,6 +32,8 @@ jobs:
           node-version: 24
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build workspace
+        run: pnpm build
       - name: Run lint
         run: pnpm lint
 
@@ -53,5 +55,7 @@ jobs:
           node-version: 24
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build workspace
+        run: pnpm build
       - name: Run typecheck
         run: pnpm typecheck
