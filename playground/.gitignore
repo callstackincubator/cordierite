@@ -40,6 +40,10 @@ yarn-error.*
 
 app-example
 
+# Intentionally public Cordierite playground fixture; every other PEM remains ignored.
+!.cordierite/key.pem
+!.cordierite/config.json
+
 # generated native folders
 /ios
 /android

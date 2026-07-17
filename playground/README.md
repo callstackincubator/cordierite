@@ -26,17 +26,13 @@ screens in the app, same ideas as in **production** builds.
 Everything below runs from the monorepo root unless noted. Use a **development build**, not Expo
 Go—this app ships native pinning code.
 
-### 1. Generate a host key and copy the pin
+### 1. Use the committed playground host identity
 
-This repo does not ship a committed private key. Generate your own:
-
-```sh
-cordierite keygen
-```
-
-Paste the printed `sha256/…` pin into `playground/app.json`'s `cliPins` (replacing
-`sha256/REPLACE_WITH_KEYGEN_OUTPUT`), then rebuild the native app so it picks up the new pin. The
-generated `.pem` stays gitignored—never commit it.
+The playground ships an intentionally non-secret TLS host-key fixture at
+`.cordierite/key.pem`; its matching SPKI pin is already in `app.json`. The launcher below selects
+that isolated state directory and corrects the key mode after checkout, so no key generation or
+configuration changes are needed. Do not use this identity for another app or any production
+environment.
 
 ### 2. Build and run the dev client
 
@@ -51,9 +47,9 @@ step required for the smoke test below.
 
 ### 3. Bootstrap a session
 
-- **iOS Simulator**: `cordierite link --open ios-sim`
-- **Android emulator**: `cordierite link --open android`
-- **Physical device**: `cordierite link --qr`, then scan the QR code with the device's camera (it
+- **iOS Simulator**: `pnpm run playground:cordierite -- link --open ios-sim`
+- **Android emulator**: `pnpm run playground:cordierite -- link --open android`
+- **Physical device**: `pnpm run playground:cordierite -- link --qr`, then scan the QR code with the device's camera (it
   must be on the same LAN as the daemon, or `allowPrivateLanOnly` will reject it)
 
 The **Status** tab should flip to `active` with an alias once the app claims the session.
@@ -61,13 +57,13 @@ The **Status** tab should flip to `active` with an alias once the app claims the
 ### 4. Drive it from the CLI
 
 ```sh
-cordierite ls
-cordierite tools
-cordierite invoke sum --input '{"a":1,"b":2}'
-cordierite invoke reset_counter --input '{}'   # destructive; denied if policy.destructive=deny
-cordierite invoke slow_task --input '{}'       # watch progress with events --follow
-cordierite invoke throwing_tool --input '{}'   # exercises tool_execution_error
-cordierite events --follow
+pnpm run playground:cordierite -- ls
+pnpm run playground:cordierite -- tools
+pnpm run playground:cordierite -- invoke sum --input '{"a":1,"b":2}'
+pnpm run playground:cordierite -- invoke reset_counter --input '{}'   # destructive; denied if policy.destructive=deny
+pnpm run playground:cordierite -- invoke slow_task --input '{}'       # watch progress with events --follow
+pnpm run playground:cordierite -- invoke throwing_tool --input '{}'   # exercises tool_execution_error
+pnpm run playground:cordierite -- events --follow
 ```
 
 Tap **Send playground_ping** on the Status tab while `events --follow` is running to see the
