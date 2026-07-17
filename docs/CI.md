@@ -1,13 +1,12 @@
 ## Current state
 
-  The existing .github/workflows/ci.yml:1:
+  CI is implemented with three workflows:
 
-  - Builds and lints, but never runs the pnpm test suites or typecheck.
-  - Builds the Android and iOS playgrounds, but does not run native tests.
-  - Uses moving action tags rather than immutable SHAs.
-  - Uses gradle/actions/setup-gradle, which enables dependency caching by default.
-  - Does not disable Turbo’s local cache.
-  - Has no deployment or npm publishing support.
+  - `test.yaml` runs JavaScript, Android JVM, and iOS XCTest coverage in parallel.
+  - `lint.yaml` runs lint and package typecheck in parallel; the playground is intentionally excluded from typecheck.
+  - `deploy.yaml` gates a production release on both reusable workflows, packages the three tarballs, and publishes them
+    through npm trusted publishing.
+  - All third-party actions are pinned to full commit SHAs. Dependency and Turbo caches are disabled.
 
   Verification found:
 
@@ -29,7 +28,7 @@ Publish production releases only for now. The deployment workflow must reject pr
 approved release with the `latest` dist-tag. Do not add `next` or `rc` publishing until prereleases are deliberately
 supported.
 
- ## Proposed workflows
+ ## Implemented workflows
 
    Workflow       Trigger                            Jobs
   ━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -38,8 +37,6 @@ supported.
    lint.yaml      PR, push to main, workflow_call    lint, typecheck in parallel
   ─────────────  ─────────────────────────────────  ────────────────────────────────────────────────
    deploy.yaml    Published GitHub release           quality/test gates, package, OIDC publish jobs
-
-  Delete ci.yml after these replace all of its coverage.
 
   ### test.yaml
 
