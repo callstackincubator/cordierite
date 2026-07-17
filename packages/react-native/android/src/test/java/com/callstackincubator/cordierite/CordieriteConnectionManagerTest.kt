@@ -83,6 +83,52 @@ class CordieriteConnectionManagerTest {
         assertFalse(isLocalIpv4Address("1.2.3.4.5"))
     }
 
+    // MARK: - Opt-in hardening: dev-mode pin trust (resolveTrustedPins)
+
+    @Test
+    fun `configured manifest pins always win regardless of linkPin or debuggability`() {
+        for (isDebuggable in listOf(true, false)) {
+            for (linkPin in listOf(null, "sha256/link-pin-should-be-ignored")) {
+                assertEquals(
+                    TrustedPinsResolution.Configured(setOf("sha256/embedded-pin")),
+                    resolveTrustedPins(setOf("sha256/embedded-pin"), linkPin, isDebuggable),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `no manifest pins, debuggable, with linkPin trusts the linkPin only`() {
+        assertEquals(
+            TrustedPinsResolution.DevModeLinkPin("sha256/dev-mode-pin"),
+            resolveTrustedPins(emptySet(), "sha256/dev-mode-pin", isDebuggable = true),
+        )
+    }
+
+    @Test
+    fun `no manifest pins, not debuggable, with linkPin still fails closed`() {
+        assertEquals(
+            TrustedPinsResolution.Missing,
+            resolveTrustedPins(emptySet(), "sha256/dev-mode-pin", isDebuggable = false),
+        )
+    }
+
+    @Test
+    fun `no manifest pins, debuggable, without linkPin still fails closed`() {
+        assertEquals(
+            TrustedPinsResolution.Missing,
+            resolveTrustedPins(emptySet(), null, isDebuggable = true),
+        )
+    }
+
+    @Test
+    fun `no manifest pins, debuggable, with empty linkPin still fails closed`() {
+        assertEquals(
+            TrustedPinsResolution.Missing,
+            resolveTrustedPins(emptySet(), "", isDebuggable = true),
+        )
+    }
+
     // MARK: - Protocol v2 first-frame shape (item 5)
 
     private fun connectOptions(
@@ -98,6 +144,7 @@ class CordieriteConnectionManagerTest {
         deviceManufacturer = null,
         deviceModel = null,
         deviceOs = null,
+        linkPin = null,
     )
 
     private val defaultDeviceFields =

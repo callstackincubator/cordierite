@@ -52,6 +52,13 @@ internal data class CordieriteConnectOptions(
     val deviceManufacturer: String?,
     val deviceModel: String?,
     val deviceOs: String?,
+    /**
+     * Opt-in hardening dev-mode: the bootstrap deep link's separate `pin` query param, forwarded
+     * unchanged from JS (`CordieriteConnectOptions.linkPin` in `Cordierite.types.ts`). Only ever
+     * consulted by `resolveTrustedPins` when no build-time `CLI_PINS` are configured, and even
+     * then only when the app is debuggable — see `loadConfiguration`.
+     */
+    val linkPin: String?,
 ) {
     companion object {
         fun fromReadableMap(value: com.facebook.react.bridge.ReadableMap): CordieriteConnectOptions {
@@ -85,9 +92,59 @@ internal data class CordieriteConnectOptions(
                 optionalDeviceString("deviceManufacturer"),
                 optionalDeviceString("deviceModel"),
                 optionalDeviceString("deviceOs"),
+                optionalDeviceString("linkPin"),
             )
         }
     }
+}
+
+/** Outcome of `resolveTrustedPins` (opt-in hardening dev-mode pin trust). Mirrors iOS's
+ * `CordieriteTrustedPinsResolution` one-to-one. */
+internal sealed class TrustedPinsResolution {
+    /** Build-time `CLI_PINS` are configured; `linkPin` is irrelevant and never even inspected once
+     * this case applies — embedded pins always win, they never merge with a `linkPin`. */
+    data class Configured(
+        val pins: Set<String>,
+    ) : TrustedPinsResolution()
+
+    /** No build-time `CLI_PINS`, but the app is debuggable and `linkPin` is usable: trust that
+     * single pin for this connection only. Callers must log the loud dev-mode warning. */
+    data class DevModeLinkPin(
+        val pin: String,
+    ) : TrustedPinsResolution()
+
+    /** No build-time `CLI_PINS`, and either the app is not debuggable or there is no usable
+     * `linkPin`: the existing hard-error behavior from before opt-in hardening. */
+    object Missing : TrustedPinsResolution()
+}
+
+/**
+ * Pure decision logic for opt-in hardening dev-mode (design doc part A): given the build-time
+ * `CLI_PINS` read from the manifest and the connect options' `linkPin` (from the bootstrap deep
+ * link's separate `pin` query param, if any), decides which SPKI pin(s) this connection trusts.
+ * Factored out of `loadConfiguration` (which reads `PackageManager`/`ApplicationInfo`) so the
+ * decision matrix is unit-testable without a `Context`/manifest fixture — mirrors iOS's
+ * `resolveTrustedPins` one-to-one.
+ *
+ * `manifestPins` always wins when non-empty — `linkPin` never widens the trust set, it only ever
+ * fills in for a *missing* embedded pin set, and only when the app is debuggable
+ * (`ApplicationInfo.FLAG_DEBUGGABLE`). A non-debuggable app with no `CLI_PINS` configured returns
+ * `Missing` regardless of `linkPin`, preserving the pre-existing hard-fail.
+ */
+internal fun resolveTrustedPins(
+    manifestPins: Set<String>,
+    linkPin: String?,
+    isDebuggable: Boolean,
+): TrustedPinsResolution {
+    if (manifestPins.isNotEmpty()) {
+        return TrustedPinsResolution.Configured(manifestPins)
+    }
+
+    if (isDebuggable && !linkPin.isNullOrEmpty()) {
+        return TrustedPinsResolution.DevModeLinkPin(linkPin)
+    }
+
+    return TrustedPinsResolution.Missing
 }
 
 internal data class CordieriteErrorDetails(
@@ -368,7 +425,7 @@ internal class CordieriteConnectionManager(
         }
 
         try {
-            loadConfiguration()
+            loadConfiguration(options.linkPin)
         } catch (e: Exception) {
             completion(e)
             return
@@ -728,8 +785,10 @@ internal class CordieriteConnectionManager(
         emitMessageRaw(text)
     }
 
+    /** `linkPin` comes from the connect options (the bootstrap deep link's `pin` param, if any) —
+     * see `resolveTrustedPins` for the trust decision itself. */
     @Suppress("DEPRECATION") // Bundle.get(String) is deprecated but is the only way to read the raw value's type.
-    private fun loadConfiguration() {
+    private fun loadConfiguration(linkPin: String?) {
         val applicationInfo =
             context.packageManager.getApplicationInfo(
                 context.packageName,
@@ -738,16 +797,35 @@ internal class CordieriteConnectionManager(
         val metaData = applicationInfo.metaData
         val pinsJson = metaData?.getString(ANDROID_PINS_KEY).orEmpty()
 
-        if (pinsJson.isEmpty()) {
-            throw IllegalStateException("Cordierite CLI pins are not configured in AndroidManifest.xml.")
-        }
-
-        val parsedPins = JSONArray(pinsJson)
-        configuredPins =
-            buildSet {
-                for (index in 0 until parsedPins.length()) {
-                    add(parsedPins.getString(index))
+        val manifestPins =
+            if (pinsJson.isEmpty()) {
+                emptySet()
+            } else {
+                val parsedPins = JSONArray(pinsJson)
+                buildSet {
+                    for (index in 0 until parsedPins.length()) {
+                        add(parsedPins.getString(index))
+                    }
                 }
+            }
+
+        val isDebuggable = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+        configuredPins =
+            when (val resolution = resolveTrustedPins(manifestPins, linkPin, isDebuggable)) {
+                is TrustedPinsResolution.Configured -> resolution.pins
+                is TrustedPinsResolution.DevModeLinkPin -> {
+                    // Loud and unconditional (not gated behind any log level): a developer relying
+                    // on this path must not be able to miss it, since it is strictly weaker than a
+                    // real embedded pin.
+                    android.util.Log.w(
+                        "Cordierite",
+                        "Cordierite: trusting pin from bootstrap link (dev mode). Release builds require embedded cliPins.",
+                    )
+                    setOf(resolution.pin)
+                }
+                TrustedPinsResolution.Missing ->
+                    throw IllegalStateException("Cordierite CLI pins are not configured in AndroidManifest.xml.")
             }
 
         allowPrivateLanOnly =
