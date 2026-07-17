@@ -1,0 +1,127 @@
+name: Deploy
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    uses: ./.github/workflows/lint.yaml
+
+  test:
+    uses: ./.github/workflows/test.yaml
+
+  package:
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+        with:
+          version: 11.5.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Validate production release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version=$(node -e '
+            const packages = ["shared", "cordierite", "react-native"].map(
+              (name) => require(`./packages/${name}/package.json`).version,
+            );
+            if (new Set(packages).size !== 1) throw new Error(`Package versions differ: ${packages.join(", ")}`);
+            if (packages[0].includes("-")) throw new Error(`Prerelease versions are not publishable: ${packages[0]}`);
+            process.stdout.write(packages[0]);
+          ')
+          test "$RELEASE_TAG" = "v$version"
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: "pnpm build -- --cache=local:,remote:"
+      - name: Pack release tarballs
+        run: |
+          mkdir release
+          pnpm --filter @cordierite/shared pack --pack-destination release
+          pnpm --filter cordierite pack --pack-destination release
+          pnpm --filter @cordierite/react-native pack --pack-destination release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-packages
+          path: release/*.tgz
+          retention-days: 1
+          compression-level: 0
+
+  publish-shared:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Verify npm version
+        run: >-
+          node -e 'const [major, minor, patch] = process.argv[1].split(".").map(Number);
+          if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) process.exit(1);'
+          "$(npm --version)"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-packages
+          path: release
+      - run: npm publish release/cordierite-shared-*.tgz --access public --provenance --tag latest
+
+  publish-cli:
+    needs: publish-shared
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Verify npm version
+        run: >-
+          node -e 'const [major, minor, patch] = process.argv[1].split(".").map(Number);
+          if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) process.exit(1);'
+          "$(npm --version)"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-packages
+          path: release
+      - run: npm publish release/cordierite-[0-9]*.tgz --access public --provenance --tag latest
+
+  publish-react-native:
+    needs: publish-shared
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Verify npm version
+        run: >-
+          node -e 'const [major, minor, patch] = process.argv[1].split(".").map(Number);
+          if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) process.exit(1);'
+          "$(npm --version)"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-packages
+          path: release
+      - run: npm publish release/cordierite-react-native-*.tgz --access public --provenance --tag latest
