@@ -297,7 +297,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
       options.detectAddress ??
       ((): ReturnType<typeof detectAdvertisedAddress> => detectAdvertisedAddress({ override: config.advertisedIp }));
 
-    const tls = await createTlsManager({ keyPath: config.keyPath, detectAddress });
+    const tls = await createTlsManager({ keyPath: config.keyPath, detectAddress, warn: options.warn });
 
     sessionManager = createSessionManager({
       graceSeconds: config.graceSeconds,

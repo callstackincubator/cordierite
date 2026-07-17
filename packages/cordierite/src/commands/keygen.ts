@@ -3,16 +3,22 @@
  * it unusable in CI/agent contexts, and neither ARCHITECTURE.md nor the v2 command table describe
  * any interactive mode, so it is not carried forward. Default output is `<state-dir>/key.pem`,
  * the same path the daemon's TLS listener loads by default (ARCHITECTURE.md §3).
+ *
+ * Since opt-in hardening, this is no longer the *only* way to get a key: the daemon now
+ * auto-generates one at this same default path if it's missing at startup (dev-mode zero-config
+ * bootstrap — `daemon/tls.ts`). `keygen` remains for explicit key management (rotation via
+ * `--force`, a non-default `--out`, or CI/scripted provisioning ahead of a release build).
+ * Key generation/file-hygiene itself is shared with the daemon's auto-generate path via
+ * `key-material.ts` so both produce byte-identical material.
  */
 
-import { generateKeyPairSync } from "node:crypto";
-import { dirname } from "node:path";
-import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 
 import type { CliResult, KeygenCommandData } from "../cli/result-types.js";
 
 import { getStateDirPaths } from "../daemon/state-dir.js";
 import { usageError } from "../errors.js";
+import { generatePrivateKeyPem, writePrivateKeyAtomically } from "../key-material.js";
 import { getSpkiPinFromPrivateKeyPem } from "../spki-pin.js";
 
 export type KeygenCommandOptions = {
@@ -22,38 +28,6 @@ export type KeygenCommandOptions = {
 
 export type KeygenCommandContext = {
   stateDir: string;
-};
-
-const generatePrivateKeyPem = (): string => {
-  const { privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    publicExponent: 0x10001,
-  });
-
-  return privateKey
-    .export({
-      format: "pem",
-      type: "pkcs8",
-    })
-    .toString("utf8");
-};
-
-const writePrivateKeyAtomically = async (path: string, keyPem: string): Promise<void> => {
-  const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-
-  await mkdir(dirname(path), { recursive: true });
-
-  try {
-    await writeFile(temporaryPath, keyPem, {
-      encoding: "utf8",
-      mode: 0o600,
-      flag: "wx",
-    });
-    await rename(temporaryPath, path);
-  } catch (error) {
-    await rm(temporaryPath, { force: true }).catch(() => {});
-    throw error;
-  }
 };
 
 export const handleKeygenCommand = async (
