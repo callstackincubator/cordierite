@@ -90,6 +90,12 @@ RCT_EXPORT_MODULE(Cordierite)
   if (resumeToken != nil) {
     opts[@"resumeToken"] = resumeToken;
   }
+  // Opt-in hardening dev-mode: the bootstrap deep link's separate `pin` param, forwarded from JS.
+  // See CordieriteConnectionManager.swift's `resolveTrustedPins` for the trust decision.
+  NSString *linkPin = options.linkPin();
+  if (linkPin != nil) {
+    opts[@"linkPin"] = linkPin;
+  }
 
   [_swift connectWithOptions:opts resolve:resolve reject:reject];
 }

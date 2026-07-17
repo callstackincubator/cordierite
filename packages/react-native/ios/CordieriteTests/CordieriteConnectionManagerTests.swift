@@ -471,6 +471,61 @@ final class CordieriteConnectionManagerTests: XCTestCase {
     XCTAssertEqual(options.resumeToken, "resume-token-value")
   }
 
+  // MARK: - Opt-in hardening: dev-mode pin trust (resolveTrustedPins)
+
+  func testConfiguredBundlePinsAlwaysWinRegardlessOfLinkPinOrBuildKind() {
+    for isDebugBuild in [true, false] {
+      for linkPin in [nil, "sha256/link-pin-should-be-ignored"] {
+        XCTAssertEqual(
+          resolveTrustedPins(bundlePins: ["sha256/embedded-pin"], linkPin: linkPin, isDebugBuild: isDebugBuild),
+          .configured(["sha256/embedded-pin"]),
+          "isDebugBuild=\(isDebugBuild) linkPin=\(linkPin ?? "nil")"
+        )
+      }
+    }
+  }
+
+  func testNoBundlePinsDebugBuildWithLinkPinTrustsTheLinkPinOnly() {
+    XCTAssertEqual(
+      resolveTrustedPins(bundlePins: [], linkPin: "sha256/dev-mode-pin", isDebugBuild: true),
+      .devModeLinkPin("sha256/dev-mode-pin")
+    )
+  }
+
+  func testNoBundlePinsReleaseBuildWithLinkPinStillFailsClosed() {
+    XCTAssertEqual(
+      resolveTrustedPins(bundlePins: [], linkPin: "sha256/dev-mode-pin", isDebugBuild: false),
+      .missing
+    )
+  }
+
+  func testNoBundlePinsDebugBuildWithoutLinkPinStillFailsClosed() {
+    XCTAssertEqual(
+      resolveTrustedPins(bundlePins: [], linkPin: nil, isDebugBuild: true),
+      .missing
+    )
+  }
+
+  func testNoBundlePinsDebugBuildWithEmptyLinkPinStillFailsClosed() {
+    XCTAssertEqual(
+      resolveTrustedPins(bundlePins: [], linkPin: "", isDebugBuild: true),
+      .missing
+    )
+  }
+
+  func testConfigureFromBundleThrowsWhenNoPinsAndNoLinkPin() async {
+    // The test host's Info.plist never sets CordieriteCliPins, so this exercises the real
+    // Bundle.main-reading path (not just the pure resolveTrustedPins matrix above) for the
+    // pre-existing "nothing configured" case, which must still hard-fail.
+    let manager = CordieriteConnectionManager()
+    do {
+      try await manager.configureFromBundle(linkPin: nil)
+      XCTFail("expected configureFromBundle to throw")
+    } catch {
+      // expected
+    }
+  }
+
   // MARK: - SPKI pin parity with packages/cordierite/src/spki-pin.ts
 
   /// DER bytes (base64) of a fixed, throwaway self-signed EC (P-256) test certificate, generated

@@ -59,6 +59,11 @@ struct CordieriteConnectOptions: Sendable {
   let deviceManufacturer: String?
   let deviceModel: String?
   let deviceOs: String?
+  /// Opt-in hardening dev-mode: the bootstrap deep link's separate `pin` query param, forwarded
+  /// unchanged from JS (`CordieriteConnectOptions.linkPin` in `Cordierite.types.ts`). Only ever
+  /// consulted by `resolveTrustedPins` when no build-time `cliPins` are configured, and even then
+  /// only in a debug build — see `configureFromBundle`.
+  let linkPin: String?
 
   init(_ value: [String: Any]) throws {
     // NOTE: intentionally not actor-isolated — called synchronously from the TurboModule bridge
@@ -95,7 +100,47 @@ struct CordieriteConnectOptions: Sendable {
     self.deviceManufacturer = optionalString("deviceManufacturer")
     self.deviceModel = optionalString("deviceModel")
     self.deviceOs = optionalString("deviceOs")
+    self.linkPin = optionalString("linkPin")
   }
+}
+
+/// Outcome of `resolveTrustedPins` (opt-in hardening dev-mode pin trust).
+enum CordieriteTrustedPinsResolution: Equatable {
+  /// Build-time `cliPins` are configured; `linkPin` is irrelevant and never even inspected once
+  /// this case applies — embedded pins always win, they never merge with a `linkPin`.
+  case configured(Set<String>)
+  /// No build-time `cliPins`, but a debug build with a usable `linkPin`: trust that single pin
+  /// for this connection only. Callers must log the loud dev-mode warning when they see this case.
+  case devModeLinkPin(String)
+  /// No build-time `cliPins`, and either not a debug build or no usable `linkPin`: the existing
+  /// hard-error behavior from before opt-in hardening.
+  case missing
+}
+
+/// Pure decision logic for opt-in hardening dev-mode (design doc part A): given the build-time
+/// `cliPins` read from Info.plist and the connect options' `linkPin` (from the bootstrap deep
+/// link's separate `pin` query param, if any), decides which SPKI pin(s) this connection trusts.
+/// Factored out of `configureFromBundle` (which reads `Bundle.main`) so the decision matrix is
+/// unit-testable without an Info.plist fixture.
+///
+/// `bundlePins` always wins when non-empty — `linkPin` never widens the trust set, it only ever
+/// fills in for a *missing* embedded pin, and only in a debug build. A release build with no
+/// `cliPins` configured returns `.missing` regardless of `linkPin`, preserving the pre-existing
+/// hard-fail (release builds without pins keep today's hard error).
+func resolveTrustedPins(
+  bundlePins: [String],
+  linkPin: String?,
+  isDebugBuild: Bool
+) -> CordieriteTrustedPinsResolution {
+  if !bundlePins.isEmpty {
+    return .configured(Set(bundlePins))
+  }
+
+  if isDebugBuild, let linkPin, !linkPin.isEmpty {
+    return .devModeLinkPin(linkPin)
+  }
+
+  return .missing
 }
 
 private struct DefaultSessionClaimDeviceFields {
@@ -222,15 +267,34 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
     super.init()
   }
 
-  func configureFromBundle() throws {
+  /// `linkPin` comes from the connect options (the bootstrap deep link's `pin` param, if any) —
+  /// see `resolveTrustedPins` for the trust decision itself. `#if DEBUG` reflects the *Cordierite
+  /// pod's own* compilation condition, which the app's Debug configuration propagates down to it
+  /// (verified against the playground's checked-in `Pods.xcodeproj`: CocoaPods' project-level
+  /// default Debug config sets `SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) DEBUG`, which
+  /// the pod's own target-level config inherits since it only ever adds `$(inherited)` itself).
+  func configureFromBundle(linkPin: String?) throws {
     let info = Bundle.main.infoDictionary ?? [:]
     let pins = info[cliPinsPlistKey] as? [String] ?? []
 
-    guard !pins.isEmpty else {
+    #if DEBUG
+    let isDebugBuild = true
+    #else
+    let isDebugBuild = false
+    #endif
+
+    switch resolveTrustedPins(bundlePins: pins, linkPin: linkPin, isDebugBuild: isDebugBuild) {
+    case .configured(let trustedPins):
+      configuredPins = trustedPins
+    case .devModeLinkPin(let pin):
+      // Loud and unconditional (not gated behind any log level): a developer relying on this path
+      // must not be able to miss it, since it is strictly weaker than a real embedded pin.
+      NSLog("Cordierite: trusting pin from bootstrap link (dev mode). Release builds require embedded cliPins.")
+      configuredPins = [pin]
+    case .missing:
       throw CordieriteModuleError(message: "Cordierite CLI pins are not configured in Info.plist.")
     }
 
-    configuredPins = Set(pins)
     // Fail closed: absent the plist key, only local/LAN addresses are allowed.
     allowPrivateLanOnly = info[allowPrivateLanOnlyPlistKey] as? Bool ?? true
   }
@@ -244,7 +308,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
       throw CordieriteModuleError(message: "A Cordierite session is already connecting or active.")
     }
 
-    try configureFromBundle()
+    try configureFromBundle(linkPin: options.linkPin)
 
     let now = Int(Date().timeIntervalSince1970)
 
