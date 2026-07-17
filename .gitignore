@@ -34,3 +34,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# The playground's daemon writes sockets, logs, PID files, and audit records here. Its key and
+# config are deliberately committed fixtures so the example works without local setup.
+playground/.cordierite/*
+!playground/.cordierite/key.pem
+!playground/.cordierite/config.json

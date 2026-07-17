@@ -33,7 +33,7 @@
         "@cordierite/react-native",
         {
           "cliPins": [
-            "sha256/REPLACE_WITH_KEYGEN_OUTPUT"
+            "sha256/jMvNOyMBXvRaZlyrje70/867kKkSA/qTlu30xCrTk4s="
           ],
           "allowPrivateLanOnly": true
         }
