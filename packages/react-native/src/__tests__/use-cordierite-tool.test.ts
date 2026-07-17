@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, vi, test } from "vitest";
 
-import type { CordieriteToolRegistration } from "../Cordierite.types";
+import type {
+  CordieriteRuntimeSchema,
+  CordieriteToolRegistration,
+} from "../Cordierite.types";
 import type { CordieriteSubscription } from "../public-api";
 
 (globalThis as { __DEV__?: boolean }).__DEV__ = true;
@@ -74,8 +77,11 @@ const makeRegisterTool = () => {
   const registrations: Registration[] = [];
   let nextId = 0;
 
-  const registerTool = (
-    _registration: CordieriteToolRegistration<undefined, undefined>
+  const registerTool = <
+    TInputSchema extends CordieriteRuntimeSchema | undefined,
+    TOutputSchema extends CordieriteRuntimeSchema | undefined,
+  >(
+    _registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>
   ): CordieriteSubscription => {
     const entry: Registration = { id: nextId++, removed: false };
     registrations.push(entry);
@@ -165,8 +171,11 @@ describe("createUseCordieriteTool", () => {
 
   test("a later call always sees the latest definition object, not a stale closure", async () => {
     const seen: string[] = [];
-    const registerTool = (
-      registration: CordieriteToolRegistration<undefined, undefined>
+    const registerTool = <
+      TInputSchema extends CordieriteRuntimeSchema | undefined,
+      TOutputSchema extends CordieriteRuntimeSchema | undefined,
+    >(
+      registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>
     ): CordieriteSubscription => {
       seen.push(registration.name);
       return { remove() {} };

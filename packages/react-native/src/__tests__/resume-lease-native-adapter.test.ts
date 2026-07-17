@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, vi, test } from "vitest";
 
+import type { Spec } from "../NativeCordierite";
+
 const lease = {
   schemaVersion: 1,
   sessionId: "session-1",
@@ -51,7 +53,7 @@ describe("native resume lease adapter", () => {
           clearResumeLease: () => {
             clearCalls += 1;
           },
-        };
+        } as unknown as Spec;
       },
     }));
     nativeModuleReadsAfterMockSetup = nativeModuleReads;

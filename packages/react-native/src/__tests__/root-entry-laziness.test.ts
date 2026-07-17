@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, vi, test } from "vitest";
 
+import type { Spec } from "../NativeCordierite";
+
 (globalThis as { __DEV__?: boolean }).__DEV__ = true;
 
 /**
@@ -23,7 +25,7 @@ const resetMocks = async () => {
   const { __cordieriteSetNativeModuleLoaderForTests } = await import("../CordieriteModule");
   __cordieriteSetNativeModuleLoaderForTests(() => {
     nativeAccessAttempts += 1;
-    return { NativeCordierite: undefined };
+    return { NativeCordierite: undefined as unknown as Spec };
   });
 
   vi.doMock("react-native", () => ({
