@@ -400,7 +400,10 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
             activeListener.applyTls(nextMaterial);
           }
 
-          return activeSessionManager.createLink(ttlSeconds, addressOverride);
+          // `tls.refresh()` just ran above, so `pinnedKeys()[0]` reflects the material this link's
+          // endpoint will actually serve (opt-in hardening dev-mode: the CLI composes this into the
+          // deep link's `pin` query param — see `LinkCreateResult.pin`).
+          return { ...activeSessionManager.createLink(ttlSeconds, addressOverride), pin: tls.pinnedKeys()[0]! };
         },
         [RPC_METHODS.sessionsList]: (): SessionsListResult => {
           return activeSessionManager.list();

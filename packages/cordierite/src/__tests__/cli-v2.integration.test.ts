@@ -160,7 +160,11 @@ describe("cordierite CLI v2: end-to-end command table", () => {
       expect(linkData.deepLink.startsWith("cordierite-e2e:///?cordierite=")).toBe(true);
       expect(linkData.endpoint.port).toBe(port);
 
-      const payload = linkData.deepLink.slice(linkData.deepLink.indexOf("cordierite=") + "cordierite=".length);
+      // The deep link now also carries a separate `&pin=...` query param after the bootstrap blob
+      // (opt-in hardening dev-mode); only the `cordierite=` value up to the next `&` decodes.
+      const payload = linkData.deepLink
+        .slice(linkData.deepLink.indexOf("cordierite=") + "cordierite=".length)
+        .split("&")[0]!;
       const decoded = decodeBootstrap(payload);
       expect(decoded).not.toBeNull();
 
@@ -275,7 +279,9 @@ describe("cordierite CLI v2: end-to-end command table", () => {
       const claimOne = async (deviceModel: string): Promise<{ socket: WebSocket; alias: string }> => {
         const linkResult = await runCliJson(["link", "--ttl", "60"], stateDir);
         const linkData = linkResult.data as { deepLink: string };
-        const linkPayload = linkData.deepLink.slice(linkData.deepLink.indexOf("cordierite=") + "cordierite=".length);
+        const linkPayload = linkData.deepLink
+          .slice(linkData.deepLink.indexOf("cordierite=") + "cordierite=".length)
+          .split("&")[0]!;
         const decoded = decodeBootstrap(linkPayload)!;
 
         const socket = await connectFakeApp(port);

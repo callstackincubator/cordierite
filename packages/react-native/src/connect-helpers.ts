@@ -36,6 +36,10 @@ export const toConnectOptions = (
       ? { resumeToken: input.resumeToken }
       : {}),
     expiresAt: input.expiresAt,
+    // Only a decoded bootstrap URL ever carries `linkPin` (the deep link's separate `pin` param —
+    // see `bootstrap.ts`); manual `CordieriteConnectOptions` callers can also set it directly,
+    // which this passes through unchanged.
+    ...("linkPin" in input && input.linkPin ? { linkPin: input.linkPin } : {}),
   };
 
   const fromOverrides = clientOptions.sessionClaimDeviceFields?.();

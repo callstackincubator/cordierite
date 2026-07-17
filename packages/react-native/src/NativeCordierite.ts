@@ -17,6 +17,10 @@ export type CordieriteConnectOptionsNative = {
   deviceManufacturer?: string;
   deviceModel?: string;
   deviceOs?: string;
+  /** Opt-in hardening dev-mode: the bootstrap deep link's separate `pin` param. Native only
+   * trusts it when built in debug mode with no build-time `cliPins` configured; embedded pins
+   * always win and release builds without pins keep the existing hard error regardless. */
+  linkPin?: string;
 };
 
 export type CordieriteStateChangeEventNative = {

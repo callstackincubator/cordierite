@@ -1,7 +1,16 @@
 /**
  * `cordierite link` (ARCHITECTURE.md §10, §8): mints a pending session via `link.create`, then
- * composes the deep link `<scheme>:///?cordierite=<payload>`. The scheme comes from `--scheme`,
- * else `config.json`'s `scheme` field, else the command errors with a clear message.
+ * composes the deep link `<scheme>:///?cordierite=<payload>&pin=<spki-pin>`. The scheme comes
+ * from `--scheme`, else `config.json`'s `scheme` field, else the command errors with a clear
+ * message.
+ *
+ * The `pin` param (opt-in hardening dev-mode) is separate from the `cordierite` bootstrap blob —
+ * it is never part of that binary v2 payload, so old apps that don't know about it simply ignore
+ * it. It carries the daemon's SPKI pin (same value as `daemon.status`'s `pinnedKeys[0]` /
+ * `cordierite keygen`'s output) so a debug build with no build-time `cliPins` configured can trust
+ * it for this one connection instead of requiring a native rebuild just to test locally. The pin
+ * is standard (non-URL-safe) base64 (`sha256/<44-char-base64>`, may contain `+`/`/`/`=`), so it is
+ * percent-encoded here; native/JS parsers use `URLSearchParams`, which decodes it back.
  *
  * `--open android|ios-sim` (task 07) additionally forces the advertised address to `127.0.0.1`
  * (the simulator/emulator reaches the daemon over localhost — the wss listener already binds all
@@ -73,7 +82,7 @@ export const handleLinkCommand = async (
     { stateDir: context.stateDir, spawn: context.spawn },
   );
 
-  const deepLink = `${scheme}:///?cordierite=${result.deepLinkPayload}`;
+  const deepLink = `${scheme}:///?cordierite=${result.deepLinkPayload}&pin=${encodeURIComponent(result.pin)}`;
 
   if (openTarget) {
     await deliverToOpenTarget({
@@ -93,6 +102,7 @@ export const handleLinkCommand = async (
       deepLink,
       endpoint: result.endpoint,
       expiresAt: result.expiresAt,
+      pin: result.pin,
       ...(openTarget ? { delivered: true as const, target: openTarget } : {}),
     },
   };

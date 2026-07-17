@@ -32,6 +32,21 @@ describe("CordieriteConnectOptions vs CordieriteConnectOptionsNative", () => {
     expect(asJs.deviceManufacturer).toBeUndefined();
   });
 
+  test("linkPin (opt-in hardening dev-mode) is assignable both ways", () => {
+    const withLinkPin: CordieriteConnectOptions = {
+      ip: "10.0.0.1",
+      port: 8443,
+      sessionId: "session-abc",
+      token: "token-xyz",
+      expiresAt: 1_800_000_000,
+      linkPin: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    };
+
+    const asNative: CordieriteConnectOptionsNative = withLinkPin;
+    const roundTrip: CordieriteConnectOptions = asNative;
+    expect(roundTrip.linkPin).toBe(withLinkPin.linkPin);
+  });
+
   test("resumeToken-only shape (session_resume) is assignable both ways", () => {
     const withResumeToken: CordieriteConnectOptions = {
       ip: "10.0.0.1",

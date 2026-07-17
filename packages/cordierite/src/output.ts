@@ -183,6 +183,7 @@ const renderLinkData = (colors: ColorPalette, data: LinkCommandData, qr?: boolea
       ["Session", data.sessionId],
       ["Deep link", data.deepLink],
       ["Endpoint", formatAgentWebSocketUrl(data.endpoint)],
+      ["Pin", data.pin],
       ["Expires", new Date(data.expiresAt * 1000).toISOString()],
       ["Delivered", data.delivered ? `yes (${data.target})` : undefined],
     ]),

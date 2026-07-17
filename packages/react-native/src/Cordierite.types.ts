@@ -54,11 +54,23 @@ export type CordieriteConnectOptions = {
   deviceManufacturer?: string;
   deviceModel?: string;
   deviceOs?: string;
+  /**
+   * The bootstrap deep link's separate `pin` query param (`bootstrap.ts`'s `extractLinkPin`),
+   * distinct from and never part of the `cordierite` v2 binary payload. Opt-in hardening
+   * dev-mode: native only trusts this for the connection when built in debug mode with no
+   * build-time `cliPins` configured — embedded pins always win, and release builds without pins
+   * keep the existing hard error regardless of `linkPin`.
+   */
+  linkPin?: string;
 };
+
+/** A decoded v2 bootstrap payload, plus the deep link's optional sibling `pin` param (see
+ * `CordieriteConnectOptions.linkPin`) — `bootstrap.ts`'s `parseBootstrapUrl` produces this shape. */
+export type CordieriteBootstrapConnectInput = BootstrapPayload & { linkPin?: string };
 
 export type CordieriteConnectInput =
   | CordieriteConnectOptions
-  | BootstrapPayload;
+  | CordieriteBootstrapConnectInput;
 
 /**
  * Parsed JSON from the wire. Non-object or invalid JSON may surface as `{}` (see `CordieriteModule`).

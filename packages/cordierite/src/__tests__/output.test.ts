@@ -64,9 +64,10 @@ describe("output rendering", () => {
         ok: true,
         data: {
           sessionId: "LinkOutputTestSess1",
-          deepLink: "playground:///?cordierite=abc123",
+          deepLink: "playground:///?cordierite=abc123&pin=sha256%2Fexample",
           endpoint: { family: 4, address: "192.168.1.10", port: 8443 },
           expiresAt: Math.floor(FIXED_NOW.getTime() / 1000) + 30,
+          pin: "sha256/example",
         },
         meta: {
           command: "link",
@@ -90,9 +91,10 @@ describe("output rendering", () => {
         ok: true,
         data: {
           sessionId: "LinkOutputTestSess1",
-          deepLink: "playground:///?cordierite=abc123",
+          deepLink: "playground:///?cordierite=abc123&pin=sha256%2Fexample",
           endpoint: { family: 4, address: "192.168.1.10", port: 8443 },
           expiresAt: Math.floor(FIXED_NOW.getTime() / 1000) + 30,
+          pin: "sha256/example",
         },
         meta: {
           command: "link",
@@ -112,9 +114,10 @@ describe("output rendering", () => {
       ok: true,
       data: {
         sessionId: "LinkOutputTestSess1",
-        deepLink: "playground:///?cordierite=abc123",
+        deepLink: "playground:///?cordierite=abc123&pin=sha256%2Fexample",
         endpoint: { family: 4, address: "192.168.1.10", port: 8443 },
         expiresAt: Math.floor(FIXED_NOW.getTime() / 1000) + 30,
+        pin: "sha256/example",
       },
       meta: {
         command: "link",

@@ -56,10 +56,15 @@ export type KeygenCommandData = {
 
 export type LinkCommandData = {
   sessionId: string;
+  /** Already includes the `pin` query param (see `pin` below) alongside `cordierite`. */
   deepLink: string;
   endpoint: AgentEndpoint;
   /** Unix seconds. */
   expiresAt: number;
+  /** The daemon's SPKI pin, same value as embedded in `deepLink`'s `pin` query param — surfaced
+   * as its own field for `--json` consumers that don't want to re-parse the URL (opt-in
+   * hardening dev-mode: native clients trust this only in debug builds with no `cliPins`). */
+  pin: string;
   /** Present (and `true`) only once `--open <target>` has successfully delivered the link
    * (ARCHITECTURE.md §10/task 07). */
   delivered?: true;

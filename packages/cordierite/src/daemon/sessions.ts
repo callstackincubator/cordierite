@@ -157,8 +157,10 @@ export type LinkCreateResult = {
 
 export type SessionManager = {
   /** `addressOverride` forces the address encoded into this one link's bootstrap payload (task
-   * 07's emulator/simulator fast path); see `links.ts`'s `PendingLinkRegistry.create`. */
-  createLink: (ttlSeconds?: number, addressOverride?: string) => LinkCreateResult;
+   * 07's emulator/simulator fast path); see `links.ts`'s `PendingLinkRegistry.create`. Omits
+   * `LinkCreateResult.pin` — the session manager has no `TlsManager` handle, so the RPC handler
+   * (`daemon.ts`) attaches the current SPKI pin itself before returning to the caller. */
+  createLink: (ttlSeconds?: number, addressOverride?: string) => Omit<LinkCreateResult, "pin">;
   /** First message on a fresh socket. Returns the claimed sessionId, or `null` after closing the socket. */
   handleClaim: (socket: WebSocket, message: SessionClaimMessage) => string | null;
   /** First message on a resume socket. Returns the resumed sessionId, or `null` after closing the socket. */
@@ -339,7 +341,7 @@ export const createSessionManager = (options: SessionManagerOptions): SessionMan
     }
   }, options.keepaliveIntervalSeconds * 1000);
 
-  const createLink = (ttlSeconds?: number, addressOverride?: string): LinkCreateResult => {
+  const createLink = (ttlSeconds?: number, addressOverride?: string): Omit<LinkCreateResult, "pin"> => {
     const { link, deepLinkPayload, endpoint } = pendingLinks.create(
       ttlSeconds ?? options.linkTtlSeconds,
       addressOverride,
