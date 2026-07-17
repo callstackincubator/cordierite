@@ -6,6 +6,7 @@
     "clean": "turbo run clean",
     "lint": "turbo run lint",
     "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
     "showcase": "./showcase-cordierite.sh"
   },
   "workspaces": [

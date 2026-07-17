@@ -14,7 +14,7 @@ const shapelessSchema: StandardSchemaV1 = {
   "~standard": {
     version: 1,
     vendor: "test",
-    validate: (value) => success(value),
+    validate: (value: unknown) => success(value),
   },
 };
 
@@ -22,7 +22,7 @@ const withJsonSchemaExporter = (): StandardSchemaV1 => ({
   "~standard": {
     version: 1,
     vendor: "test",
-    validate: (value) => success(value),
+    validate: (value: unknown) => success(value),
     jsonSchema: {
       input: () => ({ type: "object" }),
       output: () => ({ type: "object" }),

@@ -1,7 +1,8 @@
 import { generateKeyPairSync } from "node:crypto";
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Readable } from "node:stream";
 
 import { runCli } from "../cli.js";
 
@@ -46,7 +47,7 @@ export const runCliBinary = (args: string[], options: CliProcessOptions = {}) =>
 export const spawnCliBinary = (
   args: string[],
   options: CliProcessOptions = {},
-): ChildProcessWithoutNullStreams => {
+): ChildProcessByStdio<null, Readable, Readable> => {
   return spawn(process.execPath, [binEntry, ...args], {
     cwd: packageRoot,
     env: cliEnvironment(options),
@@ -54,7 +55,9 @@ export const spawnCliBinary = (
   });
 };
 
-export const waitForExit = (process: ChildProcessWithoutNullStreams): Promise<number> => {
+export const waitForExit = (
+  process: ChildProcessByStdio<null, Readable, Readable>,
+): Promise<number> => {
   return new Promise((resolve, reject) => {
     process.once("error", reject);
     process.once("exit", (code) => resolve(code ?? 1));

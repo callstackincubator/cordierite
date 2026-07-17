@@ -28,7 +28,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
-    "test": "vitest run --config ../../vitest.config.ts src/__tests__"
+    "test": "vitest run --config ../../vitest.config.ts src/__tests__",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
     "typescript": "~5.9.2"

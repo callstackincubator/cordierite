@@ -1,5 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
+import type { Spec } from "../NativeCordierite";
+
 describe("./auto entry in a fresh runtime", () => {
   test("keeps root inert, restores the native lease once, and re-exports the root API", async () => {
     vi.resetModules();
@@ -35,7 +37,7 @@ describe("./auto entry in a fresh runtime", () => {
         onMessage: subscription,
         onError: subscription,
         onClose: subscription,
-    };
+    } as unknown as Spec;
 
     vi.doMock("react-native", () => ({
       AppState: {
