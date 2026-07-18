@@ -197,7 +197,7 @@ After changing native configuration, rebuild the app.
 | Debug   | Fully active, zero config (link-carried pin trusted)            | `cliPins` for pinned trust instead                 |
 | Release | Inert - module unregistered (Android) / compiled out (iOS)      | `enableInReleaseBuilds` + `cliPins` → hardened     |
 
-**iOS custom build configurations:** a build configuration other than the stock Debug/Release pair (e.g. a "Staging" scheme) does not automatically get Xcode's `DEBUG` compilation condition, so Cordierite is off there by default too, exactly as in Release - opt in with `CORDIERITE_ENABLE_RELEASE` the same way you would for Release.
+**iOS custom build configurations:** a build configuration other than the stock Debug/Release pair (e.g. a "Staging" scheme) does not automatically get Xcode's `DEBUG` compilation condition, so Cordierite is off there by default too, exactly as in Release. The config plugin's `enableInReleaseBuilds: true` covers these too - it applies `CORDIERITE_ENABLE_RELEASE` to every one of the Cordierite pod's build configurations, not only the one literally named `Release` (matching Android, where `ENABLE_IN_RELEASE` covers every non-debuggable build variant, custom build types included). Bare-RN setups need the equivalent build settings added to that custom configuration by hand.
 
 ## Migration: upgrading past the opt-in hardening release
 

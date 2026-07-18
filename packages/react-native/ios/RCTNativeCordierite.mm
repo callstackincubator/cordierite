@@ -8,9 +8,11 @@
 // `enableInReleaseBuilds` option defines on the *app* target, mirroring `SWIFT_ACTIVE_COMPILATION_CONDITIONS`
 // for `CordieriteTurboBridge.swift`). With nothing here, RN's Objective-C runtime class scan never
 // finds a "Cordierite" module: `TurboModuleRegistry` lookups on the JS side come back empty, which
-// is exactly what `noop.ts`'s degrade path depends on. Plain `DEBUG=1` is a reliable gate for this
-// pod's own Debug configs (see docs/tasks/01-ios-debug-flag-spike.md); custom configs other than
-// Debug/Release don't get `DEBUG` and stay inert unless `CORDIERITE_ENABLE_RELEASE` is set.
+// is exactly what root `src/index.ts`'s `noopIfNativeUnavailable` (which delegates to the
+// `./noop` implementations) depends on to degrade automatically. Plain `DEBUG=1` is a reliable
+// gate for this pod's own Debug configs (see docs/tasks/01-ios-debug-flag-spike.md); custom
+// configs other than Debug/Release don't get `DEBUG` and stay inert unless
+// `CORDIERITE_ENABLE_RELEASE` is set.
 #if DEBUG || CORDIERITE_ENABLE_RELEASE
 
 #if __has_include("Cordierite-Swift.h")

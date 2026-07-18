@@ -186,7 +186,7 @@ Cordierite ships **inert by default** in release builds:
 
 Opting in requires `enableInReleaseBuilds: true` **and** non-empty `cliPins` (bare RN: the `ENABLE_IN_RELEASE`/`CORDIERITE_ENABLE_RELEASE` flags **and** `CordieriteCliPins`/`CLI_PINS`) — a release build with the module enabled but no pins would have no way to trust anything, so the plugin refuses that combination at config time.
 
-**iOS custom build configurations:** Xcode configurations other than the stock Debug/Release pair (e.g. a "Staging" scheme) do not get the `DEBUG` compilation condition either, so Cordierite stays off there by default too — opt in with `CORDIERITE_ENABLE_RELEASE` the same way you would for Release.
+**iOS custom build configurations:** Xcode configurations other than the stock Debug/Release pair (e.g. a "Staging" scheme) do not get the `DEBUG` compilation condition either, so Cordierite stays off there by default too — exactly as in Release. The config plugin's `enableInReleaseBuilds: true` covers these too — it applies `CORDIERITE_ENABLE_RELEASE` to every one of the Cordierite pod's build configurations, not only the one literally named `Release` (matching Android, where `ENABLE_IN_RELEASE` covers every non-debuggable build variant, custom build types included). Bare-RN setups need the equivalent build settings added to that custom configuration by hand.
 
 **Resulting behavior matrix:**
 

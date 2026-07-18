@@ -168,10 +168,15 @@ production just turns on the pieces below rather than using a different architec
   set this; apps that only ever used Cordierite in debug builds need nothing here at all.
 - **iOS custom build configurations.** Xcode configurations other than the stock
   Debug/Release pair (a "Staging" scheme, for example) don't get the `DEBUG` compilation
-  condition either — Cordierite is off there by default, exactly as in Release, unless
-  `CORDIERITE_ENABLE_RELEASE` is defined for that configuration too. Treat this as
-  correct-by-default behavior (fail closed on an unrecognized configuration), not a gap
-  to patch around.
+  condition either — Cordierite is off there by default, exactly as in Release. Treat
+  this default as correct-by-default behavior (fail closed on an unrecognized
+  configuration), not a gap to patch around. The config plugin's
+  `enableInReleaseBuilds: true` does cover these configurations, though: it applies
+  `CORDIERITE_ENABLE_RELEASE` to every one of the Cordierite pod's build configurations,
+  not only the one literally named `Release`, mirroring Android's `ENABLE_IN_RELEASE`
+  (which enables every non-debuggable build variant, custom build types included).
+  Bare-RN setups still need the equivalent build settings added to that custom
+  configuration by hand.
 - **Compile out of release builds you don't want carrying Cordierite at all — even the
   inert form.** Default-inert release builds above stop Cordierite from *doing* anything,
   but the code still ships inside the binary/bundle. To strip it out entirely, combine

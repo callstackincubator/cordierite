@@ -235,7 +235,8 @@ const ENABLE_IN_RELEASE_PODFILE_MARKER =
   "# Cordierite: enableInReleaseBuilds (opt-in hardening design doc part B)";
 
 /**
- * Defines `CORDIERITE_ENABLE_RELEASE` on the *Cordierite pod's own* Release build configuration
+ * Defines `CORDIERITE_ENABLE_RELEASE` on *every one* of the Cordierite pod's own build
+ * configurations -- not just the one literally named `Release`
  * (`CordieriteTurboBridge.swift`/`RCTNativeCordierite.mm` gate their whole implementation behind
  * `#if DEBUG || CORDIERITE_ENABLE_RELEASE`). An app-target-only Xcode build setting would not do
  * this: CocoaPods gives every pod its own build configuration, generated from the podspec, which
@@ -247,10 +248,24 @@ const ENABLE_IN_RELEASE_PODFILE_MARKER =
  * `post_install` block (Ruby/CocoaPods only runs the last one defined, silently discarding an
  * earlier block -- adding a second hook would break the existing one instead of composing with it).
  *
+ * Not scoping this to the `Release` config by name is deliberate, for parity with Android:
+ * `CordieritePackage.kt`'s `ENABLE_IN_RELEASE` meta-data enables Cordierite on every
+ * non-debuggable build variant, custom build types included, not just one named "release". A
+ * custom iOS configuration (e.g. "Staging") gets neither `DEBUG` nor a config-name match, so
+ * scoping the injected flag to `build_config.name == 'Release'` left it inert there even with
+ * `enableInReleaseBuilds: true` -- the opposite of the equivalent Android build. Applying the flag
+ * to every configuration (including Debug, where it's a harmless no-op since Debug is already
+ * active via `DEBUG`) is what makes `enableInReleaseBuilds` cover custom iOS configurations the
+ * same way it covers custom Android build types.
+ *
  * Both languages need the flag defined consistently (task 08/overview §B): Swift reads
  * `SWIFT_ACTIVE_COMPILATION_CONDITIONS`, the ObjC++ bridge (`RCTNativeCordierite.mm`) reads a
  * preprocessor macro from `GCC_PREPROCESSOR_DEFINITIONS` -- Xcode's standard "macro list" build
- * setting, hence the `NAME=1` form rather than a raw `-D` compiler flag.
+ * setting, hence the `NAME=1` form rather than a raw `-D` compiler flag. xcodeproj can hand back
+ * either setting as a bare String or an Array of Strings depending on what's already configured,
+ * so both branches below normalize to whichever shape they append onto (join an Array to a String
+ * for the Swift setting; wrap a String into a one-element Array for the GCC setting) rather than
+ * assuming one particular shape, which would otherwise corrupt the setting.
  */
 function addEnableInReleaseFlagToPodfile(podfile) {
   if (podfile.includes(ENABLE_IN_RELEASE_PODFILE_MARKER)) {
@@ -270,8 +285,8 @@ function addEnableInReleaseFlagToPodfile(podfile) {
     "    installer.pods_project.targets.each do |target|",
     "      next unless target.name == 'Cordierite'",
     "      target.build_configurations.each do |build_config|",
-    "        next unless build_config.name == 'Release'",
     "        conditions = build_config.build_settings['SWIFT_ACTIVE_COMPILATION_CONDITIONS'] || '$(inherited)'",
+    "        conditions = conditions.join(' ') if conditions.is_a?(Array)",
     "        build_config.build_settings['SWIFT_ACTIVE_COMPILATION_CONDITIONS'] = \"#{conditions} CORDIERITE_ENABLE_RELEASE\"",
     "        defs = build_config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] || ['$(inherited)']",
     "        defs = [defs] unless defs.is_a?(Array)",
