@@ -36,21 +36,17 @@ Install the CLI separately on the machine that will run the host:
 npm install cordierite
 ```
 
-### 2. Generate a host key and copy the app pin
+### 2. On a debug build, that's it for keys and pins
 
-Generate a matching host key and pin with:
+**Debug builds need no key, no pins, and no config plugin at all.** The daemon auto-generates its own `key.pem` the first time it starts (printing its `sha256/...` fingerprint), and `cordierite link` composes that fingerprint into the deep link as a separate `pin` query param. On a debug build (`#if DEBUG` on iOS, `FLAG_DEBUGGABLE` on Android) with no build-time `cliPins`/`CLI_PINS` configured, the native client trusts that link-carried pin for the session it arrived with, logging unconditionally: `Cordierite: trusting pin from bootstrap link (dev mode). Release builds require embedded cliPins.` The moment `cliPins` is configured, that embedded set always wins and the link's `pin` is ignored — see [`docs/SECURITY.md`](../../docs/SECURITY.md)'s "Dev trust mode" section for the full writeup.
 
-```bash
-cordierite keygen
-```
+Skip straight to step 3 (scheme) and step 4 (import) if that's all you need. The rest of this section is for **production and internal-distribution release builds**, which are inert by default (see "Hardening for production / internal builds" below) and need real embedded pins.
 
-Use the printed fingerprint value verbatim in `cliPins`.
-
-### 3. Configure native pinning and app scheme
+### 3. Configure native pinning, release opt-in, and app scheme
 
 #### Expo
 
-Add the **`@cordierite/react-native`** config plugin to Expo config with **`cliPins`** (required, each a `sha256/` + 44-character base64 SPKI pin — the plugin throws naming the offending value if one doesn't match) and, optionally, **`allowPrivateLanOnly`** (defaults to `true`, fail-closed) and **`deepLinkScheme`** (warns at prebuild time if it isn't declared in `expo.scheme`):
+Add the **`@cordierite/react-native`** config plugin to Expo config. `cliPins` is optional for a debug-only app (omit it and the dev-mode flow above applies), but required — non-empty, each a `sha256/` + 44-character base64 SPKI pin, or the plugin throws naming the offending value — whenever `enableInReleaseBuilds: true` is set. Also optional: `allowPrivateLanOnly` (defaults to `true`, fail-closed) and `deepLinkScheme` (warns at prebuild time if it isn't declared in `expo.scheme`):
 
 ```json
 {
@@ -62,7 +58,8 @@ Add the **`@cordierite/react-native`** config plugin to Expo config with **`cliP
         {
           "cliPins": ["sha256/REPLACE_WITH_KEYGEN_OUTPUT"],
           "allowPrivateLanOnly": true,
-          "deepLinkScheme": "myapp"
+          "deepLinkScheme": "myapp",
+          "enableInReleaseBuilds": true
         }
       ]
     ]
@@ -70,7 +67,9 @@ Add the **`@cordierite/react-native`** config plugin to Expo config with **`cliP
 }
 ```
 
-Then run your normal prebuild / rebuild flow so native config receives those values.
+Generate the pin with `cordierite keygen`, which prints the exact `sha256/...` fingerprint value to use. Then run your normal prebuild / rebuild flow so native config receives those values.
+
+Leave `enableInReleaseBuilds` unset (or `false`) if you never want Cordierite compiled into release builds at all — it's the default, and a plain debug-only setup can skip this whole plugin entry.
 
 #### Bare React Native
 
@@ -92,7 +91,7 @@ Android `<application>` meta-data:
 | `com.callstackincubator.cordierite.CLI_PINS` | JSON array string of pin values |
 | `com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY` | Boolean meta-data value (a `"true"`/`"false"` String is also accepted); defaults to `true` (fail-closed) when absent |
 
-Empty or missing pins fail at configuration time. Wire **deep links** so the OS can open your app with the host's bootstrap URL, and make sure the app scheme matches the one `cordierite link` (or the `deepLinkScheme` plugin option, or `config.json`) uses to compose that link.
+Neither of the above is required for a debug-only app — see step 2. Wire **deep links** so the OS can open your app with the host's bootstrap URL, and make sure the app scheme matches the one `cordierite link` (or the `deepLinkScheme` plugin option, or `config.json`) uses to compose that link.
 
 ### 4. Import Cordierite in the JS entry point
 
@@ -177,9 +176,58 @@ cordierite invoke sum --input '{"a":2,"b":3}'
 
 Omit the session selector when you only have one active session — `cordierite` uses it automatically; pass an alias or session id when you have several (`cordierite ls` lists them).
 
+## Hardening for production / internal builds
+
+Cordierite ships **inert by default** in release builds:
+
+- **Android**: `CordieritePackage.getModule` returns `null` unless the app is debuggable (`ApplicationInfo.FLAG_DEBUGGABLE`) or the app opted in via the `com.callstackincubator.cordierite.ENABLE_IN_RELEASE` manifest meta-data (Boolean; the config plugin writes it from `enableInReleaseBuilds`).
+- **iOS**: `CordieriteTurboBridge.swift` and `RCTNativeCordierite.mm` are both compiled out entirely unless `#if DEBUG || CORDIERITE_ENABLE_RELEASE` — a Swift compilation condition (`SWIFT_ACTIVE_COMPILATION_CONDITIONS`) and a preprocessor macro (`GCC_PREPROCESSOR_DEFINITIONS`, `CORDIERITE_ENABLE_RELEASE=1`) that the config plugin adds to the Cordierite pod's own Release build configuration via a `post_install` hook when `enableInReleaseBuilds: true` is set.
+- **JS**: with the native module absent (debug-tooling-free JS bundle, Expo Go) or inert (a release build that didn't opt in above), every exported function on the root `@cordierite/react-native` entry degrades to the exact `./noop` entry's behavior — one warning log the first time, no throws, `getCordieriteState()` reporting `"idle"`, `connect()` always rejecting with `CordieriteDisabledError` (`code: "cordierite_disabled"`).
+
+Opting in requires `enableInReleaseBuilds: true` **and** non-empty `cliPins` (bare RN: the `ENABLE_IN_RELEASE`/`CORDIERITE_ENABLE_RELEASE` flags **and** `CordieriteCliPins`/`CLI_PINS`) — a release build with the module enabled but no pins would have no way to trust anything, so the plugin refuses that combination at config time.
+
+**iOS custom build configurations:** Xcode configurations other than the stock Debug/Release pair (e.g. a "Staging" scheme) do not get the `DEBUG` compilation condition either, so Cordierite stays off there by default too — opt in with `CORDIERITE_ENABLE_RELEASE` the same way you would for Release.
+
+**Resulting behavior matrix:**
+
+| Build   | Default                                                    | Opt-in                                          |
+| ------- | ----------------------------------------------------------- | ------------------------------------------------ |
+| Debug   | Fully active, zero config (link-carried pin trusted)        | `cliPins` for pinned trust instead               |
+| Release | Inert — module unregistered (Android) / compiled out (iOS)  | `enableInReleaseBuilds` + `cliPins` → hardened   |
+
 ## Compiling Cordierite out of production builds
 
-Ship `./noop` instead of the real entries in release builds so no Cordierite code — native or JS — ends up in that bundle. Add a Metro `resolveRequest` override in `metro.config.js`:
+Even with default-inert release builds (above), the package's JS and native code still ships **inside the bundle/binary** unless you go one step further and strip it at build time. Neither half below removes native code by itself — importing `/noop` only swaps out the *JS* module; it does not touch what CocoaPods/Gradle compiled into the app binary. The correct recipe is the pair:
+
+**1. Native — exclude the dependency from autolinking**, so zero native Cordierite code is compiled in. In a `react-native.config.js` at your app root:
+
+```js
+module.exports = {
+  dependencies: {
+    "@cordierite/react-native": {
+      platforms: {
+        ios: null,
+        android: null,
+      },
+    },
+  },
+};
+```
+
+The Expo-managed equivalent is `expo.autolinking`'s per-platform `exclude` list in `app.json` / `app.config.*`:
+
+```json
+{
+  "expo": {
+    "autolinking": {
+      "ios": { "exclude": ["@cordierite/react-native"] },
+      "android": { "exclude": ["@cordierite/react-native"] }
+    }
+  }
+}
+```
+
+**2. JS — swap the module at bundle time**, so no Cordierite JS (deep-link listener, tool registry, client state machine) ends up in the bundle either. Add a Metro `resolveRequest` override in `metro.config.js`:
 
 ```js
 const { getDefaultConfig } = require("expo/metro-config");
@@ -223,6 +271,8 @@ const { registerTool, useCordieriteTool } = __DEV__
 ```
 
 Either way, `/noop` is typed identically to the root entry (both implement the same shared interface — see `src/public-api.ts` and `src/__tests__/noop-parity.test.ts`), so switching between them is a drop-in swap: `registerTool` still returns a disposer, `connect()` still returns a `Promise<void>` (it just always rejects with a `CordieriteDisabledError`, `code: "cordierite_disabled"`), and `getCordieriteState()` always reports `"idle"`.
+
+**Either half alone still yields a working, inert app.** The `/noop` Metro swap alone gives you an app with no Cordierite JS running but the native pod still compiled in (unused); the autolinking exclude alone gives you an app with no native Cordierite code but that still imports the real JS entry, which finds no native module and degrades to the same `/noop`-equivalent behavior described in "Hardening for production / internal builds" above. Combine both when you want neither surface present at all — for example, to satisfy an app-store reviewer who wants no "remote control" surface whatsoever, not just an inert one.
 
 ## Platform compatibility
 

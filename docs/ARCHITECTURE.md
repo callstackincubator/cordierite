@@ -242,7 +242,12 @@ Snapshot/delta validation is strict on the daemon side: every element must be a 
 
 ## 8. Bootstrap payload v2
 
-Deep link format unchanged: `<scheme>:///?cordierite=<base64url-no-padding>`.
+Deep link format unchanged: `<scheme>:///?cordierite=<base64url-no-padding>`. `cordierite link`
+additionally appends a separate, out-of-band `&pin=<sha256/...>` query param carrying the
+daemon's current SPKI fingerprint — the binary payload below does not change to carry it. Old
+app builds that don't look for `pin` simply ignore it. `pin` only matters to a debug build with
+no build-time pins configured, which trusts it for that session as a dev-mode convenience
+(embedded pins, when present, always win instead — see `docs/SECURITY.md`'s "Dev trust mode").
 
 Binary layout (all integers big-endian):
 
@@ -322,6 +327,21 @@ Package `@cordierite/react-native`. Entry points:
 - `@cordierite/react-native/noop` — identical public API, inert implementation, for
   release-build compile-out via Metro `resolveRequest` or conditional require. Document
   the recipe in the package README.
+
+**Default-inert release builds and dev trust mode** (`docs/SECURITY.md` has the full
+threat-model writeup; this is the config-surface summary): Android's `CordieritePackage`
+registers the TurboModule only when the app is debuggable (`ApplicationInfo.FLAG_DEBUGGABLE`)
+or the manifest meta-data `com.callstackincubator.cordierite.ENABLE_IN_RELEASE` is `true`;
+iOS compiles `CordieriteTurboBridge.swift`/`RCTNativeCordierite.mm` out entirely unless
+`#if DEBUG || CORDIERITE_ENABLE_RELEASE` (a Swift compilation condition + a
+`GCC_PREPROCESSOR_DEFINITIONS` macro, both app-target settings the config plugin's
+`enableInReleaseBuilds` option adds to the Cordierite pod's Release configuration). With the
+module absent or inert, the root entry's public API degrades to exact `/noop` behavior. The
+config plugin's `enableInReleaseBuilds: true` requires non-empty `cliPins` in the same config.
+On a debug build with no embedded `cliPins`/`CLI_PINS`, the client instead trusts the
+bootstrap link's separate `pin` query param (§8) for that session — see `docs/SECURITY.md`'s
+"Dev trust mode" section; embedded pins, when configured, always win and the link pin is
+ignored.
 
 Client behavior:
 

@@ -15,7 +15,9 @@ The **`cordierite`** package is the operator/agent side of Cordierite: a long-li
 
 ## Key setup
 
-Generate a daemon key with:
+For a **debug build** app, you can skip this entirely: the daemon auto-generates its own `key.pem` the first time it starts if one isn't already there (mode `0600`), and prints its `sha256/...` fingerprint on that first run. `cordierite link` (below) carries that fingerprint on the deep link itself for the app to pick up — see the app-side dev-mode flow in the root README and `docs/SECURITY.md`'s "Dev trust mode" section.
+
+For a **release build** (or any build where you want a real embedded pin instead of trusting whatever link shows up), generate a daemon key explicitly with:
 
 ```bash
 cordierite keygen
@@ -38,6 +40,8 @@ The command writes an unencrypted PEM private key (PKCS#8) to `<state-dir>/key.p
 | `cordierite mcp` | start a stdio MCP server proxying connected apps' tools to MCP clients |
 
 Every command that targets a session accepts an optional `selector` (a session id or an alias from `cordierite ls`); omit it when exactly one session is active. Global flags: `--json` (machine-readable output), `--no-color`, `--state-dir <path>` (default `~/.cordierite`). Run `cordierite <command> --help` for the exact flags of any command, or `cordierite --help` for the full list.
+
+`cordierite link`'s deep link is `<scheme>:///?cordierite=<payload>&pin=<sha256/...>`: the `cordierite` param is the existing binary v2 bootstrap payload (address, session id, token, expiry — unchanged), and `pin` is a separate, out-of-band query param carrying the daemon's current SPKI fingerprint for apps that want to pick it up. An app build with embedded `cliPins` ignores `pin` outright — embedded pins always win. A debug build with no embedded pins trusts it for that session only (see `docs/SECURITY.md`'s "Dev trust mode" section); a release build with the module enabled never accepts it, embedded pins only.
 
 ## Daemon lifecycle
 
