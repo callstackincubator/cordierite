@@ -3,9 +3,23 @@ import { describe, expect, test } from "vitest";
 import {
   cordieriteNativeModule,
   cordieriteNativeResumeLeaseStore,
+  isCordieriteNativeModuleAvailable,
 } from "../CordieriteModule.web";
 
 describe("CordieriteModule.web stub", () => {
+  test(
+    "isCordieriteNativeModuleAvailable() is always true (task 09: the default-inert-release-" +
+      "builds degrade path must not misfire on web, which has its own throwing stub above)",
+    () => {
+      // Metro resolves `./CordieriteModule` to this `.web.ts` file for web bundles, so `index.ts`'s
+      // `noopIfNativeUnavailable` calls this exact export on web. Returning `false` here would swap
+      // web's intentional "unsupported platform" errors for the generic inert noop behavior instead —
+      // regression-guards the bug caught in this task's self-review (the WIP omitted this export
+      // entirely, which would have thrown "is not a function" on any web bundle).
+      expect(isCordieriteNativeModuleAvailable()).toBe(true);
+    },
+  );
+
   test('getState() returns "idle" instead of throwing (v1 defect)', () => {
     // Regression test: getState() used to throw on web, which crashed any code path that calls it
     // unconditionally (e.g. the deep-link handler's "already connecting/active?" guard) before an
@@ -21,7 +35,7 @@ describe("CordieriteModule.web stub", () => {
         sessionId: "s",
         token: "t",
         expiresAt: 0,
-      })
+      }),
     ).rejects.toThrow();
     await expect(cordieriteNativeModule.send("{}")).rejects.toThrow();
     await expect(cordieriteNativeModule.close()).rejects.toThrow();

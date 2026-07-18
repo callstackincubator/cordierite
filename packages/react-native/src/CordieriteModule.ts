@@ -26,12 +26,20 @@ type NativeModuleLoader = () => NativeCordieriteModule;
  * actually executes.
  */
 let cachedNative: NativeCordieriteModule["NativeCordierite"] | null = null;
-const defaultNativeModuleLoader: NativeModuleLoader = () => require("./NativeCordierite") as NativeCordieriteModule;
+const defaultNativeModuleLoader: NativeModuleLoader = () =>
+  require("./NativeCordierite") as NativeCordieriteModule;
 let nativeModuleLoader: NativeModuleLoader = defaultNativeModuleLoader;
 
+/** Memoized answer for `isCordieriteNativeModuleAvailable` — `null` means "not probed yet". Whether
+ * the native module is linked cannot change within a process's lifetime, so one probe suffices. */
+let nativeModuleAvailable: boolean | null = null;
+
 /** @internal Allows the Node test runner to supply the lazy native-module dependency. */
-export const __cordieriteSetNativeModuleLoaderForTests = (loader?: NativeModuleLoader): void => {
+export const __cordieriteSetNativeModuleLoaderForTests = (
+  loader?: NativeModuleLoader,
+): void => {
   cachedNative = null;
+  nativeModuleAvailable = null;
   nativeModuleLoader = loader ?? defaultNativeModuleLoader;
 };
 
@@ -58,13 +66,36 @@ const resolveNativeModule = (): NativeCordieriteModule["NativeCordierite"] => {
         "JS-only bundles do not include it. Rebuild with `expo run:ios`/`expo run:android` (or " +
         `your bare React Native dev client), then try again. (${
           error instanceof Error ? error.message : String(error)
-        })`
+        })`,
     );
   }
 };
 
+/**
+ * Probes whether the native module can be resolved, without throwing. Powers the root (`.`)
+ * entry's automatic degrade-to-noop (opt-in hardening design doc part B: default-inert release
+ * builds) — a release build with no `cliPins`/`enableInReleaseBuilds` opt-in never registers the
+ * native module at all (Android: `CordieritePackage.getModule` returns `null`; iOS: the TurboModule
+ * implementation is compiled out), so `resolveNativeModule()` throws exactly like it already does
+ * for Expo Go / a JS-only bundle — this reuses that same signal rather than adding a second one.
+ */
+export const isCordieriteNativeModuleAvailable = (): boolean => {
+  if (nativeModuleAvailable !== null) {
+    return nativeModuleAvailable;
+  }
+
+  try {
+    resolveNativeModule();
+    nativeModuleAvailable = true;
+  } catch {
+    nativeModuleAvailable = false;
+  }
+
+  return nativeModuleAvailable;
+};
+
 const toErrorPhase = (
-  phase: string | undefined
+  phase: string | undefined,
 ):
   | "bootstrap"
   | "tls"
@@ -100,7 +131,7 @@ type EventSubscription = { remove(): void };
 
 const bridgeListeners: {
   [K in keyof CordieriteModuleEvents]: (
-    listener: CordieriteModuleEvents[K]
+    listener: CordieriteModuleEvents[K],
   ) => EventSubscription;
 } = {
   stateChange(listener) {
@@ -120,7 +151,7 @@ const bridgeListeners: {
         message = parseMessagePayload(rawMessage);
       } catch {
         logger.warn(
-          "incoming message is not valid JSON; exposing empty object to listeners"
+          "incoming message is not valid JSON; exposing empty object to listeners",
         );
         message = {};
       }
@@ -177,7 +208,7 @@ export const cordieriteNativeModule: CordieriteNativeModuleLike = {
     } catch (error) {
       logger.debug(
         "getState(): native module unavailable, reporting idle",
-        error
+        error,
       );
       return "idle";
     }
@@ -198,9 +229,9 @@ export const cordieriteNativeModule: CordieriteNativeModuleLike = {
     } catch (error) {
       logger.debug(
         `addListener("${String(
-          eventName
+          eventName,
         )}"): native module unavailable, subscription is inert`,
-        error
+        error,
       );
       return noopSubscription;
     }
@@ -215,7 +246,7 @@ export const cordieriteNativeResumeLeaseStore: ResumeLeaseStore = {
     } catch (error) {
       logger.debug(
         "getResumeLease(): native module unavailable, reporting no lease",
-        error
+        error,
       );
       return null;
     }
@@ -226,7 +257,7 @@ export const cordieriteNativeResumeLeaseStore: ResumeLeaseStore = {
     } catch (error) {
       logger.debug(
         "clearResumeLease(): native module unavailable, clear is inert",
-        error
+        error,
       );
     }
   },

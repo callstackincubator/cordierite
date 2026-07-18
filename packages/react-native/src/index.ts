@@ -10,6 +10,7 @@ import type {
 import {
   cordieriteNativeModule,
   cordieriteNativeResumeLeaseStore,
+  isCordieriteNativeModuleAvailable,
 } from "./CordieriteModule";
 import { parseBootstrapPayload, parseBootstrapUrl } from "./bootstrap";
 import { createCordieriteClient } from "./client";
@@ -18,6 +19,8 @@ import {
   installCordieriteDeepLinkBootstrap as installDeepLinkBootstrap,
   type InstallCordieriteDeepLinkBootstrapOptions,
 } from "./deep-link-install";
+import { logger } from "./logger";
+import * as noop from "./noop";
 import { createUseCordieriteTool } from "./useCordieriteTool";
 
 export * from "./Cordierite.types";
@@ -34,6 +37,41 @@ export type { CordierePublicApi, CordieriteSubscription } from "./public-api";
 
 let cordieriteClientInstance: ReturnType<typeof createCordieriteClient> | null =
   null;
+
+/**
+ * Default-inert release builds (opt-in hardening design doc part B): when the native module is
+ * absent (Expo Go, a JS-only bundle) *or* inert (a release build with no `cliPins`/
+ * `enableInReleaseBuilds` opt-in — Android's `CordieritePackage.getModule` returns `null`, iOS's
+ * TurboModule implementation is compiled out; either way `TurboModuleRegistry` never finds it),
+ * every exported function below degrades to the exact `./noop` entry's behavior instead of the
+ * real client's — see `noopIfNativeUnavailable`. Logged exactly once per process, not once per
+ * call, so an app that calls these functions in a loop or on every render is not spammed.
+ */
+let warnedNativeModuleInert = false;
+const warnNativeModuleInertOnce = (): void => {
+  if (warnedNativeModuleInert) {
+    return;
+  }
+  warnedNativeModuleInert = true;
+  logger.warn(
+    "Cordierite: the native module is not available in this build (Expo Go/JS-only, or a " +
+      "release build without cliPins/enableInReleaseBuilds). The public API is inert, matching " +
+      "the `./noop` entry — see the README's default-inert-release-builds section.",
+  );
+};
+
+/** Runs `whenInert()` (a `./noop` call) instead of `whenAvailable()` (the real client call) once
+ * the native module has been found unavailable, warning exactly once the first time this happens. */
+function noopIfNativeUnavailable<T>(
+  whenAvailable: () => T,
+  whenInert: () => T,
+): T {
+  if (!isCordieriteNativeModuleAvailable()) {
+    warnNativeModuleInertOnce();
+    return whenInert();
+  }
+  return whenAvailable();
+}
 
 /**
  * Constructing a `CordieriteClient` (task 11) subscribes native event listeners immediately —
@@ -73,7 +111,7 @@ export const cordieriteClient = new Proxy(
     has(_target, property) {
       return Reflect.has(getCordieriteClientInstance(), property);
     },
-  }
+  },
 );
 
 /**
@@ -83,9 +121,12 @@ export const cordieriteClient = new Proxy(
  * `deep-link-install.ts`).
  */
 export function installCordieriteDeepLinkBootstrap(
-  options?: InstallCordieriteDeepLinkBootstrapOptions
+  options?: InstallCordieriteDeepLinkBootstrapOptions,
 ): void {
-  installDeepLinkBootstrap(cordieriteClient, options);
+  noopIfNativeUnavailable(
+    () => installDeepLinkBootstrap(cordieriteClient, options),
+    () => noop.installCordieriteDeepLinkBootstrap(options),
+  );
 }
 
 /**
@@ -96,18 +137,22 @@ export function installCordieriteDeepLinkBootstrap(
  */
 export function registerTool<
   TInputSchema extends
-    | import("@cordierite/shared").StandardSchemaV1
-    | undefined,
+    import("@cordierite/shared").StandardSchemaV1 | undefined,
   TOutputSchema extends
-    | import("@cordierite/shared").StandardSchemaV1
-    | undefined
+    import("@cordierite/shared").StandardSchemaV1 | undefined,
 >(registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>) {
-  return cordieriteClient.registerTool(registration);
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.registerTool(registration),
+    () => noop.registerTool(registration),
+  );
 }
 
 /** Emits an `event` frame on the default client while active; drops (dev warning) otherwise. */
 export function postEvent(name: string, payload?: unknown): Promise<void> {
-  return cordieriteClient.postEvent(name, payload);
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.postEvent(name, payload),
+    () => noop.postEvent(name, payload),
+  );
 }
 
 /**
@@ -116,7 +161,10 @@ export function postEvent(name: string, payload?: unknown): Promise<void> {
  * a live tool list in app UI instead of hand-maintaining a duplicate array.
  */
 export function getRegisteredTools(): ToolDescriptor[] {
-  return cordieriteClient.getRegisteredTools();
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.getRegisteredTools(),
+    () => noop.getRegisteredTools(),
+  );
 }
 
 /**
@@ -126,14 +174,20 @@ export function getRegisteredTools(): ToolDescriptor[] {
  */
 export function addCordieriteListener<Kind extends CordieriteListenerKind>(
   kind: Kind,
-  callback: CordieriteUnifiedListenerMap[Kind]
+  callback: CordieriteUnifiedListenerMap[Kind],
 ) {
-  return cordieriteClient.addCordieriteListener(kind, callback);
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.addCordieriteListener(kind, callback),
+    () => noop.addCordieriteListener(kind, callback),
+  );
 }
 
 /** Unified client state on the default client: `idle | connecting | active | reconnecting | closed`. */
 export function getCordieriteState(): CordieriteClientState {
-  return cordieriteClient.getClientState();
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.getClientState(),
+    () => noop.getCordieriteState(),
+  );
 }
 
 /**
@@ -143,7 +197,10 @@ export function getCordieriteState(): CordieriteClientState {
  * flows (custom deep-link handling, QR scanning, tests).
  */
 export function connect(input: CordieriteConnectInput): Promise<void> {
-  return cordieriteClient.connect(input);
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.connect(input),
+    () => noop.connect(input),
+  );
 }
 
 /**
