@@ -189,10 +189,16 @@ export const fetchPinnedKeys = async (stateDir: string): Promise<string[]> => {
 
 export type DecodedLink = { sessionId: string; token: string; port: number };
 
-/** Extracts the deep-link payload and decodes it into a claimable link. */
+/** Extracts the deep-link payload and decodes it into a claimable link.
+ *
+ * The deep link now carries a second `pin` query param after the `cordierite` bootstrap payload
+ * (opt-in hardening dev-mode, `commands/link.ts`) -- `cordierite=<payload>&pin=<spki-pin>` -- so the
+ * payload must be cut at the next `&`, not read to the end of the string. */
 export const decodeDeepLink = (deepLink: string): DecodedLink => {
   const marker = "cordierite=";
-  const payload = deepLink.slice(deepLink.indexOf(marker) + marker.length);
+  const afterMarker = deepLink.slice(deepLink.indexOf(marker) + marker.length);
+  const ampersandIndex = afterMarker.indexOf("&");
+  const payload = ampersandIndex === -1 ? afterMarker : afterMarker.slice(0, ampersandIndex);
   const decoded = decodeBootstrap(payload);
 
   if (!decoded) {
