@@ -41,10 +41,10 @@
             "sha256/jMvNOyMBXvRaZlyrje70/867kKkSA/qTlu30xCrTk4s="
           ],
           "allowPrivateLanOnly": true,
-          "enableNativeTests": true,
           "enableInReleaseBuilds": true
         }
       ],
+      "./plugins/with-native-tests",
       [
         "expo-splash-screen",
         {

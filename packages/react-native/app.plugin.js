@@ -6,7 +6,6 @@ const {
   withInfoPlist,
   withPodfile,
 } = require("expo/config-plugins");
-const path = require("path");
 
 // NOTE: a few comments below say "task 12" / "task N" in a bare, unqualified way (e.g. "actionable
 // config errors", "Testing note"). Those predate this repo's `docs/tasks/` directory and its task
@@ -204,33 +203,6 @@ function applyAndroidManifestChanges(androidManifest, options) {
   return androidManifest;
 }
 
-const NATIVE_TESTS_PODFILE_MARKER =
-  "# Cordierite native XCTest target (playground only)";
-
-/**
- * CocoaPods creates a pod test target only when its test spec is explicitly requested from the
- * Podfile. Expo Autolinking intentionally links just the production pod, so the playground opts
- * in here after excluding that normal iOS autolink entry.
- */
-function addNativeTestsPodToPodfile(podfile, podPath) {
-  if (podfile.includes(NATIVE_TESTS_PODFILE_MARKER)) {
-    return podfile;
-  }
-
-  const anchor = "  use_expo_modules!";
-  if (!podfile.includes(anchor)) {
-    throw new Error(
-      `${PLUGIN_NAME} could not add its XCTest target: generated Podfile has no ${JSON.stringify(anchor)} anchor.`,
-    );
-  }
-
-  const escapedPath = podPath.replace(/'/g, "\\\\'");
-  return podfile.replace(
-    anchor,
-    `${anchor}\n\n  ${NATIVE_TESTS_PODFILE_MARKER}\n  pod 'Cordierite', :path => '${escapedPath}', :testspecs => ['Tests']`,
-  );
-}
-
 const ENABLE_IN_RELEASE_PODFILE_MARKER =
   "# Cordierite: enableInReleaseBuilds (opt-in hardening design doc part B)";
 
@@ -322,20 +294,6 @@ const withCordierite = (config, rawOptions) => {
     return nextConfig;
   });
 
-  if (rawOptions && rawOptions.enableNativeTests === true) {
-    config = withPodfile(config, (nextConfig) => {
-      const podPath = path.relative(
-        nextConfig.modRequest.platformProjectRoot,
-        __dirname,
-      );
-      nextConfig.modResults.contents = addNativeTestsPodToPodfile(
-        nextConfig.modResults.contents,
-        podPath,
-      );
-      return nextConfig;
-    });
-  }
-
   if (options.enableInReleaseBuilds) {
     config = withPodfile(config, (nextConfig) => {
       nextConfig.modResults.contents = addEnableInReleaseFlagToPodfile(
@@ -363,8 +321,6 @@ cordieritePlugin.__internal = {
   normalizeOptions,
   applyInfoPlistChanges,
   applyAndroidManifestChanges,
-  NATIVE_TESTS_PODFILE_MARKER,
-  addNativeTestsPodToPodfile,
   ENABLE_IN_RELEASE_PODFILE_MARKER,
   addEnableInReleaseFlagToPodfile,
 };

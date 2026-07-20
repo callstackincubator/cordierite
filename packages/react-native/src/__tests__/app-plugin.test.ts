@@ -38,8 +38,6 @@ const cordieritePlugin = require("../../app.plugin.js") as {
         enableInReleaseBuilds?: boolean;
       },
     ) => unknown;
-    NATIVE_TESTS_PODFILE_MARKER: string;
-    addNativeTestsPodToPodfile: (podfile: string, podPath: string) => string;
     ENABLE_IN_RELEASE_PODFILE_MARKER: string;
     addEnableInReleaseFlagToPodfile: (podfile: string) => string;
   };
@@ -51,8 +49,6 @@ const {
   normalizeOptions,
   applyInfoPlistChanges,
   applyAndroidManifestChanges,
-  NATIVE_TESTS_PODFILE_MARKER,
-  addNativeTestsPodToPodfile,
   ENABLE_IN_RELEASE_PODFILE_MARKER,
   addEnableInReleaseFlagToPodfile,
 } = cordieritePlugin.__internal;
@@ -519,33 +515,5 @@ describe("app.plugin.js: addEnableInReleaseFlagToPodfile", () => {
     expect(() =>
       addEnableInReleaseFlagToPodfile("target 'playground' do\nend\n"),
     ).toThrow(/no "post_install do \|installer\|" hook/);
-  });
-});
-
-describe("app.plugin.js: addNativeTestsPodToPodfile", () => {
-  const podfile = `target 'playground' do\n  use_expo_modules!\nend\n`;
-
-  test("adds the Cordierite test spec after Expo module setup", () => {
-    expect(
-      addNativeTestsPodToPodfile(podfile, "../../packages/react-native"),
-    ).toContain(
-      `${NATIVE_TESTS_PODFILE_MARKER}\n  pod 'Cordierite', :path => '../../packages/react-native', :testspecs => ['Tests']`,
-    );
-  });
-
-  test("does not duplicate the test-spec pod on repeated prebuilds", () => {
-    const once = addNativeTestsPodToPodfile(
-      podfile,
-      "../../packages/react-native",
-    );
-    expect(
-      addNativeTestsPodToPodfile(once, "../../packages/react-native"),
-    ).toBe(once);
-  });
-
-  test("fails clearly when Expo changes the Podfile shape", () => {
-    expect(() =>
-      addNativeTestsPodToPodfile("target 'playground' do\nend\n", "../module"),
-    ).toThrow(/no "  use_expo_modules!" anchor/);
   });
 });
