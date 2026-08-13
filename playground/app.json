@@ -36,7 +36,8 @@
             "sha256/jMvNOyMBXvRaZlyrje70/867kKkSA/qTlu30xCrTk4s="
           ],
           "allowPrivateLanOnly": true,
-          "enableInReleaseBuilds": true
+          "include": true,
+          "trust": "pin"
         }
       ],
       "./plugins/with-native-tests",
