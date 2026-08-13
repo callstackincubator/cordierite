@@ -38,8 +38,6 @@ const cordieritePlugin = require("../../app.plugin.js") as {
         enableInReleaseBuilds?: boolean;
       },
     ) => unknown;
-    ENABLE_IN_RELEASE_PODFILE_MARKER: string;
-    addEnableInReleaseFlagToPodfile: (podfile: string) => string;
   };
 };
 
@@ -49,8 +47,6 @@ const {
   normalizeOptions,
   applyInfoPlistChanges,
   applyAndroidManifestChanges,
-  ENABLE_IN_RELEASE_PODFILE_MARKER,
-  addEnableInReleaseFlagToPodfile,
 } = cordieritePlugin.__internal;
 
 // A real SHA-256 digest, base64-encoded: 32 bytes -> 44 base64 characters (one `=` pad).
@@ -459,61 +455,5 @@ describe("app.plugin.js: applyAndroidManifestChanges", () => {
     );
 
     expect(pins?.$["android:value"]).toBe(JSON.stringify([]));
-  });
-});
-
-describe("app.plugin.js: addEnableInReleaseFlagToPodfile", () => {
-  const podfileWithHook = [
-    "target 'playground' do",
-    "  use_expo_modules!",
-    "  post_install do |installer|",
-    "    react_native_post_install(installer, config[:reactNativePath])",
-    "  end",
-    "end",
-    "",
-  ].join("\n");
-
-  test("injects a Cordierite-only build_settings patch into the existing post_install hook", () => {
-    const result = addEnableInReleaseFlagToPodfile(podfileWithHook);
-
-    expect(result).toContain(ENABLE_IN_RELEASE_PODFILE_MARKER);
-    expect(result).toContain("target.name == 'Cordierite'");
-    // Both languages need the flag: Swift via
-    // SWIFT_ACTIVE_COMPILATION_CONDITIONS, the ObjC++ bridge via GCC_PREPROCESSOR_DEFINITIONS.
-    expect(result).toContain("SWIFT_ACTIVE_COMPILATION_CONDITIONS");
-    expect(result).toContain("GCC_PREPROCESSOR_DEFINITIONS");
-    expect(result).toContain("CORDIERITE_ENABLE_RELEASE=1");
-    expect(result).toContain("CORDIERITE_ENABLE_RELEASE");
-    // The pre-existing react_native_post_install call must still be present and untouched --
-    // this must compose with the existing hook, not replace it.
-    expect(result).toContain(
-      "react_native_post_install(installer, config[:reactNativePath])",
-    );
-  });
-
-  // Android parity (finding from post-task-12 review): CordieritePackage.kt's ENABLE_IN_RELEASE
-  // meta-data enables every non-debuggable build variant, custom build types included -- not just
-  // one literally named "release". The injected Ruby must not scope the flag to a build
-  // configuration literally named 'Release', or a custom iOS configuration (e.g. "Staging") would
-  // stay inert under enableInReleaseBuilds: true while the equivalent Android build is active.
-  test("is not scoped to a build configuration literally named 'Release' -- applies to every configuration", () => {
-    const result = addEnableInReleaseFlagToPodfile(podfileWithHook);
-
-    expect(result).not.toContain("build_config.name ==");
-    expect(result).not.toContain("next unless build_config");
-    expect(result).toContain(
-      "target.build_configurations.each do |build_config|",
-    );
-  });
-
-  test("does not duplicate the patch on repeated prebuilds", () => {
-    const once = addEnableInReleaseFlagToPodfile(podfileWithHook);
-    expect(addEnableInReleaseFlagToPodfile(once)).toBe(once);
-  });
-
-  test("fails clearly when the Podfile has no post_install hook", () => {
-    expect(() =>
-      addEnableInReleaseFlagToPodfile("target 'playground' do\nend\n"),
-    ).toThrow(/no "post_install do \|installer\|" hook/);
   });
 });

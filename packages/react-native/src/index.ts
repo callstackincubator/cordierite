@@ -40,13 +40,13 @@ let cordieriteClientInstance: ReturnType<typeof createCordieriteClient> | null =
   null;
 
 /**
- * Default-inert release builds: when the native module is
- * absent (Expo Go, a JS-only bundle) *or* inert (a release build with no `cliPins`/
- * `enableInReleaseBuilds` opt-in — Android's `CordieritePackage.getModule` returns `null`, iOS's
- * TurboModule implementation is compiled out; either way `TurboModuleRegistry` never finds it),
- * every exported function below degrades to the exact `./noop` entry's behavior instead of the
- * real client's — see `noopIfNativeUnavailable`. Logged exactly once per process, not once per
- * call, so an app that calls these functions in a loop or on every render is not spammed.
+ * Whether Cordierite's native module exists in a build at all is decided entirely by
+ * autolinking (see `docs/tasks/00-overview.md`'s "Inclusion" contract), not by any runtime
+ * check here. When it is absent — Expo Go, a JS-only bundle, or the app excluded Cordierite
+ * from autolinking — `TurboModuleRegistry` never finds it, and every exported function below
+ * degrades to the exact `./noop` entry's behavior instead of the real client's — see
+ * `noopIfNativeUnavailable`. Logged exactly once per process, not once per call, so an app that
+ * calls these functions in a loop or on every render is not spammed.
  */
 let warnedNativeModuleInert = false;
 const warnNativeModuleInertOnce = (): void => {
@@ -55,9 +55,8 @@ const warnNativeModuleInertOnce = (): void => {
   }
   warnedNativeModuleInert = true;
   logger.warn(
-    "Cordierite: the native module is not available in this build (Expo Go/JS-only, or a " +
-      "release build without cliPins/enableInReleaseBuilds). The public API is inert, matching " +
-      "the `./noop` entry — see the README's default-inert-release-builds section.",
+    "Cordierite: the native module is not available in this build (Expo Go/JS-only, or " +
+      "excluded via autolinking). The public API is inert, matching the `./noop` entry.",
   );
 };
 
