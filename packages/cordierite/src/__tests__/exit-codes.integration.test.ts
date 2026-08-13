@@ -158,9 +158,14 @@ describe("exit codes: v2 command surface", () => {
     const linkResult = runCli(["link", "--scheme", "cordierite-exit-codes"], stateDir);
     expect(linkResult.exitCode).toBe(0);
 
-    const linkPayload = (linkResult.payload.data.deepLink as string).slice(
-      (linkResult.payload.data.deepLink as string).indexOf("cordierite=") + "cordierite=".length,
-    );
+    // The deep link is `<scheme>:///?cordierite=<payload>&pin=<spki-pin>` (commit 9c73849 added
+    // the trailing `&pin=...` query param); the payload ends at the next `&`, so it must be
+    // isolated the same way link-open.integration.test.ts does it. Slicing to the end of the
+    // string here used to swallow `&pin=...` verbatim into the base64url payload, which always
+    // fails to decode (invalid characters `&`/`%`/`=` in the "digits") — not a flake.
+    const linkPayload = (linkResult.payload.data.deepLink as string)
+      .split("cordierite=")[1]!
+      .split("&")[0]!;
     const decoded = decodeBootstrap(linkPayload);
     expect(decoded).not.toBeNull();
 
