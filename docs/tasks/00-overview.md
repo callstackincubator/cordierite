@@ -80,6 +80,19 @@ env var in `app.config.ts`. This is a supported-workflow statement, documented a
   when present. `trust: "pin"` with empty/missing `cliPins` is a config-time error.
   `"link"` is TOFU-per-session with real SPKI matching — never "verification disabled".
 
+**Amended during task 05**, implemented on both platforms; downstream tasks must honour it.
+`null` and `""` normalize identically *inside* `resolveTrustedPins` rather than at each call
+site, so the platforms cannot drift. Any other unrecognized value — `"PIN"`, `"pinn"` — is a
+hard error, not a fallback to the default: a typo must never silently downgrade an intended
+`"pin"` config into permissive link TOFU. Task 06 should also reject bad values at config
+time, making the native error a second line of defence rather than the only one.
+
+**Discovered during task 02:** excluding a module from autolinking on iOS also stops its
+**codegen** from running, so an app that excludes the package but still references the pod by
+hand (as the playground does for its XCTest target) will fail to compile — `RCTNativeCordierite.mm`
+imports the generated `CordieriteSpec.h`. Normal consumers are unaffected, since excluding and
+hand-adding the pod is a combination only a maintainer would use. Task 09 should document it.
+
 ### Native config keys the plugin writes
 
 | Platform | Key | Value |
