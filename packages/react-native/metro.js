@@ -14,6 +14,21 @@ const PACKAGE_NAME = "@cordierite/react-native";
 const NOOP_SPECIFIER = `${PACKAGE_NAME}/noop`;
 
 /**
+ * `exports` subpaths that are package *infrastructure* -- consumed by tooling (npm, Node's own
+ * `exports` resolution, Expo's config-plugin loader, this very file), never `import`ed/`require`d
+ * as application JS at runtime -- and therefore never candidates for redirection regardless of
+ * whether their value happens to be a string or a conditions object. Kept as a short, explicit
+ * denylist (rather than guessing from shape) so a *real* entry point can safely use either
+ * `exports` form -- a subpath mapped straight to a string (`"./polyfill": "./build/polyfill.js"`)
+ * is just as much a JS module as one behind a conditions object, and both must be covered.
+ */
+const NON_MODULE_SUBPATHS = new Set([
+  "./package.json",
+  "./app.plugin.js",
+  "./metro",
+]);
+
+/**
  * Turns an `exports` subpath key (`"."`, `"./auto"`, ...) into the specifier apps actually
  * `import`/`require` (`"@cordierite/react-native"`, `"@cordierite/react-native/auto"`, ...).
  */
@@ -29,19 +44,16 @@ function specifierForSubpath(subpath) {
  * against a fabricated `exports` map (see `src/__tests__/metro.test.ts`) without needing a real
  * `require("./package.json")` round-trip.
  *
- * Only subpaths whose value is a conditions object (an actual JS module entry point, like `"."`
- * or `"./auto"`) are candidates. String-valued subpaths (`"./package.json"`, `"./app.plugin.js"`,
- * `"./metro"` itself) point at files Metro never resolves as a JS module import in the sense this
- * helper cares about, so they are skipped without needing to name them one by one. `/noop` is
- * always excluded, whichever form it takes in `exports`.
+ * Every subpath is a candidate unless it's in `NON_MODULE_SUBPATHS` (package infrastructure, not
+ * an application JS entry point) or redirects to `/noop` itself. This intentionally does *not*
+ * key off whether the `exports` value is a string vs. a conditions object -- both are valid ways
+ * to declare a real JS module entry point, and treating only conditions-object subpaths as
+ * "real" would silently miss a future entry declared with the string form.
  */
 function deriveRedirectSpecifiers(exportsField) {
   const specifiers = [];
   for (const subpath of Object.keys(exportsField || {})) {
-    const value = exportsField[subpath];
-    if (typeof value !== "object" || value === null) {
-      // String-valued exports (`"./package.json"`, `"./app.plugin.js"`, `"./metro"`) are direct
-      // file redirects, not conditions maps for a JS module entry point.
+    if (NON_MODULE_SUBPATHS.has(subpath)) {
       continue;
     }
     const specifier = specifierForSubpath(subpath);
@@ -65,9 +77,16 @@ function deriveRedirectSpecifiers(exportsField) {
  * captured and chained to for *every* specifier, redirected or not — never replaced, and never
  * called twice for the same resolution. When no existing resolver is set, falls back to
  * `context.resolveRequest`, matching Metro's own default-resolver convention.
+ *
+ * **Call this last**, after anything else that sets `config.resolver.resolveRequest` (see the
+ * README). The existing resolver is captured by reference at call time, not read lazily, so
+ * `config.resolver.resolveRequest = myResolver` *after* `withCordierite` silently discards the
+ * strip rather than erroring — there is no way to detect that misordering from in here, since a
+ * later assignment to the returned config object is invisible to this function.
  */
 function withCordierite(config, options) {
-  const include = options && options.include !== undefined ? options.include : true;
+  const include =
+    options && options.include !== undefined ? options.include : true;
   if (include) {
     return config;
   }
@@ -75,11 +94,14 @@ function withCordierite(config, options) {
   const redirectSpecifiers = new Set(
     deriveRedirectSpecifiers(require("./package.json").exports),
   );
-  const existingResolveRequest = config.resolver && config.resolver.resolveRequest;
+  const existingResolveRequest =
+    config.resolver && config.resolver.resolveRequest;
 
   const resolveRequest = (context, moduleName, platform) => {
     const resolveNext = existingResolveRequest || context.resolveRequest;
-    const target = redirectSpecifiers.has(moduleName) ? NOOP_SPECIFIER : moduleName;
+    const target = redirectSpecifiers.has(moduleName)
+      ? NOOP_SPECIFIER
+      : moduleName;
     return resolveNext(context, target, platform);
   };
 
@@ -96,5 +118,10 @@ module.exports = {
   withCordierite,
   // Exposed for unit testing (`src/__tests__/metro.test.ts`) and only that -- not part of the
   // documented public API.
-  __testables: { deriveRedirectSpecifiers, specifierForSubpath, NOOP_SPECIFIER, PACKAGE_NAME },
+  __testables: {
+    deriveRedirectSpecifiers,
+    specifierForSubpath,
+    NOOP_SPECIFIER,
+    PACKAGE_NAME,
+  },
 };

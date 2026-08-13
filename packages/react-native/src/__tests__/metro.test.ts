@@ -1,5 +1,7 @@
+import fs from "node:fs";
 import { createRequire } from "node:module";
-
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 
 // `metro.js` is a CommonJS helper at the package root, not a TS module under `src/` -- see
@@ -8,7 +10,10 @@ import { describe, expect, test, vi } from "vitest";
 const require = createRequire(import.meta.url);
 
 const cordieriteMetro = require("../../metro.js") as {
-  withCordierite: (config: unknown, options?: { include?: boolean }) => {
+  withCordierite: (
+    config: unknown,
+    options?: { include?: boolean },
+  ) => {
     resolver?: { resolveRequest?: MetroResolveRequest };
     [key: string]: unknown;
   };
@@ -42,8 +47,12 @@ function makeContext(resolveRequest: MetroResolveRequest) {
 }
 
 const { withCordierite, __testables } = cordieriteMetro;
-const { deriveRedirectSpecifiers, specifierForSubpath, NOOP_SPECIFIER, PACKAGE_NAME } =
-  __testables;
+const {
+  deriveRedirectSpecifiers,
+  specifierForSubpath,
+  NOOP_SPECIFIER,
+  PACKAGE_NAME,
+} = __testables;
 
 describe("withCordierite: default (include unset / true)", () => {
   test("returns the config untouched -- no resolver installed", () => {
@@ -121,10 +130,18 @@ describe("withCordierite: include: false", () => {
     const result = withCordierite(config, { include: false });
     const resolveRequest = result.resolver!.resolveRequest!;
 
-    const resolution = resolveRequest(makeContext(defaultResolveRequest), "react", "ios");
+    const resolution = resolveRequest(
+      makeContext(defaultResolveRequest),
+      "react",
+      "ios",
+    );
 
     expect(resolution).toEqual(fakeResolution("react"));
-    expect(defaultResolveRequest).toHaveBeenCalledWith(expect.anything(), "react", "ios");
+    expect(defaultResolveRequest).toHaveBeenCalledWith(
+      expect.anything(),
+      "react",
+      "ios",
+    );
   });
 
   test("chains to an existing resolveRequest and honours its result, for both redirected and passthrough specifiers", () => {
@@ -157,7 +174,9 @@ describe("withCordierite: include: false", () => {
 
   test("does not mutate the passed-in config object", () => {
     const originalResolveRequest = vi.fn();
-    const config = { resolver: { resolveRequest: originalResolveRequest, sourceExts: ["ts"] } };
+    const config = {
+      resolver: { resolveRequest: originalResolveRequest, sourceExts: ["ts"] },
+    };
     withCordierite(config, { include: false });
 
     expect(config.resolver.resolveRequest).toBe(originalResolveRequest);
@@ -167,7 +186,9 @@ describe("withCordierite: include: false", () => {
 describe("deriveRedirectSpecifiers: derived from exports, not hardcoded", () => {
   test("the real package.json's exports produce exactly the root and /auto entries", () => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const pkg = require("../../package.json") as { exports: Record<string, unknown> };
+    const pkg = require("../../package.json") as {
+      exports: Record<string, unknown>;
+    };
     const specifiers = deriveRedirectSpecifiers(pkg.exports).sort();
 
     expect(specifiers).toEqual([PACKAGE_NAME, `${PACKAGE_NAME}/auto`].sort());
@@ -187,18 +208,83 @@ describe("deriveRedirectSpecifiers: derived from exports, not hardcoded", () => 
     expect(specifiers).toContain(`${PACKAGE_NAME}/future-entry`);
   });
 
-  test("string-valued (non-module) exports are never included, and /noop is always excluded", () => {
+  test("known package-infrastructure subpaths are never included, and /noop is always excluded", () => {
     const exportsField = {
       ".": { default: "./build/index.js" },
       "./noop": { default: "./build/noop.js" },
       "./package.json": "./package.json",
       "./app.plugin.js": "./app.plugin.js",
-      "./metro": "./metro.js",
+      "./metro": { types: "./metro.d.ts", default: "./metro.js" },
     };
 
     const specifiers = deriveRedirectSpecifiers(exportsField);
 
     expect(specifiers).toEqual([PACKAGE_NAME]);
+  });
+
+  test("a real entry point declared with the string exports form (not a conditions object) is still redirected", () => {
+    // `"./polyfill": "./build/polyfill.js"` is exactly as valid an `exports` entry point
+    // declaration as a conditions object -- this guards against re-introducing a `typeof value
+    // === "object"` shape check, which would silently exclude entries declared this way even
+    // though they are real, `import`able JS modules.
+    const exportsField = {
+      ".": { default: "./build/index.js" },
+      "./polyfill": "./build/polyfill.js",
+    };
+
+    const specifiers = deriveRedirectSpecifiers(exportsField);
+
+    expect(specifiers).toContain(`${PACKAGE_NAME}/polyfill`);
+  });
+});
+
+describe("withCordierite: driven end-to-end by a real (modified) package.json", () => {
+  test("a new exports entry point added to package.json is redirected by withCordierite itself, not just by the pure deriveRedirectSpecifiers function", () => {
+    // `withCordierite` reads `require("./package.json")` relative to `metro.js`'s own location,
+    // not an injectable parameter -- so the only way to prove *it*, not just
+    // `deriveRedirectSpecifiers` in isolation, actually redirects a newly-added entry point is to
+    // run it against a real package.json on disk that has one. Copies `metro.js` alongside a
+    // `package.json` cloned from the real one plus one extra entry, in a scratch directory, and
+    // requires that copy fresh.
+    const scratchDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "cordierite-metro-test-"),
+    );
+    try {
+      const realPackageJsonPath = require.resolve("../../package.json");
+      const realMetroJsPath = require.resolve("../../metro.js");
+      const pkg = JSON.parse(fs.readFileSync(realPackageJsonPath, "utf8")) as {
+        exports: Record<string, unknown>;
+      };
+      pkg.exports["./future-entry"] = {
+        types: "./build/future-entry.d.ts",
+        default: "./build/future-entry.js",
+      };
+      fs.writeFileSync(
+        path.join(scratchDir, "package.json"),
+        JSON.stringify(pkg, null, 2),
+      );
+      fs.copyFileSync(realMetroJsPath, path.join(scratchDir, "metro.js"));
+
+      const scratchRequire = createRequire(path.join(scratchDir, "metro.js"));
+      const scratchMetro = scratchRequire("./metro.js") as {
+        withCordierite: typeof withCordierite;
+      };
+
+      const defaultResolveRequest = makeDefaultResolveRequest();
+      const config = { resolver: {} };
+      const result = scratchMetro.withCordierite(config, { include: false });
+      const resolveRequest = result.resolver!.resolveRequest!;
+
+      const resolution = resolveRequest(
+        makeContext(defaultResolveRequest),
+        `${PACKAGE_NAME}/future-entry`,
+        "ios",
+      );
+
+      expect(resolution).toEqual(fakeResolution(NOOP_SPECIFIER));
+    } finally {
+      fs.rmSync(scratchDir, { recursive: true, force: true });
+    }
   });
 });
 

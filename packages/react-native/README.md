@@ -278,13 +278,15 @@ const { withCordierite } = require("@cordierite/react-native/metro");
 const config = getDefaultConfig(__dirname);
 
 module.exports = withCordierite(config, {
-  include: process.env.CORDIERITE_ENABLED === "1",
+  // Unset/anything but "0" keeps Cordierite in the bundle -- matches `include`'s own default, so
+  // a plain `expo start`/dev build is never accidentally stripped.
+  include: process.env.CORDIERITE_ENABLED !== "0",
 });
 ```
 
 `include` mirrors the config plugin's option of the same name (above) — default `true`, meaning "leave module resolution alone". With `include: false`, every specifier this package exposes as a real JS module entry point (derived from `package.json`'s `exports`, not a hardcoded `.`/`/auto` list, so a future entry point is covered automatically) is redirected to `@cordierite/react-native/noop`, which has no side effect on import, matching `/auto`'s shape without installing anything. `/noop` itself is never redirected.
 
-If `config.resolver.resolveRequest` is already set — as it typically will be, e.g. the playground's own workspace-symlink-dedup resolver — `withCordierite` **chains to it** for every resolution, redirected or not, instead of replacing it; it only falls back to `context.resolveRequest` when no existing resolver is present. Your existing resolver's return value is what callers see.
+If `config.resolver.resolveRequest` is already set — as it typically will be, e.g. the playground's own workspace-symlink-dedup resolver — `withCordierite` **chains to it** for every resolution, redirected or not, instead of replacing it; it only falls back to `context.resolveRequest` when no existing resolver is present. Your existing resolver's return value is what callers see. **Call `withCordierite` last**, after anything else that sets `config.resolver.resolveRequest` — it captures the existing resolver by reference when called, so a later assignment overwrites (and silently discards) the strip instead of composing with it.
 
 If you'd rather not touch Metro config, a conditional `require` at each import site works too (module identity differs per call site, so this is more repetitive but avoids any bundler-level indirection):
 

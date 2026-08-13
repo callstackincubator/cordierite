@@ -26,7 +26,10 @@
     },
     "./package.json": "./package.json",
     "./app.plugin.js": "./app.plugin.js",
-    "./metro": "./metro.js"
+    "./metro": {
+      "types": "./metro.d.ts",
+      "default": "./metro.js"
+    }
   },
   "sideEffects": [
     "./build/auto.js"
