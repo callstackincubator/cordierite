@@ -1,5 +1,5 @@
 /**
- * CLI command-result types (ARCHITECTURE.md §10). Task 06 (CLI v2) replaces the v1 shapes that
+ * CLI command-result types (ARCHITECTURE.md §10). The v2 command table replaces the v1 shapes that
  * used to live here (`host`/`connect`/`session` — all removed from the v2 command surface) with
  * the thin-client shapes for the v2 command table.
  */

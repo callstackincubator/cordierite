@@ -1,5 +1,5 @@
 /**
- * Task 16 scenario: events. `cordierite events --json` streams NDJSON; this drives the full
+ * E2E scenario: events. `cordierite events --json` streams NDJSON; this drives the full
  * lifecycle through a real CLI subprocess and fake app client and asserts the subscriber sees
  * `session_claimed` -> `tools_changed` -> `app_event` -> `tool_call_started`/`tool_call_finished` ->
  * `session_suspended`, in that order, on one persistent `events --json` subprocess.

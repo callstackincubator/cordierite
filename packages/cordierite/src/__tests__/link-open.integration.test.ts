@@ -1,5 +1,5 @@
 /**
- * Task 07 acceptance: `cordierite link --open android|ios-sim` (ARCHITECTURE.md §8 delivery path
+ * `cordierite link --open android|ios-sim` (ARCHITECTURE.md §8 delivery path
  * 1). Two layers are tested here against a real daemon over its actual UDS control socket (no
  * mocking the RPC layer, matching the pattern in session-engine.integration.test.ts):
  *

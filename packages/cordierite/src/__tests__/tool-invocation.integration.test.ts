@@ -1,8 +1,8 @@
 /**
- * Task 05 acceptance matrix: the invocation path (`tools.list`, `tools.call` with
+ * The invocation path (`tools.list`, `tools.call` with
  * correlation/timeout/progress, `events.subscribe`). Every case drives a real pinned-TLS `wss://`
  * socket (a scripted fake app-client, plain `ws`) against a real daemon and the real UDS RPC
- * socket, per the task-04 harness pattern (`session-engine.integration.test.ts`) — mocks of the
+ * socket, per the harness pattern in `session-engine.integration.test.ts` — mocks of the
  * daemon internals would only prove the mocks were called, not that the wire protocol works.
  */
 

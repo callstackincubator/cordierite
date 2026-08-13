@@ -1,7 +1,7 @@
 /**
- * Task 06 acceptance criterion: "Command table of §10 works end-to-end against a real daemon in an
+ * The v2 command table of §10 works end-to-end against a real daemon in an
  * integration test (temp state dir): keygen -> daemon auto-spawn via `ls` -> link -> fake app client
- * claims -> `ls` shows the alias ACTIVE -> `tools`/`invoke` round-trip -> `revoke`." Every command
+ * claims -> `ls` shows the alias ACTIVE -> `tools`/`invoke` round-trip -> `revoke`. Every command
  * here runs as a real CLI subprocess (`bin.ts`) against a real daemon it auto-spawns, driven by a
  * scripted fake app client (`ws`) — the same harness pattern as
  * `tool-invocation.integration.test.ts`, just through the CLI instead of raw UDS RPC.

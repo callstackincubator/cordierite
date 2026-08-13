@@ -12,7 +12,7 @@ internal data class CordieriteResumeEndpoint(
     val port: Int,
 )
 
-/** Immutable process-memory representation of Task 1's `ResumeLeaseV1` contract. */
+/** Immutable process-memory representation of the `ResumeLeaseV1` contract. */
 internal data class CordieriteResumeLeaseV1(
     val sessionId: String,
     val resumeToken: String,

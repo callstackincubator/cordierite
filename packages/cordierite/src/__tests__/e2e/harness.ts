@@ -1,5 +1,5 @@
 /**
- * Task 16: shared harness for the end-to-end suite. Consolidates the patterns already proven in
+ * Shared harness for the end-to-end suite. Consolidates the patterns already proven in
  * this package's other integration tests rather than inventing a third one:
  *
  * - the real-CLI-subprocess pattern from `cli-v2.integration.test.ts` / `exit-codes.integration.test.ts`

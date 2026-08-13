@@ -1,5 +1,5 @@
 /**
- * Task 04 acceptance matrix: the daemon's session engine had zero WebSocket-level tests in v1 and
+ * The daemon's session engine had zero WebSocket-level tests in v1 and
  * hid the worst bug there (an unhandled socket `'error'` crashing the whole daemon). Every case
  * here drives a real pinned-TLS `wss://` socket against a real daemon instance (self-signed cert
  * from a throwaway key, an isolated `CORDIERITE_STATE_DIR`-equivalent temp dir) rather than mocking

@@ -1,5 +1,5 @@
 /**
- * Task 13 acceptance matrix: the daemon policy engine and audit log (ARCHITECTURE.md §12). Same
+ * The daemon policy engine and audit log (ARCHITECTURE.md §12). Same
  * harness pattern as `tool-invocation.integration.test.ts` — a real daemon, a scripted fake
  * app-client over a real pinned `wss://` socket, and raw UDS JSON-RPC — plus a real MCP server
  * (same pattern as `mcp-server.integration.test.ts`) for the `caller` attribution case.

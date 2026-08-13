@@ -1,5 +1,5 @@
 /**
- * Task 16 scenario: daemon restart. Killing the daemon (SIGKILL) mid-session must not require
+ * E2E scenario: daemon restart. Killing the daemon (SIGKILL) mid-session must not require
  * operator intervention: the next CLI command auto-spawns a fresh daemon (recovering the stale
  * pidfile/socket left behind), the old session is gone (documented behavior — ARCHITECTURE.md §3:
  * "no per-session files, all state in-daemon-memory" — sessions do not survive daemon death), and a

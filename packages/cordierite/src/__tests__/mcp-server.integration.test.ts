@@ -1,5 +1,5 @@
 /**
- * Task 08 acceptance matrix: the MCP server (ARCHITECTURE.md §9) proxying a real daemon's RPC
+ * The MCP server (ARCHITECTURE.md §9) proxying a real daemon's RPC
  * surface. Drives a real daemon + fake app-client (same harness pattern as
  * `tool-invocation.integration.test.ts`), and drives the MCP server with the SDK's own `Client`
  * (over `InMemoryTransport` for the functional cases, over a real `StdioServerTransport` wired to
