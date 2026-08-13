@@ -23,30 +23,34 @@
  *   (`CordieriteCliPins`/`CordieriteTrust`/`CordieriteAllowPrivateLanOnly`, docs/tasks/00-overview.md
  *   "Native config keys the plugin writes"), which are plist string data, not code, so they can't be
  *   renamed by anything that mangles symbols.
- * - Android: the `com.callstackincubator.cordierite` package survives in the dex string pool as
- *   long as R8/ProGuard minification+obfuscation isn't applied to it. It *can* be renamed by an
- *   aggressive release config with no keep rule for this package — a real false-negative risk this
- *   command must not silently absorb into "absent". The corroborating signal is the same
- *   plugin-authored meta-data key names in `AndroidManifest.xml`
- *   (`com.callstackincubator.cordierite.CLI_PINS`/`TRUST`/`ALLOW_PRIVATE_LAN_ONLY`): those are XML
- *   attribute string values written by the config plugin at prebuild time, not compiled identifiers,
- *   so R8 never touches them. Presence is `true` if *either* signal matches; both encodings AAPT2
- *   can choose for the manifest string pool (UTF-8 or UTF-16LE) are checked.
+ * - Android: the primary signal is `CordieriteNativeMarker`
+ *   (`packages/react-native/android/src/main/java/com/callstackincubator/cordierite/CordieriteNativeMarker.kt`),
+ *   a marker class with no other purpose. Its fully-qualified name is kept unminified and unremoved by a
+ *   `-keep` rule in `packages/react-native/android/consumer-rules.pro`, shipped to every consuming app via
+ *   `consumerProguardFiles` (see `../build.gradle`) — R8 applies it regardless of whether the app used the
+ *   Expo config plugin or bare-RN autolinking, and regardless of whether the app authored any keep rules of
+ *   its own (docs/tasks/10-android-detection-keep-rule.md). This is the only Android signal guaranteed to
+ *   survive minification in every supported consumer setup.
  *
- * Neither corroborating signal is treated as authoritative on its own for "absent": presence is an
- * OR across all signals for a platform, specifically so a minified dex that dropped the package
- * name literal doesn't flip a real inclusion to "absent" just because one of the two checks missed.
+ *   Two more signals are kept as fallbacks for artifacts built before this marker existed: the
+ *   `com.callstackincubator.cordierite` package string in the dex string pool (survives as long as
+ *   R8/ProGuard minification+obfuscation isn't applied to it — an aggressive release config with no keep
+ *   rule for this package can rename it away) and the plugin-authored meta-data key names in
+ *   `AndroidManifest.xml` (`com.callstackincubator.cordierite.CLI_PINS`/`TRUST`/`ALLOW_PRIVATE_LAN_ONLY`):
+ *   those are XML attribute string values written by the config plugin at prebuild time, not compiled
+ *   identifiers, so R8 never touches them, but they only exist at all if the config plugin ran. Both
+ *   encodings AAPT2 can choose for the manifest string pool (UTF-8 or UTF-16LE) are checked.
  *
- * **Known residual gap** (tracked, not silently assumed away): the manifest-key corroborating
- * signal on Android only exists if the config plugin wrote it — a bare-RN app wired up via
- * `react-native.config.js` (docs/tasks/00-overview.md's "Inclusion" contract) rather than the Expo
- * config plugin gets no `AndroidManifest.xml` meta-data at all, so a release build with R8
- * minification and no keep rule for `com.callstackincubator.cordierite` in that setup can rename
- * the dex package past this command's detection. Closing that gap needs a keep rule or an
- * additional native marker in `packages/react-native/android` — out of this task's file scope (see
- * `docs/tasks/08-cordierite-doctor.md`'s "Independent of every other task — no shared files").
+ * No single signal is treated as authoritative on its own for "absent": presence is an OR across all
+ * signals for a platform, specifically so a minified dex that dropped one literal doesn't flip a real
+ * inclusion to "absent" just because one check missed.
+ *
  * `cordierite doctor` is strictly better than the runtime check it replaces (docs/tasks/00-overview.md
- * "What we give up, deliberately"), not a claim of unconditional coverage for every build config.
+ * "What we give up, deliberately"). The keep-rule marker closes the previously-documented gap where a
+ * bare-RN app with no config plugin and no keep rule could evade both older Android signals under R8
+ * minification (docs/tasks/10-android-detection-keep-rule.md) — that gap applied to builds produced before
+ * this library shipped the marker/keep rule; an app that pins an older `@cordierite/react-native` version
+ * still lacks it.
  */
 
 import { execFile } from "node:child_process";
@@ -61,6 +65,7 @@ export type ArtifactFormat = "app" | "ipa" | "apk" | "aab";
 export type DetectionSignal =
   | "ios-objc-class-symbol"
   | "ios-info-plist-keys"
+  | "android-keep-rule-marker"
   | "android-dex-package-symbol"
   | "android-manifest-meta-data-keys";
 
@@ -78,6 +83,13 @@ export type ArtifactInspection = {
 
 const IOS_OBJC_CLASS_MARKER = "RCTNativeCordierite";
 const IOS_INFO_PLIST_KEY_MARKERS = ["CordieriteCliPins", "CordieriteTrust", "CordieriteAllowPrivateLanOnly"];
+
+// Fully-qualified name of `CordieriteNativeMarker`
+// (packages/react-native/android/src/main/java/com/callstackincubator/cordierite/CordieriteNativeMarker.kt),
+// kept unminified by packages/react-native/android/consumer-rules.pro. Checked as a dex type descriptor
+// (`Lcom/.../CordieriteNativeMarker;`) — see detectAndroidSignals — which is how the class's fully-qualified
+// name is actually encoded in classes.dex.
+const ANDROID_KEEP_RULE_MARKER_CLASS = "com/callstackincubator/cordierite/CordieriteNativeMarker";
 
 const ANDROID_DEX_PACKAGE_MARKERS = ["com/callstackincubator/cordierite", "com.callstackincubator.cordierite"];
 const ANDROID_MANIFEST_KEY_MARKER = "com.callstackincubator.cordierite.";
@@ -313,6 +325,14 @@ const detectIosSignals = (bytes: Buffer): DetectionSignal[] => {
 
 const detectAndroidSignals = (bytes: Buffer): DetectionSignal[] => {
   const signals: DetectionSignal[] = [];
+
+  // Primary signal: checked first because it's the only one guaranteed to survive R8 minification
+  // in every supported consumer setup (see the file-level doc comment). Matched as a dex type
+  // descriptor (`L` + fully-qualified-name-with-slashes + `;`) since that's the actual encoding of
+  // a class name inside classes.dex, not just a loose substring check.
+  if (bufferIncludesAscii(bytes, `L${ANDROID_KEEP_RULE_MARKER_CLASS};`)) {
+    signals.push("android-keep-rule-marker");
+  }
 
   if (ANDROID_DEX_PACKAGE_MARKERS.some((marker) => bufferIncludesAscii(bytes, marker))) {
     signals.push("android-dex-package-symbol");

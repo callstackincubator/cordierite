@@ -136,6 +136,27 @@ describe("artifact-inspect: Android .apk (synthetic zip fixture)", () => {
     expect(result.signals).toContain("android-dex-package-symbol");
   });
 
+  test("included via the CordieriteNativeMarker keep-rule symbol alone (primary signal, synthetic: see artifact-fixtures.ts and the task report for what a real R8 build additionally verifies)", async () => {
+    const root = await withFixtureRoot();
+    const apkPath = path.join(root, "included-keep-marker-only.apk");
+
+    await buildZipFixture(apkPath, {
+      // Simulates an R8 release build where every other class in the package (and the manifest,
+      // since no config plugin ran) was renamed/omitted, but the consumer-rules.pro `-keep` rule
+      // for CordieriteNativeMarker held: its fully-qualified dex type descriptor survives verbatim.
+      "classes.dex": Buffer.concat([
+        Buffer.from("dex\n035\0"),
+        Buffer.from("Lcom/callstackincubator/cordierite/CordieriteNativeMarker;"),
+      ]),
+      "AndroidManifest.xml": "no cordierite keys in here (bare-RN app, no config plugin)",
+    });
+
+    const result = await inspectArtifact(apkPath);
+
+    expect(result.present).toBe(true);
+    expect(result.signals).toContain("android-keep-rule-marker");
+  });
+
   test("included via AndroidManifest.xml meta-data keys alone, UTF-16LE encoded (corroborating signal, survives dex minification)", async () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "included-manifest-only.apk");

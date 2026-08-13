@@ -44,6 +44,11 @@ android {
     versionCode 1
     versionName "0.4.0-rc.1" // keep in sync with package.json
     buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
+    // Ships a keep rule for CordieriteNativeMarker (see consumer-rules.pro) to every consuming app's
+    // R8/ProGuard pass, so `cordierite doctor` (docs/tasks/10-android-detection-keep-rule.md) has a
+    // detection anchor that survives minification even with no config plugin and no app-authored
+    // keep rules for this package.
+    consumerProguardFiles "consumer-rules.pro"
   }
 
   buildFeatures {
