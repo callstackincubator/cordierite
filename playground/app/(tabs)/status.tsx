@@ -44,7 +44,7 @@ export default function StatusScreen() {
   const danger = useThemeColor({}, "danger");
   const textTertiary = useThemeColor({}, "textTertiary");
   const tint = useThemeColor({}, "tint");
-  const background = useThemeColor({}, "background");
+  const tintForeground = useThemeColor({}, "tintForeground");
 
   const [connectionState, setConnectionState] = useState<CordieriteClientState>(
     getCordieriteState()
@@ -165,7 +165,7 @@ export default function StatusScreen() {
             style={[styles.button, { backgroundColor: tint }]}>
             <ThemedText
               type="defaultSemiBold"
-              style={{ color: background }}>
+              style={{ color: tintForeground }}>
               Send playground_ping
             </ThemedText>
           </Pressable>

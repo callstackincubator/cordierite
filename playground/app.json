@@ -10,7 +10,10 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.aitwar.playground"
+      "bundleIdentifier": "com.aitwar.playground",
+      "infoPlist": {
+        "CFBundleDisplayName": "Cordierite"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -41,6 +44,7 @@
         }
       ],
       "./plugins/with-native-tests",
+      "./plugins/with-app-display-name",
       [
         "expo-splash-screen",
         {
