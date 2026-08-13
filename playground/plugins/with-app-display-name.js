@@ -11,9 +11,13 @@ const { withStringsXml } = require("expo/config-plugins");
 // `@expo/config-plugins`' `withDisplayName` plugin checks for it and skips deriving
 // `CFBundleDisplayName` from `expo.name` when it's set (see `ios-plugins.js`'s
 // `createInfoPlistPluginWithPropertyGuard`). Android's `withName` has no equivalent guard: it always
-// writes `strings.xml`'s `app_name` from `expo.name`, unconditionally. This plugin runs after it
-// (plugins run in the order the `app.json` `plugins` array lists them) and overwrites just that one
-// string, leaving `rootProject.name` (and everything else derived from `expo.name`) untouched.
+// writes `strings.xml`'s `app_name` from `expo.name`, unconditionally. This plugin overwrites just
+// that one string afterwards, leaving `rootProject.name` (and everything else derived from
+// `expo.name`) untouched. Verified against a real `expo prebuild --platform android`: `app_name`
+// comes out as "Cordierite" while `rootProject.name` stays "playground". (The exact mod-ordering
+// mechanics are `@expo/config-plugins`' internals -- don't assume this plugin's position in the
+// `app.json` `plugins` array is what makes it win; re-verify with a real prebuild if you reorder
+// that array.)
 module.exports = function withAppDisplayName(config) {
   return withStringsXml(config, (config) => {
     const strings = config.modResults.resources.string ?? [];
