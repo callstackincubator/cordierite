@@ -328,20 +328,33 @@ Package `@cordierite/react-native`. Entry points:
   release-build compile-out via Metro `resolveRequest` or conditional require. Document
   the recipe in the package README.
 
-**Default-inert release builds and dev trust mode** (`docs/SECURITY.md` has the full
-threat-model writeup; this is the config-surface summary): Android's `CordieritePackage`
-registers the TurboModule only when the app is debuggable (`ApplicationInfo.FLAG_DEBUGGABLE`)
-or the manifest meta-data `com.callstackincubator.cordierite.ENABLE_IN_RELEASE` is `true`;
-iOS compiles `CordieriteTurboBridge.swift`/`RCTNativeCordierite.mm` out entirely unless
-`#if DEBUG || CORDIERITE_ENABLE_RELEASE` (a Swift compilation condition + a
-`GCC_PREPROCESSOR_DEFINITIONS` macro, both app-target settings the config plugin's
-`enableInReleaseBuilds` option adds to the Cordierite pod's Release configuration). With the
-module absent or inert, the root entry's public API degrades to exact `/noop` behavior. The
-config plugin's `enableInReleaseBuilds: true` requires non-empty `cliPins` in the same config.
-On a debug build with no embedded `cliPins`/`CLI_PINS`, the client instead trusts the
-bootstrap link's separate `pin` query param (§8) for that session — see `docs/SECURITY.md`'s
-"Dev trust mode" section; embedded pins, when configured, always win and the link pin is
-ignored.
+**Inclusion and trust are two independent, explicit config decisions — neither is derived
+from build type** (`docs/SECURITY.md` has the full threat-model writeup; this is the
+config-surface summary):
+
+- **Inclusion.** Whether Cordierite's native code is in a build at all is decided entirely by
+  autolinking (the app's `package.json` `expo.autolinking.{ios,android}.exclude`, or bare-RN's
+  `react-native.config.js`), not by anything in this package. Android's `CordieritePackage`
+  registers the TurboModule unconditionally whenever it is linked; iOS's
+  `CordieriteTurboBridge.swift`/`RCTNativeCordierite.mm` compile in unconditionally whenever
+  the pod is linked. There is no `#if DEBUG`/`FLAG_DEBUGGABLE` gate anywhere in either path —
+  autolinking exclusion is the only inclusion mechanism, on either platform. The JS-layer strip
+  is separate and additive: `noopIfNativeUnavailable` degrades the public API to exact `/noop`
+  behavior whenever the native module can't be found (because it was excluded, or because the
+  environment has none, e.g. Expo Go), and the `/noop` entry plus a Metro `resolveRequest` swap
+  let an app strip the JS bundle's Cordierite code independently of the native exclude — see
+  the package README's "Compiling Cordierite out of production builds".
+- **Trust.** What a build trusts, once the module is present, is decided by the explicit
+  `trust` config value: `"pin"` (only embedded `cliPins`) or `"link"` (trust the bootstrap
+  link's separate `pin` query param (§8), per session — the "dev mode" convenience). Default:
+  `"pin"` when `cliPins` is non-empty, `"link"` otherwise. The config plugin's `trust: "pin"`
+  requires non-empty `cliPins` in the same config; embedded pins, when configured, always win
+  over `linkPin` regardless of `trust`'s value, so config can only narrow trust, never widen
+  it. A `trust` value that is neither `"link"` nor `"pin"` is a hard error, both at
+  config/prebuild time and independently in the native trust-resolution logic
+  (`resolveTrustedPins` on both platforms) — deliberately, so a typo can never silently
+  downgrade an intended `"pin"` config into permissive link TOFU. No build-time debuggability
+  signal is consulted anywhere in this resolution.
 
 Client behavior:
 
