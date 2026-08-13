@@ -1,262 +1,95 @@
-### Expose app tools securely - no debug menus in the binary
+### Let agents and tests reach into your running app — without shipping a debug menu
 
 [![MIT license][license-badge]][license] [![npm downloads][npm-downloads-badge]][npm-downloads] [![PRs Welcome][prs-welcome-badge]][prs-welcome]
 
-Cordierite exists so **developers, QA, and automation** can drive **registered tools** and influence **in-app state** from a **CLI or agent** - without shipping hidden **debug screens**, secret gestures, or admin panels inside the app. The app exposes only the **tool surface you define** in code; control stays behind a long-lived **daemon** that owns a pinned `wss://` listener and a hardened local control plane, so the same tools are reachable from a **terminal** and from an **MCP-speaking agent** (Claude Code, Cursor, CI) alike.
+Cordierite lets a terminal, a test runner, or an AI agent call functions inside your React Native app while it's running. You pick what's callable — a few functions you write yourself — and nothing else is reachable.
 
-## Why it exists
+## Why you'd want this
 
-Shipping ad-hoc debug UIs in production builds is risky: they leak intent, widen attack surface, and are hard to gate consistently. Cordierite inverts that: **production-capable** builds can still participate in Cordierite **when a trusted host is available**, because trust is **not** "anyone on Wi-Fi" or "whoever crafted a link" - it is **TLS + SPKI pinning** to identities you embed, plus **short-lived session bootstrap** so deep links are hints, not proof of authority. A single **`cordierite`** daemon absorbs common dev-loop churn - Metro reloads, backgrounding, and network flaps - by suspending and resuming sessions instead of dying with them, and serves any number of devices at once. Resume credentials live only in the native app process: process death requires a fresh bootstrap link.
+**Your E2E tests stop tapping through setup.** Most of an end-to-end test isn't the thing you're testing. It's logging in, dismissing onboarding, seeding a cart, waiting for a spinner. With Cordierite, the test calls `login(userId)` or `seedCart(items)` directly and jumps straight to the part that matters. Faster runs, far less flakiness, and a lot fewer screenshots for an agent to burn tokens on.
 
-## Security
+**Agents can actually drive your app.** Add one line to Claude Code's or Cursor's config and your app's functions show up as tools the agent can call. It can flip a feature flag, jump to a screen, or check some state without you wiring up a single prompt.
 
-- **No backdoor UI**: nothing extra in the app UI for attackers to discover; capability is **tool APIs + transport**, not mystery menus.
-- **Encrypted transport**: `wss://` end-to-end; no cleartext control traffic on the wire.
-- **Pinned server identity**: with `trust: "pin"` (the default once `cliPins` is configured), the native client matches your daemon's public key (SPKI) against an embedded pin *set*; IP, DNS, and deep-link origin are not enough to impersonate it. With `trust: "link"` (the default with no `cliPins`), the client instead trusts the pin carried by the bootstrap link itself, for that session only - see "Dev mode, zero config" below. `trust` is an explicit config value, not derived from whether the build happens to be debuggable.
-- **Session bootstrap**: one-time, session-bound channel after claim - appropriate for production when pins and provisioning match your threat model.
-- **Hardened local control plane**: the CLI and MCP server talk to the daemon over a Unix domain socket gated by filesystem permissions (`0700` directory, `0600` socket) - not an open localhost port.
-- **Policy + audit**: operator ergonomics on the daemon side - deny classes of tool by annotation (`destructiveHint`) or by name, and every call is appended to an audit log regardless of outcome. This runs on the operator's machine, the trust boundary itself, so it is not a substitute for the app-side control below. See [`docs/SECURITY.md`](docs/SECURITY.md) for the full threat model and a key-rotation runbook.
-- **Explicit inclusion, not a hidden build-type gate**: whether Cordierite's native code ships in a build at all is decided in one place - the app's autolinking configuration - not by any runtime debuggable check. See "Whether Cordierite is in your build, and what it trusts" below.
+**No hidden debug UI.** No secret gestures, no long-press-the-logo admin panel, nothing extra in the app for someone to go find. The only things reachable are functions you deliberately registered.
 
-## Monorepo layout
+**It works in whatever build you want.** Dev, internal, TestFlight, production — Cordierite isn't tied to debug builds. You decide which builds carry it and what those builds are willing to trust. Most teams ship it in dev and internal builds and strip it from store releases, but that's your call, not something the library decides for you.
 
-| Package | Role |
-| --- | --- |
-| [`cordierite`](packages/cordierite/README.md) | CLI, daemon, and MCP server |
-| [`@cordierite/shared`](packages/shared/README.md) | Wire protocol v2 types shared by the CLI and React Native |
-| [`@cordierite/react-native`](packages/react-native/README.md) | TurboModule client + Expo config plugin |
+**Your dev loop doesn't fight you.** Metro reloads, backgrounding the app, flaky Wi-Fi — the session survives all of it and picks back up on its own. One background service handles as many devices as you've got plugged in.
 
-Clone the repo and install with pnpm (`pnpm install`). The [playground](playground/README.md) is the reference dev app - it's also the fastest way to see the whole flow working end to end.
+## What it looks like
 
-## Getting started
-
-Cordierite has two sides:
-
-- the **operator/agent** side, where you run the `cordierite` CLI (which transparently starts its own daemon) or add `cordierite mcp` to an agent's MCP config
-- the **app** side, where your React Native app imports `@cordierite/react-native` and registers tools
-
-With no config at all, that's the whole setup: no `cordierite keygen`, no config plugin, no pins. The daemon auto-generates its own key on first run, and the app trusts the pin carried by the bootstrap link itself (see "Dev mode, zero config" below). This has nothing to do with debug vs. release - Cordierite ships in every build unless you deliberately exclude it, and it trusts whatever `trust` config says, regardless of build type. Before you ship a build you don't want carrying Cordierite (or don't want trusting link-carried pins), read "Whether Cordierite is in your build, and what it trusts" further down - **decide that deliberately**, since the default is inclusion with dev-mode trust, not the other way around.
-
-### 1. Install the packages
-
-Install the CLI where the operator, test runner, or agent will run it:
-
-```bash
-npm install -g cordierite
-```
-
-Install the React Native package in your app:
-
-```bash
-npm install @cordierite/react-native zod
-```
-
-### 2. Give the app a URL scheme
-
-Cordierite's bootstrap deep link needs somewhere to land, so the app needs a URL scheme. For Expo, set it in `app.json` / `app.config.*`:
-
-```json
-{
-  "expo": {
-    "scheme": "myapp"
-  }
-}
-```
-
-For bare React Native, wire up the equivalent native URL-scheme handling for your platform. That scheme must match the one you pass to `cordierite link --scheme ...` (or set once in `~/.cordierite/config.json`'s `"scheme"` field).
-
-Use a **development build** or bare native app. **Expo Go** is not enough.
-
-### 3. Import Cordierite in the JS entry point
-
-Import the side-effect entry once near your app's entry point so the deep-link bootstrap listener installs on startup:
+Register something you want reachable:
 
 ```ts
-import "@cordierite/react-native/auto";
+useCordieriteTool({
+  name: "seed_cart",
+  description: "Fill the cart with test items.",
+  inputSchema: z.object({ items: z.number() }),
+  handler: async ({ items }) => ({ added: items }),
+});
 ```
 
-### 4. Define and register tools
-
-```ts
-import "@cordierite/react-native/auto";
-import { useCordieriteTool } from "@cordierite/react-native";
-import { z } from "zod";
-
-export function CordieriteBootstrap() {
-  useCordieriteTool(
-    {
-      name: "sum",
-      description: "Add two numbers inside the app.",
-      inputSchema: z.object({ a: z.number(), b: z.number() }),
-      outputSchema: z.object({ total: z.number() }),
-      handler: async ({ a, b }) => ({ total: a + b }),
-    },
-    []
-  );
-
-  return null;
-}
-```
-
-Mount that component near app startup, or register tools from another early-loading module. Cordierite only exposes the tools you register.
-
-### 5. Bootstrap a session and invoke a tool
-
-`cordierite` auto-spawns its daemon on first use, so most commands just work. `link` needs to know the app's URL scheme - pass it once with `--scheme`, or set it once in `~/.cordierite/config.json`'s `"scheme"` field and drop the flag from every command below:
+Call it from your terminal:
 
 ```bash
-cordierite link --scheme myapp --qr
+cordierite invoke seed_cart --input '{"items":3}'
 ```
 
-Scan the printed QR (or open the deep link) on the device. On a simulator/emulator, skip the deep link entirely:
-
-```bash
-cordierite link --scheme myapp --open ios-sim     # or: --open android
-```
-
-Once the app claims the session, list and call its tools - no session id needed when only one session is active:
-
-```bash
-cordierite tools
-cordierite invoke sum --input '{"a":2,"b":3}'
-```
-
-Use `cordierite ls` to see aliases when more than one device is connected, and pass an alias or session id as the optional selector (`cordierite invoke pixel-8 sum --input '{"a":2,"b":3}'`).
-
-### 6. The MCP one-liner
-
-For an agent instead of a human operator, point its MCP config at the CLI - no separate server to run, the daemon auto-spawns the same way:
+Or hand it to an agent:
 
 ```json
 {
   "mcpServers": {
-    "cordierite": {
-      "command": "cordierite",
-      "args": ["mcp"]
-    }
+    "cordierite": { "command": "cordierite", "args": ["mcp"] }
   }
 }
 ```
 
-Add that to Claude Code's or Cursor's MCP config and the connected app's tools appear as MCP tools automatically (`tools/list` reflects the live registry; a `cordierite_connect` tool lets the agent mint and deliver a bootstrap link itself, and `cordierite_wait_for_session` lets it wait for the device to claim it - no shell access required).
+That's the whole idea. Everything else is about which builds include it and what they trust.
 
-### Dev mode, zero config
+## Is this safe to ship?
 
-None of the steps above touched `cordierite keygen`, the config plugin, or a `cliPins` value, and that's intentional whenever a build has no embedded pins - **in any build type**, not just a locally-run debug build:
+That's the right question to ask, and the honest answer is: it depends on how you set it up, so it's worth ten minutes of reading before you ship it in something customers install.
 
-- The daemon generates `~/.cordierite/key.pem` itself the first time it starts if the file doesn't already exist, and prints its `sha256/...` fingerprint.
-- `cordierite link` composes that fingerprint into the deep link as a separate `pin` query param, alongside the existing binary `cordierite` bootstrap payload (which is unchanged - older app builds that don't know about `pin` just ignore it).
-- With no `cliPins`/`CLI_PINS` configured, the effective `trust` mode defaults to `"link"` (explicit `trust: "link"` behaves identically): the native client trusts a pin carried by the bootstrap link, for that one session only, and logs unconditionally: `Cordierite: trust=link — trusting the SPKI pin carried by the bootstrap link for this session.` This no longer depends on whether the build is debuggable - only on whether pins are configured.
-- The moment you configure `cliPins`, that embedded set always wins regardless of `trust`, and the link's `pin` is ignored outright - config can only *narrow* trust, never widen it back to link TOFU.
+The short version: the connection is encrypted, your app checks the identity of the machine on the other end rather than trusting whoever's on the network, and a link someone intercepts isn't a way in. On top of that, you choose per build whether Cordierite's code is even in the binary. In development none of this needs configuring — it just works — and you tighten it up for builds that leave your machine.
 
-This is deliberately weaker than pinned trust: it anchors trust in "whoever handed you this link", not in a key you embedded ahead of time. That's an acceptable tradeoff for local development, which is why production and internal-distribution builds should configure `cliPins` rather than relying on the default - see [`docs/SECURITY.md`](docs/SECURITY.md)'s "Trust modes" section for the full threat-model writeup.
+[`docs/SECURITY.md`](docs/SECURITY.md) walks through what it protects against, what it doesn't, and how to rotate keys.
 
-## Whether Cordierite is in your build, and what it trusts
+## Getting started
 
-Two independent questions, two independent knobs - neither is keyed on debug vs. release.
-
-**1. Is Cordierite's native code in this build at all?** Decided entirely by autolinking, in the app's `package.json` (not `app.json`/`app.config.*` - `expo-modules-autolinking` never reads those for this). By default it's included in every build. To exclude it from a build:
-
-```json
-{
-  "expo": {
-    "autolinking": {
-      "ios": { "exclude": ["@cordierite/react-native"] },
-      "android": { "exclude": ["@cordierite/react-native"] }
-    }
-  }
-}
-```
-
-Bare React Native, in `react-native.config.js` at the app root:
-
-```js
-module.exports = {
-  dependencies: { "@cordierite/react-native": { platforms: { ios: null, android: null } } },
-};
-```
-
-This is a per-prebuild / per-`pod install` decision, not a build-variant flag - flip it from an env var in `app.config.ts` if different builds need different answers. See the [package README](packages/react-native/README.md#compiling-cordierite-out-of-production-builds) for the full recipe (including the JS-side Metro swap, which strips the bundle but not the native binary) and [`docs/CI.md`](docs/CI.md) for `cordierite doctor`, the artifact-level check that verifies the exclusion actually took effect - don't just trust the config by inspection.
-
-> **`expo.autolinking.apple` takes priority over `expo.autolinking.ios`.** `expo-modules-autolinking`'s CocoaPods driver always resolves iOS with `--platform apple`, and an `apple` key in `expo.autolinking` **wins outright over `ios` rather than merging with it** - `ios` is only consulted when `apple` is absent. The recipe above uses `ios`, which works today, but if your app also declares an `expo.autolinking.apple` block for other reasons, put the Cordierite exclude there instead (or in both), since an `apple` entry silently overrides an `ios`-only exclude.
-
-> **Maintainer-shaped setups only:** excluding the package from autolinking on iOS also stops its **codegen** from running for that package. An app that excludes it there but still references the `Cordierite` pod by hand (for example, to attach an XCTest target) will fail to compile - `RCTNativeCordierite.mm` imports the generated `CordieriteSpec.h`, which codegen no longer produces once the module is excluded. Normal consumer apps never hit this; it only bites setups that both exclude and hand-add the pod.
-
-If you also use the `@cordierite/react-native` config plugin, set its `include` option to `false` on every platform you exclude above - the plugin's default (`include: true`) asserts that autolinking still includes the package on **both** `ios` and `android`, and fails prebuild with a copy-pasteable fix if either platform's real autolinking config disagrees with what `include` says:
-
-```json
-["@cordierite/react-native", { "include": false }]
-```
-
-**2. What does it trust, once it's in the build?** The `trust` config option, independent of platform build type:
-
-```json
-["@cordierite/react-native", { "cliPins": ["sha256/..."], "trust": "pin" }]
-```
-
-- `trust: "pin"` - only the embedded `cliPins` are trusted. Requires a non-empty `cliPins`; the plugin refuses the combination at config time otherwise, and the native readers refuse it a second time if that check is ever bypassed by hand.
-- `trust: "link"` - trust the pin carried by the bootstrap link, per session (see "Dev mode, zero config" above). Default when `cliPins` is absent.
-- Any other value (a typo like `"PIN"` or `"pinn"`) is a **hard error**, both at config (prebuild) time and in the native trust-resolution logic - deliberately, so a typo can never silently downgrade an intended `"pin"` config into permissive link TOFU.
-- `getCordieriteBuildConfig()` (JS) reports the effective trust mode a running build actually has, read from the exact same native parse `connect()` uses - handy for confirming a release artifact ended up with the config you expected.
-
-For bare React Native, configure the equivalent native keys:
-
-- iOS `Info.plist`: `CordieriteCliPins`, `CordieriteTrust` (`"link"` | `"pin"`), optionally `CordieriteAllowPrivateLanOnly`.
-- Android `<application>` meta-data: `com.callstackincubator.cordierite.CLI_PINS`, `com.callstackincubator.cordierite.TRUST`, optionally `com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY`.
-
-Generate a pin with:
+Install the CLI where you'll run it, and the package in your app:
 
 ```bash
-cordierite keygen
+npm install -g cordierite
+npm install @cordierite/react-native zod
 ```
 
-This writes an unencrypted PEM private key to `~/.cordierite/key.pem` (override with `--out`) and prints a `sha256/...` SPKI fingerprint - copy that value into `cliPins`. See [`docs/SECURITY.md`](docs/SECURITY.md) for what this key protects and how to rotate it later.
+From there:
 
-After changing native configuration, rebuild the app.
+- **[Set up your app](packages/react-native/README.md)** — registering tools, deep-link setup, and how to decide what ships in which build.
+- **[Use the CLI and MCP server](packages/cordierite/README.md)** — connecting to a device, listing and calling tools, and checking a built artifact.
+- **[Try the playground](playground/README.md)** — a working app you can run end to end in a few minutes. Fastest way to see whether this fits your project.
 
-**Resulting matrix (`include` x `trust`, not build-type-keyed):**
+You'll need a development build or a bare React Native app. Expo Go can't do it.
 
-| `include` | `trust` | Result |
-| --- | --- | --- |
-| `true` (default) | `"link"` (default without `cliPins`) | Native code ships; trusts the bootstrap link's pin, per session |
-| `true` (default) | `"pin"` | Native code ships; trusts only embedded `cliPins` |
-| `false` | n/a | Native code excluded from the build entirely (needs the autolinking exclude above) |
+## Packages
 
-## Migration from 0.3.1
-
-`enableInReleaseBuilds` never shipped in any published release - npm's latest for both packages is `0.3.1`, which has no build-type gating and no `enableInReleaseBuilds` option at all. `0.3.1`'s config plugin also had no `include`/`trust` concept: it required a non-empty `cliPins` unconditionally (`"@cordierite/react-native requires a non-empty cliPins array"` at prebuild otherwise) and only ever trusted those embedded pins - there was no link-carried-pin / zero-config flow at all in `0.3.1`. If you're on `0.3.1` (or older), migrating is:
-
-- **Every `0.3.1` app already has `cliPins` configured** (the plugin made it mandatory), so `trust` defaults to `"pin"` automatically and nothing about what your build trusts changes. You do not need to add `trust: "pin"` explicitly, though doing so is harmless and makes the choice explicit.
-- **The zero-config `trust: "link"` flow is new**, not a `0.3.1` behavior carried forward - it only applies to a build with no `cliPins` configured at all, which no real `0.3.1` app has. Nothing to do here unless you want to adopt it for a new, pins-free build variant.
-- **`allowPrivateLanOnly`'s default flipped from `false` to `true` (fail-closed).** `0.3.1` defaulted to allowing any address unless you explicitly opted into private-LAN-only; this release defaults to private-LAN-only unless you explicitly opt out. If your `0.3.1` app relies on non-private/remote bootstrap targets and never set `allowPrivateLanOnly` explicitly, set `allowPrivateLanOnly: false` explicitly now to keep that behavior - otherwise those bootstrap attempts will start being rejected.
-- **Excluding Cordierite from a build via autolinking is not new** - `expo.autolinking.<platform>.exclude` in `package.json` is a feature of `expo-modules-autolinking` itself and worked the same way against `0.3.1`. What's new in this release is the plugin's own `include` option (default `true`), which asserts that your declared intent matches your real autolinking config and fails prebuild with a copy-pasteable fix when it doesn't - useful, but not required to adopt the exclude recipe itself.
-- **If your config ever referenced `enableInReleaseBuilds`,** it never worked on a published version - there is nothing to remove from a real `0.3.1` install. (Only a pre-release build from this repo's `main` branch between `0.3.1` and this release would have had it; that option now throws a config-time error naming its removal if left in place.)
-
-## Security summary
-
-- **Pinning**: the app trusts the daemon by SPKI hash, not IP/DNS/deep-link origin; deep links are bootstrap hints, never proof of authority.
-- **Tokens**: pending-session tokens are short-lived, single-use, and compared with `crypto.timingSafeEqual`; a rotating resume token lets a suspended session recover without minting a new link while the native app process remains alive. Resume credentials are process-memory-only and are never persisted to disk.
-- **Control plane**: CLI and MCP talk to the daemon over a Unix domain socket (`0700`/`0600`), not an open localhost port.
-- **Policy + audit**: production deployments can deny tool classes or specific tools by policy, and every invocation attempt is audited (args hashed, never logged raw).
-
-Full threat model, key-handling rules, and a rotation runbook: [`docs/SECURITY.md`](docs/SECURITY.md).
-
-## Platform matrix
-
-| Surface | Support |
+| Package | What it is |
 | --- | --- |
-| **CLI / daemon / MCP** | any modern JavaScript runtime (Node ≥ 20 semantics) that can run the published package and open a Unix domain socket + TLS `wss://` listener |
-| **React Native — iOS** | 15.1+, New Architecture |
-| **React Native — Android** | New Architecture, autolinked |
-| **React Native — Web** | safe no-op stub only |
-| **Windows control plane** | best-effort (named pipe), not yet exercised in CI |
+| [`cordierite`](packages/cordierite/README.md) | The CLI, the background service, and the MCP server |
+| [`@cordierite/react-native`](packages/react-native/README.md) | The app-side library and Expo config plugin |
+| [`@cordierite/shared`](packages/shared/README.md) | Types shared by both |
 
-## Documentation
+## Support
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - the current architecture reference
-- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) - the wire protocol, byte layouts, message catalog, state machine, close codes
-- [`docs/SECURITY.md`](docs/SECURITY.md) - threat model and key rotation runbook
-- [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) - product requirements
+iOS 15.1+ and Android, both on the New Architecture. Web gets a no-op stub so shared code doesn't break. The CLI needs Node 20 or newer. Windows works in principle but isn't tested in CI yet.
+
+## Docs
+
+- [`docs/SECURITY.md`](docs/SECURITY.md) — what it protects against, and key rotation
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the pieces fit together
+- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — the wire protocol, if you're implementing a client
+- [`docs/CI.md`](docs/CI.md) — running it in CI
 
 ## Made with ❤️ at Callstack
 
