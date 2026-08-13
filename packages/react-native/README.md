@@ -232,7 +232,7 @@ module.exports = {
 };
 ```
 
-The Expo-managed equivalent is `expo.autolinking`'s per-platform `exclude` list in `app.json` / `app.config.*`:
+The Expo-managed equivalent is `expo.autolinking`'s per-platform `exclude` list — but it must live in **`package.json`**, not `app.json` / `app.config.*`. `expo-modules-autolinking` reads this config straight from `package.json` at pod-install/gradle time; an `expo.autolinking` block in `app.json` is silently ignored, so the exclusion never happens and the native module still ships. This has already shipped as a bug once, so double-check with the resolver command below after adding it.
 
 ```json
 {
@@ -244,6 +244,14 @@ The Expo-managed equivalent is `expo.autolinking`'s per-platform `exclude` list 
   }
 }
 ```
+
+Verify the exclusion actually took effect — this is the only way to catch the `app.json` mistake above. Run it from your app root after `npm`/`pnpm`/`yarn install`, using the locally installed binary rather than `npx` (which can silently fetch an unrelated version from the registry instead of resolving the one your build actually uses):
+
+```sh
+./node_modules/.bin/expo-modules-autolinking react-native-config --json --platform ios
+```
+
+`@cordierite/react-native` must be absent from the printed `dependencies`.
 
 **2. JS — swap the module at bundle time**, so no Cordierite JS (deep-link listener, tool registry, client state machine) ends up in the bundle either. Add a Metro `resolveRequest` override in `metro.config.js`:
 

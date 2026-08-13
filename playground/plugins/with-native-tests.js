@@ -7,8 +7,21 @@ const { withPodfile } = require("expo/config-plugins");
 // as a local config plugin rather than as a `@cordierite/react-native` plugin option.
 //
 // CocoaPods only creates a pod's test target when its test spec is explicitly requested from the
-// Podfile, and Expo Autolinking (see this app's `autolinking.ios.exclude` in app.json) intentionally
-// links just the production pod -- so this plugin adds the one Podfile line needed to opt in.
+// Podfile, and Expo Autolinking's own pod declaration never requests one -- so this plugin adds a
+// second, explicit `pod 'Cordierite'` line with `:testspecs => ['Tests']`. CocoaPods resolves both
+// declarations to the single pod below; this does not double-link it (verified: `Podfile.lock` has
+// exactly one `Cordierite` entry after a clean `pod install`).
+//
+// This app deliberately does NOT exclude `@cordierite/react-native` from autolinking on either
+// platform (the real place for that is `expo.autolinking.{ios,android}.exclude` in `package.json`
+// -- autolinking reads it from `package.json` only, never from `app.json`; see the package README's
+// "Compiling Cordierite out of production builds" section for that recipe). Excluding it here would
+// break this playground: the app imports `@cordierite/react-native/auto` and calls its hooks
+// directly, iOS's `RCTNativeCordierite.mm` unconditionally imports the `CordieriteSpec` header that
+// only exists when autolinking's codegen step runs for this module, and CI's Android job runs
+// `:cordierite_react-native:testDebugUnitTest`, which requires the Gradle project autolinking
+// creates. An app that wants to strip Cordierite out entirely should follow the README/SECURITY.md
+// recipe in its own `package.json`, not this one.
 
 const CORDIERITE_PACKAGE_PATH = path.dirname(
   require.resolve("@cordierite/react-native/package.json"),
