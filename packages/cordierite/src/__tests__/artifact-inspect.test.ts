@@ -221,6 +221,21 @@ describe("artifact-inspect: never reports absent when it cannot actually tell", 
     }
   });
 
+  test("a valid zip with the wrong internal shape (e.g. mislabeled/empty) throws inspection_error, never a clean 'absent'", async () => {
+    const root = await withFixtureRoot();
+    const apkPath = path.join(root, "wrong-shape.apk");
+
+    // A genuinely valid, readable zip — but with none of the entries a real .apk always has
+    // (AndroidManifest.xml). Without the shape check this would read back as a clean "no signals
+    // found" (present: false) even though the file plainly isn't a real Android artifact.
+    await buildZipFixture(apkPath, { "readme.txt": "this is not an Android build output" });
+
+    await expect(inspectArtifact(apkPath)).rejects.toMatchObject({
+      type: "inspection_error",
+      message: expect.stringMatching(/does not look like a valid \.apk/iu),
+    });
+  });
+
   test("a corrupt/non-zip archive throws inspection_error via the real `unzip` binary", async () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "corrupt.apk");

@@ -30,7 +30,10 @@ describe("cordierite doctor: CLI wiring", () => {
   test("exit 0, ok:true JSON when Cordierite is present and no assertion was requested", async () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "included.apk");
-    await buildZipFixture(apkPath, { "classes.dex": "Lcom/callstackincubator/cordierite/X;" });
+    await buildZipFixture(apkPath, {
+      "classes.dex": "Lcom/callstackincubator/cordierite/X;",
+      "AndroidManifest.xml": "placeholder manifest",
+    });
 
     const result = await runCliWithCapture(["doctor", apkPath, "--json"]);
 
@@ -42,7 +45,10 @@ describe("cordierite doctor: CLI wiring", () => {
   test("exit 0 for --assert-present against an included artifact", async () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "included.apk");
-    await buildZipFixture(apkPath, { "classes.dex": "Lcom/callstackincubator/cordierite/X;" });
+    await buildZipFixture(apkPath, {
+      "classes.dex": "Lcom/callstackincubator/cordierite/X;",
+      "AndroidManifest.xml": "placeholder manifest",
+    });
 
     const result = await runCliWithCapture(["doctor", apkPath, "--assert-present", "--json"]);
 
@@ -52,7 +58,10 @@ describe("cordierite doctor: CLI wiring", () => {
   test("exit 3 (assertion_error) for --assert-absent against an included artifact", async () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "included.apk");
-    await buildZipFixture(apkPath, { "classes.dex": "Lcom/callstackincubator/cordierite/X;" });
+    await buildZipFixture(apkPath, {
+      "classes.dex": "Lcom/callstackincubator/cordierite/X;",
+      "AndroidManifest.xml": "placeholder manifest",
+    });
 
     const result = await runCliWithCapture(["doctor", apkPath, "--assert-absent", "--json"]);
 
@@ -64,7 +73,10 @@ describe("cordierite doctor: CLI wiring", () => {
   test("exit 3 (assertion_error) for --assert-present against an excluded artifact", async () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "excluded.apk");
-    await buildZipFixture(apkPath, { "classes.dex": "Lcom/example/app/MainActivity;" });
+    await buildZipFixture(apkPath, {
+      "classes.dex": "Lcom/example/app/MainActivity;",
+      "AndroidManifest.xml": "placeholder manifest",
+    });
 
     const result = await runCliWithCapture(["doctor", apkPath, "--assert-present", "--json"]);
 
@@ -112,7 +124,10 @@ describe("cordierite doctor: CLI wiring", () => {
   test("human-readable output names the artifact, platform, and presence", async () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "included.apk");
-    await buildZipFixture(apkPath, { "classes.dex": "Lcom/callstackincubator/cordierite/X;" });
+    await buildZipFixture(apkPath, {
+      "classes.dex": "Lcom/callstackincubator/cordierite/X;",
+      "AndroidManifest.xml": "placeholder manifest",
+    });
 
     const result = await runCliWithCapture(["doctor", apkPath]);
 

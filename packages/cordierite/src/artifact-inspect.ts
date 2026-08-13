@@ -15,9 +15,11 @@
  *
  * - iOS: the Objective-C class name `RCTNativeCordierite` (`RCT_EXPORT_MODULE`, see
  *   `packages/react-native/ios/RCTNativeCordierite.mm`) is Objective-C runtime metadata — it lives
- *   in `__objc_classname`/`__objc_data` and can't be stripped by release optimization without
- *   breaking `+[NSObject class]`-based dispatch, so it survives exactly the kind of build this
- *   command exists to gate. It's corroborated by the plugin-authored `Info.plist` keys
+ *   in `__objc_classname`/`__objc_data`, and `strip`/release optimization leaves it alone because
+ *   removing it would break `+[NSObject class]`-based dispatch. (A build that dead-strips the whole
+ *   translation unit for lack of `-ObjC`/`-force_load` could still drop it — this signal assumes
+ *   the module actually links into the binary, which is the thing being checked in the first
+ *   place.) It's corroborated by the plugin-authored `Info.plist` keys
  *   (`CordieriteCliPins`/`CordieriteTrust`/`CordieriteAllowPrivateLanOnly`, docs/tasks/00-overview.md
  *   "Native config keys the plugin writes"), which are plist string data, not code, so they can't be
  *   renamed by anything that mangles symbols.
@@ -34,6 +36,17 @@
  * Neither corroborating signal is treated as authoritative on its own for "absent": presence is an
  * OR across all signals for a platform, specifically so a minified dex that dropped the package
  * name literal doesn't flip a real inclusion to "absent" just because one of the two checks missed.
+ *
+ * **Known residual gap** (tracked, not silently assumed away): the manifest-key corroborating
+ * signal on Android only exists if the config plugin wrote it — a bare-RN app wired up via
+ * `react-native.config.js` (docs/tasks/00-overview.md's "Inclusion" contract) rather than the Expo
+ * config plugin gets no `AndroidManifest.xml` meta-data at all, so a release build with R8
+ * minification and no keep rule for `com.callstackincubator.cordierite` in that setup can rename
+ * the dex package past this command's detection. Closing that gap needs a keep rule or an
+ * additional native marker in `packages/react-native/android` — out of this task's file scope (see
+ * `docs/tasks/08-cordierite-doctor.md`'s "Independent of every other task — no shared files").
+ * `cordierite doctor` is strictly better than the runtime check it replaces (docs/tasks/00-overview.md
+ * "What we give up, deliberately"), not a claim of unconditional coverage for every build config.
  */
 
 import { execFile } from "node:child_process";
@@ -139,6 +152,14 @@ const runToolOrInspectionError = async (
       );
     }
 
+    if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      throw inspectionError(
+        `"${command} ${args.join(" ")}" produced more output than this command will buffer while ` +
+          `inspecting ${context}. The artifact is unusually large, not necessarily corrupt — this is ` +
+          `a tooling limit, not a presence/absence answer.`,
+      );
+    }
+
     const stderr = err.stderr ? err.stderr.toString("utf8").trim() : "";
     throw inspectionError(
       `"${command} ${args.join(" ")}" failed while inspecting ${context}${
@@ -148,13 +169,63 @@ const runToolOrInspectionError = async (
   }
 };
 
+/** The container-shape check every zip-format artifact must pass before its contents are trusted
+ * for a presence/absence answer (see {@link readZipEntries}): an empty, wrong-file-renamed, or
+ * otherwise not-actually-that-kind-of-artifact zip must never silently read back as "no signals
+ * found" — it isn't an answer, it's evidence the input wasn't what its extension claimed. */
+const EXPECTED_ENTRY_PATTERN: Record<"ipa" | "apk" | "aab", RegExp> = {
+  ipa: /\.app\//iu,
+  apk: /(^|\/)AndroidManifest\.xml$/u,
+  aab: /(^|\/)AndroidManifest\.xml$/u,
+};
+
+const assertExpectedZipShape = (
+  format: "ipa" | "apk" | "aab",
+  entries: string[],
+  context: string,
+): void => {
+  if (entries.length === 0) {
+    throw inspectionError(`${context} contains no entries — it is not a valid archive.`);
+  }
+
+  if (!entries.some((entry) => EXPECTED_ENTRY_PATTERN[format].test(entry))) {
+    throw inspectionError(
+      `${context} does not look like a valid .${format}: none of its ${entries.length} entries match ` +
+        `the expected ${format === "ipa" ? '"*.app/" bundle' : '"AndroidManifest.xml"'} shape. Refusing ` +
+        `to report absence for an artifact that may simply be the wrong file.`,
+    );
+  }
+};
+
+/** Lists a zip archive's entry names via `unzip -Z1` (zipinfo mode: one path per line, nothing
+ * else) — used only for the {@link assertExpectedZipShape} sanity check, not for detection itself. */
+const listZipEntries = async (exec: ExecBufferFn, archivePath: string, context: string): Promise<string[]> => {
+  const stdout = await runToolOrInspectionError(exec, "unzip", ["-Z1", archivePath], context);
+
+  return stdout
+    .toString("utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+};
+
 /** Streams every entry of a zip-format archive (`.ipa`/`.apk`/`.aab` are all zip containers)
  * decompressed and concatenated to one buffer, via `unzip -p`. Deliberately does not attempt to
  * enumerate entries and extract selectively first — a single whole-archive pass is simpler, cannot
  * miss a signal hiding in an unexpected internal path (embedded framework, AAB's `base/dex/`
  * nesting, ...), and correctness matters far more than the marginal speed of a narrower read for a
- * command that runs once per release. */
-const readZipEntries = async (exec: ExecBufferFn, archivePath: string, context: string): Promise<Buffer> => {
+ * command that runs once per release. Validates the archive actually has the expected internal
+ * shape first ({@link assertExpectedZipShape}) so an empty or mislabeled zip can't read back as a
+ * clean "no signals found" instead of the "this wasn't a real artifact" it actually is. */
+const readZipEntries = async (
+  exec: ExecBufferFn,
+  archivePath: string,
+  format: "ipa" | "apk" | "aab",
+  context: string,
+): Promise<Buffer> => {
+  const entries = await listZipEntries(exec, archivePath, context);
+  assertExpectedZipShape(format, entries, context);
+
   return runToolOrInspectionError(exec, "unzip", ["-p", archivePath], context);
 };
 
@@ -296,7 +367,7 @@ export const inspectArtifact = async (
       throw inspectionError(`Expected ${context} to be a file.`);
     }
 
-    bytes = await readZipEntries(exec, artifactPath, context);
+    bytes = await readZipEntries(exec, artifactPath, format, context);
   }
 
   const signals = platform === "ios" ? detectIosSignals(bytes) : detectAndroidSignals(bytes);

@@ -25,7 +25,10 @@ describe("doctor command", () => {
   test("no --assert flag: reports present/absent without throwing", async () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "included.apk");
-    await buildZipFixture(apkPath, { "classes.dex": "Lcom/callstackincubator/cordierite/X;" });
+    await buildZipFixture(apkPath, {
+      "classes.dex": "Lcom/callstackincubator/cordierite/X;",
+      "AndroidManifest.xml": "placeholder manifest",
+    });
 
     const result = await handleDoctorCommand({ artifactPath: apkPath });
 
@@ -39,7 +42,10 @@ describe("doctor command", () => {
   test("--assert-present holds when Cordierite is present", async () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "included.apk");
-    await buildZipFixture(apkPath, { "classes.dex": "Lcom/callstackincubator/cordierite/X;" });
+    await buildZipFixture(apkPath, {
+      "classes.dex": "Lcom/callstackincubator/cordierite/X;",
+      "AndroidManifest.xml": "placeholder manifest",
+    });
 
     const result = await handleDoctorCommand({ artifactPath: apkPath, assertPresent: true });
 
@@ -49,7 +55,10 @@ describe("doctor command", () => {
   test("--assert-present throws assertion_error when Cordierite is absent", async () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "excluded.apk");
-    await buildZipFixture(apkPath, { "classes.dex": "Lcom/example/app/MainActivity;" });
+    await buildZipFixture(apkPath, {
+      "classes.dex": "Lcom/example/app/MainActivity;",
+      "AndroidManifest.xml": "placeholder manifest",
+    });
 
     await expect(
       handleDoctorCommand({ artifactPath: apkPath, assertPresent: true }),
@@ -62,7 +71,10 @@ describe("doctor command", () => {
   test("--assert-absent holds when Cordierite is absent", async () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "excluded.apk");
-    await buildZipFixture(apkPath, { "classes.dex": "Lcom/example/app/MainActivity;" });
+    await buildZipFixture(apkPath, {
+      "classes.dex": "Lcom/example/app/MainActivity;",
+      "AndroidManifest.xml": "placeholder manifest",
+    });
 
     const result = await handleDoctorCommand({ artifactPath: apkPath, assertAbsent: true });
 
@@ -72,7 +84,10 @@ describe("doctor command", () => {
   test("--assert-absent throws assertion_error when Cordierite is present", async () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "included.apk");
-    await buildZipFixture(apkPath, { "classes.dex": "Lcom/callstackincubator/cordierite/X;" });
+    await buildZipFixture(apkPath, {
+      "classes.dex": "Lcom/callstackincubator/cordierite/X;",
+      "AndroidManifest.xml": "placeholder manifest",
+    });
 
     await expect(
       handleDoctorCommand({ artifactPath: apkPath, assertAbsent: true }),

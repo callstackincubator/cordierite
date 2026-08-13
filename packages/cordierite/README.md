@@ -94,6 +94,8 @@ CI snippet, run against your production release build right before you ship it:
 
 For an internally-distributed "testing" build that an agent drives, invert the assertion (`--assert-present`) so a forgotten inclusion — not just a forgotten exclusion — fails CI too.
 
+**Known limitation:** the Android detection has two signals — the dex package name and the config plugin's `AndroidManifest.xml` meta-data keys — specifically so R8/ProGuard renaming the dex package alone doesn't flip a real inclusion to "absent". The manifest signal only exists if the Expo config plugin ran, though: a bare-RN app wired up via `react-native.config.js` with no keep rule for `com.callstackincubator.cordierite` and aggressive release minification can still evade both signals. `cordierite doctor` is strictly better than the runtime check it replaces, not a guarantee against every build configuration.
+
 ## Programmatic use
 
 The package exports `runCli` and command handlers from [`src/index.ts`](src/index.ts) so you can embed the same behavior in Node or Bun scripts that need to drive Cordierite without shelling out.
