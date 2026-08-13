@@ -39,7 +39,7 @@ jobs:
 
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -75,6 +75,62 @@ jobs:
         run: >-
           ./gradlew :cordierite_react-native:testDebugUnitTest assembleDebug
           --no-daemon --no-build-cache --no-configuration-cache
+      - name: Assemble Android release (Cordierite included, the default)
+        working-directory: playground/android
+        run: >-
+          ./gradlew assembleRelease
+          --no-daemon --no-build-cache --no-configuration-cache
+      - name: cordierite doctor — assert present (default autolinking config)
+        run: >-
+          node packages/cordierite/bin.js doctor
+          playground/android/app/build/outputs/apk/release/app-release.apk
+          --assert-present
+      - name: Apply the package.json autolinking-exclude recipe
+        # Mutates the playground's checked-out config for this job only (never committed): adds
+        # the documented `expo.autolinking.android.exclude` entry to package.json, and drops the
+        # `@cordierite/react-native` config plugin entry from app.json entirely (the README's own
+        # "skip this whole plugin entry" guidance for a build that doesn't carry Cordierite at
+        # all) so the plugin's own include/autolinking consistency assertion
+        # (docs/tasks/06-config-plugin-rewrite.md) never runs, and so it doesn't write
+        # CLI_PINS/TRUST/ALLOW_PRIVATE_LAN_ONLY manifest meta-data into a build that's supposed
+        # to carry no Cordierite footprint at all — `artifact-inspect.ts` treats those keys as an
+        # inclusion signal, so leaving them in would make `--assert-absent` fail even with the
+        # native module correctly excluded. This is the regression test for
+        # docs/tasks/02-fix-autolinking-exclusion.md — the exact recipe documented in the
+        # README/SECURITY.md, verified against a real build instead of by inspection.
+        working-directory: playground
+        run: |
+          node -e '
+            const fs = require("fs");
+
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.expo = pkg.expo || {};
+            pkg.expo.autolinking = pkg.expo.autolinking || {};
+            pkg.expo.autolinking.android = { exclude: ["@cordierite/react-native"] };
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+
+            const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
+            app.expo.plugins = app.expo.plugins.filter(
+              (entry) => !(Array.isArray(entry) && entry[0] === "@cordierite/react-native")
+            );
+            fs.writeFileSync("app.json", JSON.stringify(app, null, 2) + "\n");
+          '
+      - name: Re-prebuild Android with Cordierite excluded
+        working-directory: playground
+        env:
+          CI: "true"
+          EXPO_NO_TELEMETRY: "1"
+        run: pnpm exec expo prebuild --platform android --no-install --clean
+      - name: Assemble Android release (Cordierite excluded)
+        working-directory: playground/android
+        run: >-
+          ./gradlew assembleRelease
+          --no-daemon --no-build-cache --no-configuration-cache
+      - name: cordierite doctor — assert absent (excluded via package.json)
+        run: >-
+          node packages/cordierite/bin.js doctor
+          playground/android/app/build/outputs/apk/release/app-release.apk
+          --assert-absent
 
   ios:
     runs-on: macos-15

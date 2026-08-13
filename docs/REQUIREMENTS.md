@@ -101,7 +101,11 @@ tools, through the same session model, with the same policy and audit applied.
   drive daemon-side policy.
 - Every tool has an explicit handler; only registered tools are exposed to the daemon.
 - Tools are removable at runtime; the disposer removes only its own registration.
-- A release build can compile Cordierite out entirely via the `/noop` entry point.
+- An app can compile Cordierite's native code out of a build entirely by excluding it from
+  autolinking, and its JS out via the `/noop` entry point — two independent, combinable
+  mechanisms, neither implied by build type (debug/release) on its own. See
+  `docs/ARCHITECTURE.md` §11 and `docs/SECURITY.md`'s "Compile out of a build you don't want
+  carrying Cordierite at all".
 
 ### 2. Session bootstrap and connect
 
