@@ -1,4 +1,7 @@
+import fs from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, test } from "vitest";
 
 // `app.plugin.js` is a CommonJS Expo config plugin at the package root, not a TS module under
@@ -6,38 +9,48 @@ import { describe, expect, test } from "vitest";
 // ambient declaration to this test file.
 const require = createRequire(import.meta.url);
 
+type NormalizedOptions = {
+  include: boolean;
+  trust: "link" | "pin";
+  cliPins: string[];
+  allowPrivateLanOnly: boolean;
+  deepLinkScheme: string | undefined;
+};
+
 const cordieritePlugin = require("../../app.plugin.js") as {
   __internal: {
     SPKI_PIN_PATTERN: RegExp;
-    validatePins: (
-      cliPins: unknown,
-      options?: { requireNonEmpty?: boolean },
-    ) => string[];
+    validatePins: (cliPins: unknown) => string[];
     configuredSchemes: (expoConfig: unknown) => string[];
     normalizeOptions: (
       rawOptions: unknown,
       expoConfig: unknown,
     ) => {
-      options: {
-        cliPins: string[] | undefined;
-        allowPrivateLanOnly: boolean;
-        deepLinkScheme: string | undefined;
-        enableInReleaseBuilds: boolean;
-      };
+      options: NormalizedOptions;
       warnings: string[];
     };
     applyInfoPlistChanges: (
       infoPlist: Record<string, unknown>,
-      options: { cliPins: string[] | undefined; allowPrivateLanOnly: boolean },
+      options: NormalizedOptions,
     ) => Record<string, unknown>;
     applyAndroidManifestChanges: (
       androidManifest: unknown,
-      options: {
-        cliPins: string[] | undefined;
-        allowPrivateLanOnly: boolean;
-        enableInReleaseBuilds?: boolean;
-      },
+      options: NormalizedOptions,
     ) => unknown;
+    resolvePackageJsonAutolinkingExclude: (
+      packageJson: unknown,
+      platform: "ios" | "android",
+    ) => string[];
+    isExcludedByReactNativeConfig: (
+      reactNativeConfig: unknown,
+      platform: "ios" | "android",
+    ) => boolean;
+    assertIncludeMatchesAutolinking: (args: {
+      include: boolean;
+      platform: "ios" | "android";
+      packageJson: unknown;
+      reactNativeConfig: unknown;
+    }) => void;
   };
 };
 
@@ -47,7 +60,12 @@ const {
   normalizeOptions,
   applyInfoPlistChanges,
   applyAndroidManifestChanges,
+  resolvePackageJsonAutolinkingExclude,
+  isExcludedByReactNativeConfig,
+  assertIncludeMatchesAutolinking,
 } = cordieritePlugin.__internal;
+
+const PACKAGE_NAME = "@cordierite/react-native";
 
 // A real SHA-256 digest, base64-encoded: 32 bytes -> 44 base64 characters (one `=` pad).
 const VALID_PIN = "sha256/Jd5ES7Yt70PB1fYYVg5K3sLCpzPE1eEWxvrJ+i/H5rY=";
@@ -59,12 +77,12 @@ const minimalAndroidManifest = () => ({
 });
 
 describe("app.plugin.js: validatePins", () => {
-  test("throws when cliPins is missing", () => {
-    expect(() => validatePins(undefined)).toThrow(/non-empty cliPins array/);
+  test("an omitted cliPins normalizes to []", () => {
+    expect(validatePins(undefined)).toEqual([]);
   });
 
-  test("throws when cliPins is empty", () => {
-    expect(() => validatePins([])).toThrow(/non-empty cliPins array/);
+  test("an explicit empty array is accepted", () => {
+    expect(validatePins([])).toEqual([]);
   });
 
   test("throws naming the offending value when a pin does not match sha256/<44-char base64>", () => {
@@ -81,29 +99,121 @@ describe("app.plugin.js: validatePins", () => {
     expect(validatePins([VALID_PIN])).toEqual([VALID_PIN]);
   });
 
-  // cliPins becomes optional when not opting into release.
-  test("with requireNonEmpty: false, an omitted cliPins normalizes to [] instead of throwing", () => {
-    expect(validatePins(undefined, { requireNonEmpty: false })).toEqual([]);
-  });
-
-  test("with requireNonEmpty: false, an explicit empty array is still accepted", () => {
-    expect(validatePins([], { requireNonEmpty: false })).toEqual([]);
-  });
-
-  test("with requireNonEmpty: false, a malformed pin still throws (format is always checked)", () => {
-    expect(() =>
-      validatePins(["not-a-pin"], { requireNonEmpty: false }),
-    ).toThrow(/"not-a-pin"/);
-  });
-
-  test("with requireNonEmpty: false, a well-formed pin is still accepted", () => {
-    expect(validatePins([VALID_PIN], { requireNonEmpty: false })).toEqual([
-      VALID_PIN,
-    ]);
+  test("throws when cliPins is not an array", () => {
+    expect(() => validatePins("not-an-array")).toThrow(
+      /requires "cliPins" to be an array/,
+    );
   });
 });
 
 describe("app.plugin.js: normalizeOptions", () => {
+  test("enableInReleaseBuilds throws, naming include/trust", () => {
+    expect(() => normalizeOptions({ enableInReleaseBuilds: true }, {})).toThrow(
+      /"enableInReleaseBuilds" has been removed/,
+    );
+    expect(() => normalizeOptions({ enableInReleaseBuilds: true }, {})).toThrow(
+      /"include"/,
+    );
+    expect(() => normalizeOptions({ enableInReleaseBuilds: true }, {})).toThrow(
+      /"trust"/,
+    );
+  });
+
+  test("enableInReleaseBuilds: false still throws (the option itself is gone, not just true)", () => {
+    expect(() =>
+      normalizeOptions({ enableInReleaseBuilds: false }, {}),
+    ).toThrow(/"enableInReleaseBuilds" has been removed/);
+  });
+
+  test("include defaults to true", () => {
+    const { options } = normalizeOptions({}, {});
+    expect(options.include).toBe(true);
+  });
+
+  test("include: false is honored", () => {
+    const { options } = normalizeOptions({ include: false }, {});
+    expect(options.include).toBe(false);
+  });
+
+  test("include must be a boolean", () => {
+    expect(() => normalizeOptions({ include: "yes" }, {})).toThrow(
+      /"include" must be a boolean/,
+    );
+  });
+
+  test("trust defaults to link when cliPins is absent", () => {
+    const { options } = normalizeOptions({}, {});
+    expect(options.trust).toBe("link");
+  });
+
+  test("trust defaults to pin when cliPins is present (non-empty)", () => {
+    const { options } = normalizeOptions({ cliPins: [VALID_PIN] }, {});
+    expect(options.trust).toBe("pin");
+  });
+
+  test("trust defaults to pin when cliPins is present but explicitly empty", () => {
+    // cliPins: [] with no explicit trust still counts as "provided" for the default, which is
+    // exactly the combination that then trips the trust:pin-requires-non-empty-cliPins error.
+    expect(() => normalizeOptions({ cliPins: [] }, {})).toThrow(
+      /requires a non-empty "cliPins" array/,
+    );
+  });
+
+  test("an unrecognized trust value is a hard error, not a fallback to the default", () => {
+    expect(() =>
+      normalizeOptions({ trust: "PIN", cliPins: [VALID_PIN] }, {}),
+    ).toThrow(/"trust" must be "link" or "pin", got "PIN"/);
+    expect(() => normalizeOptions({ trust: "pinn" }, {})).toThrow(
+      /"trust" must be "link" or "pin", got "pinn"/,
+    );
+  });
+
+  test("trust: pin with cliPins missing throws", () => {
+    expect(() => normalizeOptions({ trust: "pin" }, {})).toThrow(
+      /requires a non-empty "cliPins" array/,
+    );
+  });
+
+  test("trust: pin with cliPins explicitly empty throws", () => {
+    expect(() => normalizeOptions({ trust: "pin", cliPins: [] }, {})).toThrow(
+      /requires a non-empty "cliPins" array/,
+    );
+  });
+
+  test("trust: pin with non-empty cliPins succeeds", () => {
+    const { options } = normalizeOptions(
+      { trust: "pin", cliPins: [VALID_PIN] },
+      {},
+    );
+    expect(options.trust).toBe("pin");
+    expect(options.cliPins).toEqual([VALID_PIN]);
+  });
+
+  test("trust: link with no cliPins succeeds", () => {
+    const { options, warnings } = normalizeOptions({ trust: "link" }, {});
+    expect(options.trust).toBe("link");
+    expect(options.cliPins).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  test("trust: link with cliPins present warns that embedded pins win regardless", () => {
+    const { warnings } = normalizeOptions(
+      { trust: "link", cliPins: [VALID_PIN] },
+      {},
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("cliPins");
+    expect(warnings[0]).toContain("trust");
+  });
+
+  test("trust: pin with cliPins present does not warn", () => {
+    const { warnings } = normalizeOptions(
+      { trust: "pin", cliPins: [VALID_PIN] },
+      {},
+    );
+    expect(warnings).toEqual([]);
+  });
+
   test("defaults allowPrivateLanOnly to true (fail-closed) when omitted", () => {
     const { options } = normalizeOptions({ cliPins: [VALID_PIN] }, {});
     expect(options.allowPrivateLanOnly).toBe(true);
@@ -117,16 +227,9 @@ describe("app.plugin.js: normalizeOptions", () => {
     expect(options.allowPrivateLanOnly).toBe(false);
   });
 
-  // `enableInReleaseBuilds: true` below keeps these scoped to the deepLinkScheme warning only --
-  // without it, the cliPins-without-enableInReleaseBuilds warning (tested separately below) would
-  // also fire and inflate the warnings array these assertions check.
   test("warns when deepLinkScheme is not declared in the Expo config's scheme field", () => {
     const { warnings } = normalizeOptions(
-      {
-        cliPins: [VALID_PIN],
-        enableInReleaseBuilds: true,
-        deepLinkScheme: "myapp",
-      },
+      { trust: "pin", cliPins: [VALID_PIN], deepLinkScheme: "myapp" },
       { scheme: "otherapp" },
     );
     expect(warnings).toHaveLength(1);
@@ -135,11 +238,7 @@ describe("app.plugin.js: normalizeOptions", () => {
 
   test("does not warn when deepLinkScheme matches a string scheme", () => {
     const { warnings } = normalizeOptions(
-      {
-        cliPins: [VALID_PIN],
-        enableInReleaseBuilds: true,
-        deepLinkScheme: "myapp",
-      },
+      { trust: "pin", cliPins: [VALID_PIN], deepLinkScheme: "myapp" },
       { scheme: "myapp" },
     );
     expect(warnings).toEqual([]);
@@ -147,11 +246,7 @@ describe("app.plugin.js: normalizeOptions", () => {
 
   test("does not warn when deepLinkScheme matches one entry of an array scheme", () => {
     const { warnings } = normalizeOptions(
-      {
-        cliPins: [VALID_PIN],
-        enableInReleaseBuilds: true,
-        deepLinkScheme: "myapp",
-      },
+      { trust: "pin", cliPins: [VALID_PIN], deepLinkScheme: "myapp" },
       { scheme: ["otherapp", "myapp"] },
     );
     expect(warnings).toEqual([]);
@@ -159,7 +254,7 @@ describe("app.plugin.js: normalizeOptions", () => {
 
   test("does not warn when deepLinkScheme is omitted", () => {
     const { warnings } = normalizeOptions(
-      { cliPins: [VALID_PIN], enableInReleaseBuilds: true },
+      { trust: "pin", cliPins: [VALID_PIN] },
       {},
     );
     expect(warnings).toEqual([]);
@@ -169,119 +264,6 @@ describe("app.plugin.js: normalizeOptions", () => {
     expect(() => normalizeOptions({ cliPins: ["bad"] }, {})).toThrow(
       /is not a valid SPKI pin/,
     );
-  });
-
-  // cliPins becomes optional when not opting into release.
-  // Test matrix below: enableInReleaseBuilds true/false/absent x cliPins valid/empty/invalid/absent.
-
-  test("cliPins is optional when enableInReleaseBuilds is absent: normalizes to undefined, not []", () => {
-    const { options } = normalizeOptions({}, {});
-    // undefined (not []) so applyInfoPlistChanges/applyAndroidManifestChanges can tell "omitted"
-    // apart from "explicitly empty" and skip writing the pins key entirely.
-    expect(options.cliPins).toBeUndefined();
-    expect(options.enableInReleaseBuilds).toBe(false);
-  });
-
-  test("enableInReleaseBuilds: false + cliPins absent succeeds, cliPins stays undefined", () => {
-    const { options, warnings } = normalizeOptions(
-      { enableInReleaseBuilds: false },
-      {},
-    );
-    expect(options.cliPins).toBeUndefined();
-    expect(options.enableInReleaseBuilds).toBe(false);
-    expect(warnings).toEqual([]);
-  });
-
-  test("enableInReleaseBuilds: absent + cliPins valid succeeds and is preserved", () => {
-    const { options } = normalizeOptions({ cliPins: [VALID_PIN] }, {});
-    expect(options.cliPins).toEqual([VALID_PIN]);
-    expect(options.enableInReleaseBuilds).toBe(false);
-  });
-
-  test("enableInReleaseBuilds: false + cliPins valid succeeds and is preserved", () => {
-    const { options } = normalizeOptions(
-      { enableInReleaseBuilds: false, cliPins: [VALID_PIN] },
-      {},
-    );
-    expect(options.cliPins).toEqual([VALID_PIN]);
-  });
-
-  test("enableInReleaseBuilds: absent + cliPins empty array succeeds (still optional)", () => {
-    const { options } = normalizeOptions({ cliPins: [] }, {});
-    expect(options.cliPins).toEqual([]);
-  });
-
-  test("enableInReleaseBuilds: false + cliPins invalid still throws (format always checked)", () => {
-    expect(() =>
-      normalizeOptions({ enableInReleaseBuilds: false, cliPins: ["bad"] }, {}),
-    ).toThrow(/is not a valid SPKI pin/);
-  });
-
-  test("enableInReleaseBuilds: absent + cliPins invalid still throws", () => {
-    expect(() => normalizeOptions({ cliPins: ["bad"] }, {})).toThrow(
-      /is not a valid SPKI pin/,
-    );
-  });
-
-  test("enableInReleaseBuilds: true requires a non-empty cliPins (absent and empty both throw)", () => {
-    expect(() => normalizeOptions({ enableInReleaseBuilds: true }, {})).toThrow(
-      /non-empty cliPins array/,
-    );
-    expect(() =>
-      normalizeOptions({ enableInReleaseBuilds: true, cliPins: [] }, {}),
-    ).toThrow(/non-empty cliPins array/);
-  });
-
-  test("enableInReleaseBuilds: true + cliPins invalid throws the SPKI-shape error, not the non-empty one", () => {
-    expect(() =>
-      normalizeOptions({ enableInReleaseBuilds: true, cliPins: ["bad"] }, {}),
-    ).toThrow(/is not a valid SPKI pin/);
-  });
-
-  test("enableInReleaseBuilds: true with a valid cliPins succeeds", () => {
-    const { options } = normalizeOptions(
-      { enableInReleaseBuilds: true, cliPins: [VALID_PIN] },
-      {},
-    );
-    expect(options.enableInReleaseBuilds).toBe(true);
-    expect(options.cliPins).toEqual([VALID_PIN]);
-  });
-
-  // cliPins set without enableInReleaseBuilds is very likely
-  // a misconfiguration -- the team almost certainly expects production trust to work.
-  describe("enableInReleaseBuilds/cliPins mismatch warning", () => {
-    test("warns when cliPins is set but enableInReleaseBuilds is absent", () => {
-      const { warnings } = normalizeOptions({ cliPins: [VALID_PIN] }, {});
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0]).toContain("cliPins");
-      expect(warnings[0]).toContain("enableInReleaseBuilds");
-    });
-
-    test("warns when cliPins is set and enableInReleaseBuilds is explicitly false", () => {
-      const { warnings } = normalizeOptions(
-        { cliPins: [VALID_PIN], enableInReleaseBuilds: false },
-        {},
-      );
-      expect(warnings).toHaveLength(1);
-    });
-
-    test("warns even when the set cliPins is an explicit empty array", () => {
-      const { warnings } = normalizeOptions({ cliPins: [] }, {});
-      expect(warnings).toHaveLength(1);
-    });
-
-    test("does not warn when both cliPins and enableInReleaseBuilds: true are set", () => {
-      const { warnings } = normalizeOptions(
-        { cliPins: [VALID_PIN], enableInReleaseBuilds: true },
-        {},
-      );
-      expect(warnings).toEqual([]);
-    });
-
-    test("does not warn when neither cliPins nor enableInReleaseBuilds is set", () => {
-      const { warnings } = normalizeOptions({}, {});
-      expect(warnings).toEqual([]);
-    });
   });
 });
 
@@ -300,48 +282,59 @@ describe("app.plugin.js: configuredSchemes", () => {
 });
 
 describe("app.plugin.js: applyInfoPlistChanges", () => {
-  test("writes pins and a real boolean allowPrivateLanOnly", () => {
+  test("writes pins, trust, and a real boolean allowPrivateLanOnly", () => {
     const infoPlist = applyInfoPlistChanges(
       {},
-      { cliPins: [VALID_PIN], allowPrivateLanOnly: true },
+      {
+        include: true,
+        trust: "pin",
+        cliPins: [VALID_PIN],
+        allowPrivateLanOnly: true,
+        deepLinkScheme: undefined,
+      },
     );
     expect(infoPlist["CordieriteCliPins"]).toEqual([VALID_PIN]);
     expect(infoPlist["CordieriteAllowPrivateLanOnly"]).toBe(true);
     expect(typeof infoPlist["CordieriteAllowPrivateLanOnly"]).toBe("boolean");
+    expect(infoPlist["CordieriteTrust"]).toBe("pin");
   });
 
-  // cliPins optional -- absent means no pins key at all.
-  test("writes no CordieriteCliPins key at all when cliPins is undefined (absent)", () => {
+  test("writes trust: link and an empty pins array when cliPins is omitted", () => {
     const infoPlist = applyInfoPlistChanges(
       {},
-      { cliPins: undefined, allowPrivateLanOnly: true },
-    );
-    expect("CordieriteCliPins" in infoPlist).toBe(false);
-    // allowPrivateLanOnly is unaffected by cliPins being absent.
-    expect(infoPlist["CordieriteAllowPrivateLanOnly"]).toBe(true);
-  });
-
-  test("writes an explicit empty CordieriteCliPins array when cliPins is []", () => {
-    const infoPlist = applyInfoPlistChanges(
-      {},
-      { cliPins: [], allowPrivateLanOnly: true },
+      {
+        include: true,
+        trust: "link",
+        cliPins: [],
+        allowPrivateLanOnly: true,
+        deepLinkScheme: undefined,
+      },
     );
     expect(infoPlist["CordieriteCliPins"]).toEqual([]);
+    expect(infoPlist["CordieriteTrust"]).toBe("link");
   });
 });
 
 describe("app.plugin.js: applyAndroidManifestChanges", () => {
-  test("writes the pins JSON string and a real boolean allowPrivateLanOnly meta-data value", () => {
+  const metaDataOf = (manifest: unknown) =>
+    (
+      manifest as {
+        manifest: {
+          application: [{ "meta-data": { $: Record<string, unknown> }[] }];
+        };
+      }
+    ).manifest.application[0]["meta-data"];
+
+  test("writes the pins JSON string, trust, and a real boolean allowPrivateLanOnly meta-data value", () => {
     const manifest = applyAndroidManifestChanges(minimalAndroidManifest(), {
+      include: true,
+      trust: "pin",
       cliPins: [VALID_PIN],
       allowPrivateLanOnly: true,
-    }) as {
-      manifest: {
-        application: [{ "meta-data": { $: Record<string, unknown> }[] }];
-      };
-    };
+      deepLinkScheme: undefined,
+    });
 
-    const metaData = manifest.manifest.application[0]["meta-data"];
+    const metaData = metaDataOf(manifest);
     const pins = metaData.find(
       (item) =>
         item.$["android:name"] === "com.callstackincubator.cordierite.CLI_PINS",
@@ -351,109 +344,429 @@ describe("app.plugin.js: applyAndroidManifestChanges", () => {
         item.$["android:name"] ===
         "com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY",
     );
+    const trust = metaData.find(
+      (item) =>
+        item.$["android:name"] === "com.callstackincubator.cordierite.TRUST",
+    );
 
     expect(pins?.$["android:value"]).toBe(JSON.stringify([VALID_PIN]));
     // A real boolean survives in the in-memory manifest model ("write it in a form native
-    // actually reads"), not a stringified `"true"` -- distinguishing this from the earlier bug.
+    // actually reads"), not a stringified `"true"`.
     expect(privateLan?.$["android:value"]).toBe(true);
     expect(typeof privateLan?.$["android:value"]).toBe("boolean");
+    expect(trust?.$["android:value"]).toBe("pin");
+  });
+
+  test("writes an empty CLI_PINS meta-data value when cliPins is []", () => {
+    const manifest = applyAndroidManifestChanges(minimalAndroidManifest(), {
+      include: true,
+      trust: "link",
+      cliPins: [],
+      allowPrivateLanOnly: true,
+      deepLinkScheme: undefined,
+    });
+
+    const pins = metaDataOf(manifest).find(
+      (item) =>
+        item.$["android:name"] === "com.callstackincubator.cordierite.CLI_PINS",
+    );
+    expect(pins?.$["android:value"]).toBe(JSON.stringify([]));
+  });
+
+  test("never writes an ENABLE_IN_RELEASE meta-data key", () => {
+    const manifest = applyAndroidManifestChanges(minimalAndroidManifest(), {
+      include: true,
+      trust: "pin",
+      cliPins: [VALID_PIN],
+      allowPrivateLanOnly: true,
+      deepLinkScheme: undefined,
+    });
+
+    const enableInRelease = metaDataOf(manifest).find((item) =>
+      String(item.$["android:name"]).includes("ENABLE_IN_RELEASE"),
+    );
+    expect(enableInRelease).toBeUndefined();
   });
 
   test("throws when the manifest has no MainApplication element", () => {
     expect(() =>
       applyAndroidManifestChanges(
         { manifest: { application: [] } },
-        { cliPins: [VALID_PIN], allowPrivateLanOnly: true },
+        {
+          include: true,
+          trust: "pin",
+          cliPins: [VALID_PIN],
+          allowPrivateLanOnly: true,
+          deepLinkScheme: undefined,
+        },
       ),
     ).toThrow();
   });
+});
 
-  // Default-inert release builds.
-  test("writes a real boolean ENABLE_IN_RELEASE meta-data value, defaulting to false", () => {
-    const manifest = applyAndroidManifestChanges(minimalAndroidManifest(), {
-      cliPins: [VALID_PIN],
-      allowPrivateLanOnly: true,
-    }) as {
-      manifest: {
-        application: [{ "meta-data": { $: Record<string, unknown> }[] }];
-      };
-    };
-
-    const metaData = manifest.manifest.application[0]["meta-data"];
-    const enableInRelease = metaData.find(
-      (item) =>
-        item.$["android:name"] ===
-        "com.callstackincubator.cordierite.ENABLE_IN_RELEASE",
-    );
-
-    expect(enableInRelease?.$["android:value"]).toBe(false);
-    expect(typeof enableInRelease?.$["android:value"]).toBe("boolean");
+describe("app.plugin.js: resolvePackageJsonAutolinkingExclude", () => {
+  test("returns [] when expo.autolinking is absent", () => {
+    expect(resolvePackageJsonAutolinkingExclude({}, "ios")).toEqual([]);
   });
 
-  test("writes ENABLE_IN_RELEASE: true when enableInReleaseBuilds is true", () => {
-    const manifest = applyAndroidManifestChanges(minimalAndroidManifest(), {
-      cliPins: [VALID_PIN],
-      allowPrivateLanOnly: true,
-      enableInReleaseBuilds: true,
-    }) as {
-      manifest: {
-        application: [{ "meta-data": { $: Record<string, unknown> }[] }];
-      };
+  test("reads the root exclude list when no platform override exists", () => {
+    const packageJson = {
+      expo: { autolinking: { exclude: [PACKAGE_NAME] } },
     };
-
-    const metaData = manifest.manifest.application[0]["meta-data"];
-    const enableInRelease = metaData.find(
-      (item) =>
-        item.$["android:name"] ===
-        "com.callstackincubator.cordierite.ENABLE_IN_RELEASE",
-    );
-
-    expect(enableInRelease?.$["android:value"]).toBe(true);
+    expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual([
+      PACKAGE_NAME,
+    ]);
+    expect(
+      resolvePackageJsonAutolinkingExclude(packageJson, "android"),
+    ).toEqual([PACKAGE_NAME]);
   });
 
-  // cliPins optional -- absent means no pins meta-data at all.
-  test("writes no CLI_PINS meta-data at all when cliPins is undefined (absent)", () => {
-    const manifest = applyAndroidManifestChanges(minimalAndroidManifest(), {
-      cliPins: undefined,
-      allowPrivateLanOnly: true,
-    }) as {
-      manifest: {
-        application: [{ "meta-data": { $: Record<string, unknown> }[] }];
-      };
+  test("a platform-specific exclude fully replaces the root exclude (no concatenation)", () => {
+    const packageJson = {
+      expo: {
+        autolinking: {
+          exclude: ["some-other-package"],
+          ios: { exclude: [PACKAGE_NAME] },
+        },
+      },
     };
-
-    const metaData = manifest.manifest.application[0]["meta-data"];
-    const pins = metaData.find(
-      (item) =>
-        item.$["android:name"] === "com.callstackincubator.cordierite.CLI_PINS",
-    );
-
-    expect(pins).toBeUndefined();
-    // The other keys are still written even when cliPins is absent.
-    const privateLan = metaData.find(
-      (item) =>
-        item.$["android:name"] ===
-        "com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY",
-    );
-    expect(privateLan?.$["android:value"]).toBe(true);
+    expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual([
+      PACKAGE_NAME,
+    ]);
+    // android has no override, so it still sees the root list.
+    expect(
+      resolvePackageJsonAutolinkingExclude(packageJson, "android"),
+    ).toEqual(["some-other-package"]);
   });
 
-  test("writes an explicit empty CLI_PINS meta-data value when cliPins is []", () => {
-    const manifest = applyAndroidManifestChanges(minimalAndroidManifest(), {
-      cliPins: [],
-      allowPrivateLanOnly: true,
-    }) as {
-      manifest: {
-        application: [{ "meta-data": { $: Record<string, unknown> }[] }];
-      };
+  test("an explicit empty platform override clears the root exclude for that platform", () => {
+    const packageJson = {
+      expo: {
+        autolinking: {
+          exclude: [PACKAGE_NAME],
+          android: { exclude: [] },
+        },
+      },
     };
-
-    const metaData = manifest.manifest.application[0]["meta-data"];
-    const pins = metaData.find(
-      (item) =>
-        item.$["android:name"] === "com.callstackincubator.cordierite.CLI_PINS",
-    );
-
-    expect(pins?.$["android:value"]).toBe(JSON.stringify([]));
+    expect(
+      resolvePackageJsonAutolinkingExclude(packageJson, "android"),
+    ).toEqual([]);
   });
+
+  // `app.json`/`app.config.*` are never consulted here -- verified as the real behavior in task
+  // 02. This function only ever receives a parsed `package.json`, so there is nothing further to
+  // assert beyond "this function has no app.json/app.config parameter at all".
+
+  // The CocoaPods driver that runs at `pod install` time always invokes the real resolver with
+  // `--platform apple`, not `ios` (`expo-modules-autolinking`'s `scripts/ios/autolinking_manager.rb`),
+  // and `parsePackageJsonOptions` only falls back to the `ios` sub-object when `apple` is absent --
+  // an `apple` entry wins outright, it does not merge with `ios`. `platform: "ios"` here must
+  // mirror that fallback order exactly, or this assertion could disagree with what `pod install`
+  // actually does. See the drift-guard suite below, which pins this against the real resolver.
+  describe("apple/ios fallback (mirrors the real --platform apple invocation)", () => {
+    test("an apple-only exclude is seen when resolving for ios", () => {
+      const packageJson = {
+        expo: { autolinking: { apple: { exclude: [PACKAGE_NAME] } } },
+      };
+      expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual([
+        PACKAGE_NAME,
+      ]);
+    });
+
+    test("apple wins outright over ios when both are present (no merge)", () => {
+      const packageJson = {
+        expo: {
+          autolinking: {
+            apple: { exclude: [] },
+            ios: { exclude: [PACKAGE_NAME] },
+          },
+        },
+      };
+      // `apple: { exclude: [] }` is present, so it wins outright -- the ios-only exclude is never
+      // consulted, exactly like the real resolver.
+      expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual(
+        [],
+      );
+    });
+
+    test("falls back to ios when apple is absent", () => {
+      const packageJson = {
+        expo: { autolinking: { ios: { exclude: [PACKAGE_NAME] } } },
+      };
+      expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual([
+        PACKAGE_NAME,
+      ]);
+    });
+
+    test("android is unaffected by an apple key", () => {
+      const packageJson = {
+        expo: {
+          autolinking: {
+            exclude: [PACKAGE_NAME],
+            apple: { exclude: [] },
+          },
+        },
+      };
+      expect(
+        resolvePackageJsonAutolinkingExclude(packageJson, "android"),
+      ).toEqual([PACKAGE_NAME]);
+    });
+  });
+});
+
+describe("app.plugin.js: isExcludedByReactNativeConfig", () => {
+  test("false when reactNativeConfig is null", () => {
+    expect(isExcludedByReactNativeConfig(null, "ios")).toBe(false);
+  });
+
+  test("false when the package has no dependency entry", () => {
+    expect(isExcludedByReactNativeConfig({ dependencies: {} }, "ios")).toBe(
+      false,
+    );
+  });
+
+  test("true when the platform is explicitly null", () => {
+    const rnConfig = {
+      dependencies: { [PACKAGE_NAME]: { platforms: { ios: null } } },
+    };
+    expect(isExcludedByReactNativeConfig(rnConfig, "ios")).toBe(true);
+    expect(isExcludedByReactNativeConfig(rnConfig, "android")).toBe(false);
+  });
+});
+
+describe("app.plugin.js: assertIncludeMatchesAutolinking", () => {
+  test("include: true and not excluded anywhere passes silently", () => {
+    expect(() =>
+      assertIncludeMatchesAutolinking({
+        include: true,
+        platform: "ios",
+        packageJson: {},
+        reactNativeConfig: null,
+      }),
+    ).not.toThrow();
+  });
+
+  test("include: true but excluded via package.json throws, naming the file", () => {
+    expect(() =>
+      assertIncludeMatchesAutolinking({
+        include: true,
+        platform: "ios",
+        packageJson: { expo: { autolinking: { exclude: [PACKAGE_NAME] } } },
+        reactNativeConfig: null,
+      }),
+    ).toThrow(/package\.json/);
+  });
+
+  test("include: true but excluded via react-native.config.js throws, naming that file", () => {
+    expect(() =>
+      assertIncludeMatchesAutolinking({
+        include: true,
+        platform: "android",
+        packageJson: {},
+        reactNativeConfig: {
+          dependencies: { [PACKAGE_NAME]: { platforms: { android: null } } },
+        },
+      }),
+    ).toThrow(/react-native\.config\.js/);
+  });
+
+  test("include: true but excluded only on the other platform passes for this platform", () => {
+    expect(() =>
+      assertIncludeMatchesAutolinking({
+        include: true,
+        platform: "android",
+        packageJson: {
+          expo: { autolinking: { ios: { exclude: [PACKAGE_NAME] } } },
+        },
+        reactNativeConfig: null,
+      }),
+    ).not.toThrow();
+  });
+
+  test("include: true but excluded on both platforms reports the platform passed in, not just 'mismatch'", () => {
+    const packageJson = {
+      expo: {
+        autolinking: {
+          ios: { exclude: [PACKAGE_NAME] },
+          android: { exclude: [PACKAGE_NAME] },
+        },
+      },
+    };
+    expect(() =>
+      assertIncludeMatchesAutolinking({
+        include: true,
+        platform: "ios",
+        packageJson,
+        reactNativeConfig: null,
+      }),
+    ).toThrow(/ios/);
+    expect(() =>
+      assertIncludeMatchesAutolinking({
+        include: true,
+        platform: "android",
+        packageJson,
+        reactNativeConfig: null,
+      }),
+    ).toThrow(/android/);
+  });
+
+  test("include: false and excluded passes silently", () => {
+    expect(() =>
+      assertIncludeMatchesAutolinking({
+        include: false,
+        platform: "ios",
+        packageJson: { expo: { autolinking: { exclude: [PACKAGE_NAME] } } },
+        reactNativeConfig: null,
+      }),
+    ).not.toThrow();
+  });
+
+  test("include: false but not excluded throws with a copy-pasteable package.json snippet", () => {
+    expect(() =>
+      assertIncludeMatchesAutolinking({
+        include: false,
+        platform: "ios",
+        packageJson: {},
+        reactNativeConfig: null,
+      }),
+    ).toThrow(/"exclude": \["@cordierite\/react-native"\]/);
+  });
+});
+
+describe("app.plugin.js: drift guard against the real expo-modules-autolinking resolver", () => {
+  // This is the "prefer reading the same config the resolver reads over reimplementing the
+  // merge" acceptance criterion from docs/tasks/06-config-plugin-rewrite.md: it runs the actual
+  // `expo-modules-autolinking` package (a transitive dependency via the `expo` devDependency)
+  // against a fixture project and asserts `resolvePackageJsonAutolinkingExclude`'s output matches
+  // it exactly, so an upstream merge-behavior change breaks this test instead of silently
+  // drifting from reality.
+  const loadRealResolver = () => {
+    const expoPackageJsonPath = require.resolve("expo/package.json", {
+      paths: [path.resolve(__dirname, "..", "..")],
+    });
+    const autolinkingExportsPath = require.resolve(
+      "expo-modules-autolinking/build/exports.js",
+      { paths: [path.dirname(expoPackageJsonPath)] },
+    );
+    return (
+      require(autolinkingExportsPath) as {
+        mergeLinkingOptionsAsync: (options: {
+          projectRoot: string;
+          platform: "ios" | "android" | "apple";
+        }) => Promise<{ exclude?: string[] }>;
+      }
+    ).mergeLinkingOptionsAsync;
+  };
+
+  const withFixtureProject = async <T>(
+    packageJson: Record<string, unknown>,
+    run: (projectRoot: string) => Promise<T>,
+  ): Promise<T> => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "cordierite-autolinking-fixture-"),
+    );
+    try {
+      fs.writeFileSync(
+        path.join(dir, "package.json"),
+        JSON.stringify(packageJson, null, 2),
+      );
+      // Awaited before cleanup below runs -- otherwise the fixture directory would be removed
+      // out from under the real resolver's async file read.
+      return await run(dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  const fixtures: {
+    name: string;
+    packageJson: Record<string, unknown>;
+  }[] = [
+    {
+      name: "no expo.autolinking at all",
+      packageJson: { name: "fixture-app" },
+    },
+    {
+      name: "root exclude only",
+      packageJson: {
+        name: "fixture-app",
+        expo: { autolinking: { exclude: [PACKAGE_NAME] } },
+      },
+    },
+    {
+      name: "platform-specific exclude overrides root",
+      packageJson: {
+        name: "fixture-app",
+        expo: {
+          autolinking: {
+            exclude: ["some-other-package"],
+            ios: { exclude: [PACKAGE_NAME] },
+          },
+        },
+      },
+    },
+    {
+      name: "explicit empty platform override clears the root exclude",
+      packageJson: {
+        name: "fixture-app",
+        expo: {
+          autolinking: {
+            exclude: [PACKAGE_NAME],
+            android: { exclude: [] },
+          },
+        },
+      },
+    },
+    {
+      // The CocoaPods driver that runs at `pod install` time always invokes the real resolver
+      // with `--platform apple`, never `ios` -- see the fallback comment on
+      // `resolvePackageJsonAutolinkingExclude`. This fixture is the case that comment exists for.
+      name: "an apple-only exclude, resolved the way pod install actually resolves it",
+      packageJson: {
+        name: "fixture-app",
+        expo: { autolinking: { apple: { exclude: [PACKAGE_NAME] } } },
+      },
+    },
+    {
+      name: "apple wins outright over ios when both are present",
+      packageJson: {
+        name: "fixture-app",
+        expo: {
+          autolinking: {
+            apple: { exclude: [] },
+            ios: { exclude: [PACKAGE_NAME] },
+          },
+        },
+      },
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    test(`matches the real resolver: ${fixture.name}`, async () => {
+      const mergeLinkingOptionsAsync = loadRealResolver();
+
+      await withFixtureProject(fixture.packageJson, async (projectRoot) => {
+        // `ourPlatform` is this plugin's contract-facing platform name ("ios"/"android");
+        // `realPlatform` is what the resolver is actually invoked with in production for that
+        // contract platform -- `pod install` always passes "apple" for iOS (see the fallback
+        // comment above), never "ios".
+        const platformPairs = [
+          { ourPlatform: "ios", realPlatform: "apple" },
+          { ourPlatform: "android", realPlatform: "android" },
+        ] as const;
+
+        for (const { ourPlatform, realPlatform } of platformPairs) {
+          const real = await mergeLinkingOptionsAsync({
+            projectRoot,
+            platform: realPlatform,
+          });
+          const ours = resolvePackageJsonAutolinkingExclude(
+            fixture.packageJson,
+            ourPlatform,
+          );
+          expect(ours).toEqual(real.exclude ?? []);
+        }
+      });
+    });
+  }
 });
