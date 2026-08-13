@@ -94,7 +94,17 @@ CI snippet, run against your production release build right before you ship it:
 
 For an internally-distributed "testing" build that an agent drives, invert the assertion (`--assert-present`) so a forgotten inclusion — not just a forgotten exclusion — fails CI too.
 
-**Known limitation:** the Android detection has two signals — the dex package name and the config plugin's `AndroidManifest.xml` meta-data keys — specifically so R8/ProGuard renaming the dex package alone doesn't flip a real inclusion to "absent". The manifest signal only exists if the Expo config plugin ran, though: a bare-RN app wired up via `react-native.config.js` with no keep rule for `com.callstackincubator.cordierite` and aggressive release minification can still evade both signals. `cordierite doctor` is strictly better than the runtime check it replaces, not a guarantee against every build configuration.
+**Android detection** has three signals, in order of reliability:
+
+1. `CordieriteNativeMarker`, kept unminified by the keep rule `@cordierite/react-native` ships via `consumerProguardFiles`. It reaches every consuming app's R8 run without the app authoring any rule, so it holds for bare-RN apps that never touch the Expo config plugin.
+2. The dex package name — survives ordinary minification but not R8 full mode's repackaging.
+3. The config plugin's `AndroidManifest.xml` meta-data keys — only present if the plugin ran.
+
+Signals 2 and 3 are retained as fallbacks for artifacts built before the marker existed.
+
+**Verified** against a real R8-minified release APK (`assembleRelease -Pandroid.enableMinifyInReleaseBuilds=true`): the R8 mapping shows sibling classes obfuscated (`CordieriteBuildConfig -> …cordierite.a`) while `CordieriteNativeMarker` keeps its fully-qualified name, and `doctor --assert-present` passes on that artifact.
+
+**Still not covered:** R8 *full mode* with `-repackageclasses` was not exercised, and no artifact was tested from a bare-RN app that uses neither Expo nor the config plugin — the configuration the marker most directly targets. The marker should hold in both (a `-keep` rule prevents renaming and removal regardless of mode), but that is reasoning, not a measurement.
 
 ## Programmatic use
 
