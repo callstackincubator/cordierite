@@ -162,7 +162,9 @@ describe("exit codes: v2 command surface", () => {
     // the trailing `&pin=...` query param); the payload ends at the next `&`, so it must be
     // isolated the same way link-open.integration.test.ts does it. Slicing to the end of the
     // string here used to swallow `&pin=...` verbatim into the base64url payload, which always
-    // fails to decode (invalid characters `&`/`%`/`=` in the "digits") — not a flake.
+    // fails to decode: `&` and `%` are outside the base64url alphabet, so `atob` throws on the
+    // appended `&pin=sha256%2F...` suffix (caught, surfaced as `decodeBootstrap` returning
+    // `null`) — deterministic, not a flake.
     const linkPayload = (linkResult.payload.data.deepLink as string)
       .split("cordierite=")[1]!
       .split("&")[0]!;
