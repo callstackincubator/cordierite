@@ -1,5 +1,6 @@
 const path = require("path");
 const { getDefaultConfig } = require("expo/metro-config");
+const { withCordierite } = require("@cordierite/react-native/metro");
 
 const projectRoot = __dirname;
 const workspaceRoot = path.resolve(projectRoot, "..");
@@ -37,4 +38,11 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
 	return context.resolveRequest(context, moduleName, platform);
 };
 
-module.exports = config;
+// The JS half of "compiling Cordierite out of production" (see the package README) -- wrapped
+// around the symlink-dedup resolver above, not in place of it, so `withCordierite` chains to it
+// rather than clobbering it. `CORDIERITE_ENABLED=0` is this playground's own opt-out switch for
+// exercising the stripped bundle; real consumers wire `include` to whatever signal fits their
+// build (see the README).
+module.exports = withCordierite(config, {
+	include: process.env.CORDIERITE_ENABLED !== "0",
+});
