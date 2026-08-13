@@ -2,12 +2,6 @@
   "name": "playground",
   "main": "expo-router/entry",
   "version": "1.0.0",
-  "expo": {
-    "autolinking": {
-      "ios": { "exclude": ["@cordierite/react-native"] },
-      "android": { "exclude": ["@cordierite/react-native"] }
-    }
-  },
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",

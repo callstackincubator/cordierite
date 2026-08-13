@@ -7,13 +7,21 @@ const { withPodfile } = require("expo/config-plugins");
 // as a local config plugin rather than as a `@cordierite/react-native` plugin option.
 //
 // CocoaPods only creates a pod's test target when its test spec is explicitly requested from the
-// Podfile. This app excludes `@cordierite/react-native` from Expo Autolinking on both platforms
-// (see `expo.autolinking.ios.exclude` / `.android.exclude` in `package.json` -- autolinking reads
-// that config from `package.json`, never from `app.json`), so nothing else links the iOS pod. This
-// plugin is what actually puts it back for iOS, with the `Tests` test spec requested, so the
-// `Cordierite.podspec`'s `test_spec 'Tests'` target exists for `pnpm test` / CI to exercise. Android
-// has no equivalent here and stays genuinely excluded, since nothing in the playground needs its
-// native module.
+// Podfile, and Expo Autolinking's own pod declaration never requests one -- so this plugin adds a
+// second, explicit `pod 'Cordierite'` line with `:testspecs => ['Tests']`. CocoaPods resolves both
+// declarations to the single pod below; this does not double-link it (verified: `Podfile.lock` has
+// exactly one `Cordierite` entry after a clean `pod install`).
+//
+// This app deliberately does NOT exclude `@cordierite/react-native` from autolinking on either
+// platform (the real place for that is `expo.autolinking.{ios,android}.exclude` in `package.json`
+// -- autolinking reads it from `package.json` only, never from `app.json`; see the package README's
+// "Compiling Cordierite out of production builds" section for that recipe). Excluding it here would
+// break this playground: the app imports `@cordierite/react-native/auto` and calls its hooks
+// directly, iOS's `RCTNativeCordierite.mm` unconditionally imports the `CordieriteSpec` header that
+// only exists when autolinking's codegen step runs for this module, and CI's Android job runs
+// `:cordierite_react-native:testDebugUnitTest`, which requires the Gradle project autolinking
+// creates. An app that wants to strip Cordierite out entirely should follow the README/SECURITY.md
+// recipe in its own `package.json`, not this one.
 
 const CORDIERITE_PACKAGE_PATH = path.dirname(
   require.resolve("@cordierite/react-native/package.json"),

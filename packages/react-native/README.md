@@ -227,10 +227,10 @@ The Expo-managed equivalent is `expo.autolinking`'s per-platform `exclude` list 
 }
 ```
 
-Verify the exclusion actually took effect — this is the only way to catch the `app.json` mistake above:
+Verify the exclusion actually took effect — this is the only way to catch the `app.json` mistake above. Run it from your app root after `npm`/`pnpm`/`yarn install`, using the locally installed binary rather than `npx` (which can silently fetch an unrelated version from the registry instead of resolving the one your build actually uses):
 
 ```sh
-npx expo-modules-autolinking react-native-config --json --platform ios
+./node_modules/.bin/expo-modules-autolinking react-native-config --json --platform ios
 ```
 
 `@cordierite/react-native` must be absent from the printed `dependencies`.
