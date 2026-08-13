@@ -25,7 +25,10 @@ of bug at prebuild instead of at runtime on a device.
 - `include: boolean`, default `true` — assertion only, never a mutation.
 - `trust: "link" | "pin"`, default `"pin"` when `cliPins` is present, `"link"` otherwise.
 - `cliPins`, `allowPrivateLanOnly` — unchanged.
-- `enableInReleaseBuilds` — **removed**, not deprecated. It has never been published (npm
+- `enableInReleaseBuilds` — **removed**, not deprecated. Remove the
+  `ANDROID_ENABLE_IN_RELEASE_KEY` meta-data write with it: task 04 deleted the native reader,
+  so between 04 and this task the plugin writes a manifest key nothing consumes. Verify
+  `git grep "ENABLE_IN_RELEASE"` is clean outside `docs/` when you are done. It has never been published (npm
   latest is `0.3.1`; this branch is `0.4.0-rc.1`), so no shim is warranted. Throw a clear
   error naming its replacement if someone passes it, since it exists in this branch's docs
   and in anyone's `rc` checkout.

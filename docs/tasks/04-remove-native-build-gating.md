@@ -60,8 +60,12 @@ task 06:
 
 ## Acceptance
 
-- `git grep -n "CORDIERITE_ENABLE_RELEASE\|ENABLE_IN_RELEASE"` returns nothing outside
-  `docs/tasks/`.
+- `git grep -n "CORDIERITE_ENABLE_RELEASE\|ENABLE_IN_RELEASE"` returns nothing in native
+  source or the Podfile mod. **Corrected after the fact:** this task cannot clear the name
+  repo-wide, because `app.plugin.js` still writes the `ENABLE_IN_RELEASE` meta-data from the
+  `enableInReleaseBuilds` option, and that option belongs to task 06. Between 04 and 06 the
+  plugin therefore writes a manifest key no native code reads — dead but harmless. Task 06
+  closes it; task 09 clears the docs.
 - A generated Podfile after prebuild contains no Cordierite `post_install` block.
 - Playground builds and connects in **Release** on both platforms with the package
   autolinked, and neither builds nor exposes a module when excluded (task 08 gives you the
