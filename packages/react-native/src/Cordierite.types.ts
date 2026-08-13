@@ -64,6 +64,24 @@ export type CordieriteConnectOptions = {
   linkPin?: string;
 };
 
+/**
+ * Effective trust/pin configuration this build was compiled with — read from the TurboModule's
+ * `getConstants()`, which pulls from the exact same manifest/plist keys `resolveTrustedPins`
+ * (`docs/tasks/05-explicit-trust-mode.md`) reads on both platforms, never a second parse. `trust`
+ * is normally `"link"` or `"pin"` (the effective bucket — `"pin"` whenever embedded pins are
+ * present, since they always win regardless of the raw config value); a hand-edited native config
+ * with an unrecognized `trust` string surfaces that raw string here instead of being silently
+ * coerced. On the `./noop` entry (no native module in this build) `trust` is the sentinel
+ * `"absent"`, distinct from any real value, and `hasEmbeddedPins`/`allowPrivateLanOnly` do not
+ * describe a real build — see `noop.ts`'s `getCordieriteBuildConfig`. Pin fingerprints themselves
+ * are never exposed, only whether any are embedded.
+ */
+export type CordieriteBuildConfig = {
+  trust: string;
+  hasEmbeddedPins: boolean;
+  allowPrivateLanOnly: boolean;
+};
+
 /** A decoded v2 bootstrap payload, plus the deep link's optional sibling `pin` param (see
  * `CordieriteConnectOptions.linkPin`) — `bootstrap.ts`'s `parseBootstrapUrl` produces this shape. */
 export type CordieriteBootstrapConnectInput = BootstrapPayload & { linkPin?: string };

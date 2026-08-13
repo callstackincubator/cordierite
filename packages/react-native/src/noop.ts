@@ -11,6 +11,7 @@
 import type { ToolDescriptor } from "@cordierite/shared";
 
 import type {
+  CordieriteBuildConfig,
   CordieriteClientState,
   CordieriteConnectInput,
   CordieriteListenerKind,
@@ -77,4 +78,16 @@ export function getCordieriteState(): CordieriteClientState {
 /** Always rejects with a `CordieriteDisabledError` (`code: "cordierite_disabled"`). */
 export function connect(_input: CordieriteConnectInput): Promise<void> {
   return Promise.reject(new CordieriteDisabledError());
+}
+
+/**
+ * Documented "absent" shape: this build has no native module at all (Expo Go/JS-only, or excluded
+ * via autolinking), so there is no trust/pin config to report. `trust: "absent"` is a sentinel
+ * distinct from the real entry's `"link"`/`"pin"` (or a hand-edited config's raw invalid value) so
+ * callers can tell "this build genuinely has no Cordierite" apart from a real, resolvable trust
+ * mode — this entry never pretends to be a build it isn't. `hasEmbeddedPins`/`allowPrivateLanOnly`
+ * are likewise placeholders, not read from anywhere.
+ */
+export function getCordieriteBuildConfig(): CordieriteBuildConfig {
+  return { trust: "absent", hasEmbeddedPins: false, allowPrivateLanOnly: true };
 }

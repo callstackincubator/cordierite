@@ -256,6 +256,83 @@ internal fun parseTrustMetadataValue(rawValue: Any?): String? =
     (rawValue as? String)?.takeIf { it.isNotEmpty() }
 
 /**
+ * The raw `TRUST`/`CLI_PINS`/`ALLOW_PRIVATE_LAN_ONLY` manifest values, parsed but not yet run
+ * through [resolveTrustedPins]. The single manifest-reading path shared by [loadConfiguration]
+ * (real connect attempts) and `getBuildConfig` (JS diagnostics via `getConstants()`), so the two
+ * can never read different data out of the manifest.
+ */
+internal data class CordieriteManifestConfig(
+    val trust: String?,
+    val embeddedPins: Set<String>,
+    val allowPrivateLanOnly: Boolean,
+)
+
+/** See [CordieriteManifestConfig]. */
+@Suppress("DEPRECATION") // Bundle.get(String) is deprecated but is the only way to read the raw value's type.
+internal fun readCordieriteManifestConfig(context: Context): CordieriteManifestConfig {
+    val applicationInfo =
+        context.packageManager.getApplicationInfo(
+            context.packageName,
+            PackageManager.GET_META_DATA,
+        )
+    val metaData = applicationInfo.metaData
+    val pinsJson = metaData?.getString(ANDROID_PINS_KEY).orEmpty()
+
+    val embeddedPins =
+        if (pinsJson.isEmpty()) {
+            emptySet()
+        } else {
+            val parsedPins = JSONArray(pinsJson)
+            buildSet {
+                for (index in 0 until parsedPins.length()) {
+                    add(parsedPins.getString(index))
+                }
+            }
+        }
+
+    return CordieriteManifestConfig(
+        trust = parseTrustMetadataValue(metaData?.get(ANDROID_TRUST_KEY)),
+        embeddedPins = embeddedPins,
+        allowPrivateLanOnly =
+            parseAllowPrivateLanOnly(
+                hasKey = metaData?.containsKey(ANDROID_PRIVATE_LAN_KEY) == true,
+                rawValue = metaData?.get(ANDROID_PRIVATE_LAN_KEY),
+            ),
+    )
+}
+
+/** The small diagnostic surface exposed to JS via `getConstants()` (`docs/tasks/07-native-module-constants.md`). */
+internal data class CordieriteBuildConfig(
+    val trust: String,
+    val hasEmbeddedPins: Boolean,
+    val allowPrivateLanOnly: Boolean,
+)
+
+/**
+ * Maps a [resolveTrustedPins] outcome to [CordieriteBuildConfig]. Reusing that function's own
+ * outcome — rather than re-deriving "trust"/"hasEmbeddedPins" from the raw manifest values with
+ * separate logic — guarantees this can never disagree with what a real `connect()` attempt would
+ * use for the same manifest state. `trust` reports the *effective* bucket ("pin" whenever embedded
+ * pins win, "link" otherwise) rather than echoing the raw config string, except
+ * [TrustedPinsResolution.InvalidTrustValue], whose raw text is surfaced as-is so a hand-edited typo
+ * is visible instead of silently coerced.
+ */
+internal fun cordieriteBuildConfig(
+    resolution: TrustedPinsResolution,
+    allowPrivateLanOnly: Boolean,
+): CordieriteBuildConfig {
+    val (trust, hasEmbeddedPins) =
+        when (resolution) {
+            is TrustedPinsResolution.Configured -> "pin" to true
+            is TrustedPinsResolution.LinkPin -> "link" to false
+            TrustedPinsResolution.PinTrustRequiresEmbeddedPins -> "pin" to false
+            TrustedPinsResolution.LinkTrustRequiresLinkPin -> "link" to false
+            is TrustedPinsResolution.InvalidTrustValue -> resolution.value to false
+        }
+    return CordieriteBuildConfig(trust, hasEmbeddedPins, allowPrivateLanOnly)
+}
+
+/**
  * Builds the first protocol v2 frame sent on a fresh socket: `session_claim` (using `token`) or,
  * when `resumeToken` is given instead, `session_resume`. Pure function so the frame shape is
  * unit-testable without a live socket.
@@ -462,6 +539,19 @@ internal class CordieriteConnectionManager(
     fun getResumeLeaseRecord(): Map<String, Any?>? = CordieriteProcessResumeLeaseStore.getRecord()
 
     fun clearResumeLease(): Boolean = CordieriteProcessResumeLeaseStore.clear(ownerGeneration)
+
+    /**
+     * Backs the TurboModule's `getConstants()`. Reads the manifest through the exact same
+     * [readCordieriteManifestConfig]/[resolveTrustedPins] path [loadConfiguration] uses for a real
+     * `connect()` — `linkPin` is `null` here since no connect attempt (and therefore no bootstrap
+     * link) is in flight when JS asks for the build config; see [cordieriteBuildConfig]'s doc
+     * comment for what that means for the reported `trust` value.
+     */
+    fun getBuildConfig(): CordieriteBuildConfig {
+        val manifestConfig = readCordieriteManifestConfig(context)
+        val resolution = resolveTrustedPins(manifestConfig.trust, manifestConfig.embeddedPins, linkPin = null)
+        return cordieriteBuildConfig(resolution, manifestConfig.allowPrivateLanOnly)
+    }
 
     private fun performConnect(
         options: CordieriteConnectOptions,
@@ -835,32 +925,11 @@ internal class CordieriteConnectionManager(
 
     /** `linkPin` comes from the connect options (the bootstrap deep link's `pin` param, if any) —
      * see `resolveTrustedPins` for the trust decision itself. */
-    @Suppress("DEPRECATION") // Bundle.get(String) is deprecated but is the only way to read the raw value's type.
     private fun loadConfiguration(linkPin: String?) {
-        val applicationInfo =
-            context.packageManager.getApplicationInfo(
-                context.packageName,
-                PackageManager.GET_META_DATA,
-            )
-        val metaData = applicationInfo.metaData
-        val pinsJson = metaData?.getString(ANDROID_PINS_KEY).orEmpty()
-
-        val manifestPins =
-            if (pinsJson.isEmpty()) {
-                emptySet()
-            } else {
-                val parsedPins = JSONArray(pinsJson)
-                buildSet {
-                    for (index in 0 until parsedPins.length()) {
-                        add(parsedPins.getString(index))
-                    }
-                }
-            }
-
-        val trust = parseTrustMetadataValue(metaData?.get(ANDROID_TRUST_KEY))
+        val manifestConfig = readCordieriteManifestConfig(context)
 
         configuredPins =
-            when (val resolution = resolveTrustedPins(trust, manifestPins, linkPin)) {
+            when (val resolution = resolveTrustedPins(manifestConfig.trust, manifestConfig.embeddedPins, linkPin)) {
                 is TrustedPinsResolution.Configured -> resolution.pins
                 is TrustedPinsResolution.LinkPin -> {
                     // Loud and unconditional (not gated behind any log level): this is now a
@@ -886,11 +955,7 @@ internal class CordieriteConnectionManager(
                     )
             }
 
-        allowPrivateLanOnly =
-            parseAllowPrivateLanOnly(
-                hasKey = metaData?.containsKey(ANDROID_PRIVATE_LAN_KEY) == true,
-                rawValue = metaData?.get(ANDROID_PRIVATE_LAN_KEY),
-            )
+        allowPrivateLanOnly = manifestConfig.allowPrivateLanOnly
     }
 
     private fun getOrCreateSharedClient(): OkHttpClient {

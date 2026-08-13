@@ -2,6 +2,7 @@ import type { ToolDescriptor } from "@cordierite/shared";
 import type { DependencyList } from "react";
 
 import type {
+  CordieriteBuildConfig,
   CordieriteClientState,
   CordieriteConnectInput,
   CordieriteListenerKind,
@@ -52,4 +53,6 @@ export type CordierePublicApi = {
   getCordieriteState(): CordieriteClientState;
 
   connect(input: CordieriteConnectInput): Promise<void>;
+
+  getCordieriteBuildConfig(): CordieriteBuildConfig;
 };

@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   getCordieriteState,
+  getCordieriteBuildConfig,
   postEvent,
   addCordieriteListener,
   type CordieriteClientState,
@@ -48,6 +49,10 @@ export default function StatusScreen() {
   const [connectionState, setConnectionState] = useState<CordieriteClientState>(
     getCordieriteState()
   );
+  // Native build config never changes within a process's lifetime (task 07), so a plain `useState`
+  // initializer -- read once, no listener needed -- is enough to show which trust mode this
+  // artifact was actually built with.
+  const [buildConfig] = useState(() => getCordieriteBuildConfig());
   const [alias, setAlias] = useState<string | null>(null);
   const [lastSessionEvent, setLastSessionEvent] =
     useState<CordieriteSessionChangeEvent | null>(null);
@@ -138,6 +143,18 @@ export default function StatusScreen() {
           <ThemedText type="caption" style={styles.cardHint}>
             Metro reload should suspend and resume this session automatically -- reload the app
             and watch this state go reconnecting → active without a new deep link.
+          </ThemedText>
+        </View>
+
+        <View style={cardStyle}>
+          <ThemedText type="overline">Build config</ThemedText>
+          <ThemedText type="caption" style={styles.cardHint}>
+            trust: {buildConfig.trust} · embedded pins: {buildConfig.hasEmbeddedPins ? "yes" : "no"} ·
+            private LAN only: {buildConfig.allowPrivateLanOnly ? "yes" : "no"}
+          </ThemedText>
+          <ThemedText type="caption" style={styles.cardHint}>
+            Read from the native module&apos;s getConstants() -- the fastest way to tell, on a
+            device, which trust mode this artifact was actually built with.
           </ThemedText>
         </View>
 

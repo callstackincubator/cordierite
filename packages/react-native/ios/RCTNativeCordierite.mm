@@ -125,6 +125,27 @@ RCT_EXPORT_MODULE(Cordierite)
   [_swift clearResumeLease];
 }
 
+#pragma mark - Constants
+
+// Codegen special-cases `getConstants()` (legacy bridge constants export): the generated
+// `NativeCordieriteSpec` protocol requires both `constantsToExport` and `getConstants`, mirroring
+// e.g. RN core's `RCTAppState`. `[self getConstants]` reads the Swift/Bundle-backed build config
+// each call rather than caching it, matching `getState`/`getResumeLease` above.
+- (facebook::react::ModuleConstants<JS::NativeCordierite::Constants::Builder>)constantsToExport
+{
+  return (facebook::react::ModuleConstants<JS::NativeCordierite::Constants::Builder>)[self getConstants];
+}
+
+- (facebook::react::ModuleConstants<JS::NativeCordierite::Constants::Builder>)getConstants
+{
+  NSDictionary *config = [_swift getConstants];
+  return (facebook::react::ModuleConstants<JS::NativeCordierite::Constants::Builder>)facebook::react::typedConstants<JS::NativeCordierite::Constants>({
+      .trust = (NSString *)config[@"trust"],
+      .hasEmbeddedPins = [config[@"hasEmbeddedPins"] boolValue],
+      .allowPrivateLanOnly = [config[@"allowPrivateLanOnly"] boolValue],
+  });
+}
+
 #pragma mark - RCTInvalidating
 
 - (void)invalidate

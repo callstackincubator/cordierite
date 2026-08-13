@@ -1,4 +1,5 @@
 import type {
+  CordieriteBuildConfig,
   CordieriteCloseEvent,
   CordieriteConnectionState,
   CordieriteMessageEvent,
@@ -236,6 +237,18 @@ export const cordieriteNativeModule: CordieriteNativeModuleLike = {
     }
   },
 };
+
+/**
+ * Reads the effective trust/pin build config via the TurboModule's `getConstants()` — the exact
+ * same manifest/plist keys `resolveTrustedPins` (task 05) reads on both platforms, never a second
+ * parse. Callers reach this only through `noopIfNativeUnavailable` (see `index.ts`'s
+ * `getCordieriteBuildConfig`), which already gates on `isCordieriteNativeModuleAvailable()`, so —
+ * like `connect`/`registerTool`/`postEvent` — this deliberately does not catch: a resolution
+ * failure here would mean the availability probe and this call disagreed, which should surface
+ * loudly rather than be swallowed into a fake "absent" result.
+ */
+export const getCordieriteNativeBuildConfig = (): CordieriteBuildConfig =>
+  resolveNativeModule().getConstants();
 
 /** @internal Production adapter for the native process-memory resume lease. */
 export const cordieriteNativeResumeLeaseStore: ResumeLeaseStore = {

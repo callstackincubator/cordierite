@@ -229,6 +229,57 @@ class CordieriteConnectionManagerTest {
         assertNull(parseTrustMetadataValue(42))
     }
 
+    // MARK: - getConstants()'s build config (docs/tasks/07-native-module-constants.md)
+
+    // Every table row from the resolveTrustedPins matrix above must map to a build config that
+    // agrees on `hasEmbeddedPins` with whether a real connect() would have used embedded pins, and
+    // on `trust` with the effective bucket a real connect() would have resolved to.
+    @Test
+    fun `build config reports pin and hasEmbeddedPins when embedded pins win`() {
+        assertEquals(
+            CordieriteBuildConfig(trust = "pin", hasEmbeddedPins = true, allowPrivateLanOnly = true),
+            cordieriteBuildConfig(TrustedPinsResolution.Configured(embeddedPins), allowPrivateLanOnly = true),
+        )
+    }
+
+    @Test
+    fun `build config reports link and no embedded pins when trusting the linkPin`() {
+        assertEquals(
+            CordieriteBuildConfig(trust = "link", hasEmbeddedPins = false, allowPrivateLanOnly = false),
+            cordieriteBuildConfig(TrustedPinsResolution.LinkPin(linkPinValue), allowPrivateLanOnly = false),
+        )
+    }
+
+    @Test
+    fun `build config reports pin and no embedded pins for the config-time error case`() {
+        // trust="pin" with no embedded pins: a real connect() would hard-error, but getConstants()
+        // must not throw -- it still reports the config's effective intent (trust="pin") plus the
+        // honest hasEmbeddedPins=false that explains *why* a connect() would fail.
+        assertEquals(
+            CordieriteBuildConfig(trust = "pin", hasEmbeddedPins = false, allowPrivateLanOnly = true),
+            cordieriteBuildConfig(TrustedPinsResolution.PinTrustRequiresEmbeddedPins, allowPrivateLanOnly = true),
+        )
+    }
+
+    @Test
+    fun `build config reports link and no embedded pins when no linkPin is available`() {
+        // No connect attempt is in flight when JS asks for the build config, so there is never a
+        // real linkPin to pass resolveTrustedPins -- trust="link" with no embedded pins always
+        // resolves to this case here, never LinkPin, but the reported trust bucket is unaffected.
+        assertEquals(
+            CordieriteBuildConfig(trust = "link", hasEmbeddedPins = false, allowPrivateLanOnly = true),
+            cordieriteBuildConfig(TrustedPinsResolution.LinkTrustRequiresLinkPin, allowPrivateLanOnly = true),
+        )
+    }
+
+    @Test
+    fun `build config surfaces the raw invalid trust value instead of coercing it`() {
+        assertEquals(
+            CordieriteBuildConfig(trust = "pinn", hasEmbeddedPins = false, allowPrivateLanOnly = true),
+            cordieriteBuildConfig(TrustedPinsResolution.InvalidTrustValue("pinn"), allowPrivateLanOnly = true),
+        )
+    }
+
     // MARK: - Protocol v2 first-frame shape (item 5)
 
     private fun connectOptions(

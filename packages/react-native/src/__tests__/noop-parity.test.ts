@@ -41,6 +41,7 @@ describe("noop parity: type-level (see also public-api.ts's doc comment)", () =>
       "addCordieriteListener",
       "getCordieriteState",
       "connect",
+      "getCordieriteBuildConfig",
     ];
     for (const name of names) {
       expect(typeof realSatisfiesPublicApi[name]).toBe("function");
@@ -117,6 +118,16 @@ describe("noop entry: runtime no-op behavior", () => {
   test('getCordieriteState() always returns "idle"', async () => {
     const { getCordieriteState } = await import("../noop");
     expect(getCordieriteState()).toBe("idle");
+  });
+
+  test('getCordieriteBuildConfig() reports the documented "absent" shape', async () => {
+    const { getCordieriteBuildConfig } = await import("../noop");
+
+    expect(getCordieriteBuildConfig()).toEqual({
+      trust: "absent",
+      hasEmbeddedPins: false,
+      allowPrivateLanOnly: true,
+    });
   });
 
   test("connect() rejects with a CordieriteDisabledError (code: cordierite_disabled)", async () => {

@@ -51,6 +51,24 @@ export type CordieriteResumeEndpointNative = {
   port: CodegenTypes.Int32;
 };
 
+/**
+ * Effective trust/pin configuration this build was compiled with, read via `getConstants()` from
+ * the exact same manifest (Android)/plist (iOS) keys `resolveTrustedPins`
+ * (`docs/tasks/05-explicit-trust-mode.md`) reads — never a second parse path, so this can never
+ * disagree with what a real `connect()` call would use for the same native config.
+ *
+ * `trust` reports the *effective* bucket: `"pin"` whenever embedded pins are present (they always
+ * win over the raw config value), `"link"` otherwise, or — only reachable via a hand-edited native
+ * config the plugin itself refuses to produce — the raw unrecognized string a connect attempt
+ * would reject with `invalidTrustValue`. Pin fingerprints are deliberately not exposed here; only
+ * `hasEmbeddedPins` (their presence) is — see `docs/tasks/07-native-module-constants.md`.
+ */
+export type CordieriteBuildConfigNative = {
+  trust: string;
+  hasEmbeddedPins: boolean;
+  allowPrivateLanOnly: boolean;
+};
+
 /** Exact process-memory lease shape exposed synchronously by the native implementations. */
 export type CordieriteResumeLeaseV1Native = {
   schemaVersion: CodegenTypes.Int32;
@@ -77,6 +95,8 @@ export interface Spec extends TurboModule {
   getState(): string;
   getResumeLease(): CordieriteResumeLeaseV1Native | null;
   clearResumeLease(): void;
+  /** See `CordieriteBuildConfigNative`'s doc comment. */
+  getConstants(): CordieriteBuildConfigNative;
 
   readonly onStateChange: CodegenTypes.EventEmitter<CordieriteStateChangeEventNative>;
   readonly onMessage: CodegenTypes.EventEmitter<CordieriteMessageEventNative>;
