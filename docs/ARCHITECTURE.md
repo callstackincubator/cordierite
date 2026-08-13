@@ -19,6 +19,21 @@ details, see [PROTOCOL.md](PROTOCOL.md); for operational security guidance, see
 5. **Dev-first, production-capable.** Same protocol everywhere; production adds policy
    (consent, audit) and a compile-out story, not a different architecture.
 
+### Non-goals
+
+Deliberately out of scope, so the boundaries of the design are explicit:
+
+- Replacing all end-to-end UI testing.
+- Arbitrary code execution inside the app — only pre-registered, named tools.
+- Anonymous or unauthenticated remote access.
+- Treating deep links as proof of authority.
+- Interactive consent prompting for individual tool calls (the policy enum reserves a
+  future `"prompt"` value; §12).
+- Remote relay to hosts outside the operator machine.
+- Pinning an offline anchor CA that signs short-lived leaf certs. The current model pins
+  the same key used for the TLS leaf; overlapping pin sets are the supported rotation
+  path — see `docs/SECURITY.md`.
+
 ## 2. Topology
 
 ```
@@ -184,132 +199,53 @@ Rules:
 
 ## 7. Wire protocol v2 (app ↔ daemon, over pinned wss)
 
-Text frames only; binary frames → close 1003. Max payload 256 KiB both directions
-(`ws` server `maxPayload`; clients enforce before send). Malformed JSON → close 1008
-reason `invalid_json`. Unknown message `type` after claim → close 1008 reason
-`unknown_message_type` (strict, not lenient). Every post-claim message must carry the
-active `session_id`; mismatch → close 1008 reason `session_mismatch`.
+**[PROTOCOL.md](PROTOCOL.md) is the normative reference** for the message catalog, frame
+rules, close codes, keepalive, and the `ToolDescriptor` shape. Don't duplicate it here; the
+only things worth stating at the architecture level are the daemon-side invariants:
 
-Unclaimed connections are dropped after 10 s (`pre_claim_timeout`). A connection's
-first message must be `session_claim` or `session_resume`.
-
-**Keepalive** is WebSocket protocol-level, not JSON: the daemon pings every
-`keepaliveIntervalSeconds`; two missed pongs → treat as socket loss (suspend). Clients
-(OkHttp `pingInterval`, URLSession `sendPing`) ping on the same interval and surface
-missed pongs as connection errors so the app SDK can reconnect.
-
-Messages:
-
-```jsonc
-// app → daemon, first message on a fresh socket
-{ "type": "session_claim", "protocol_version": 2, "session_id": "…", "token": "<base64url 32B>",
-  "device_manufacturer?": "…", "device_model?": "…", "device_os?": "…" }   // strings ≤256 chars
-
-// app → daemon, first message when resuming
-{ "type": "session_resume", "protocol_version": 2, "session_id": "…", "resume_token": "<base64url 32B>" }
-
-// daemon → app, success for both claim and resume (resume_token is rotated each time)
-{ "type": "session_ack", "session_id": "…", "status": "ok", "alias": "pixel-8",
-  "resume_token": "<base64url 32B>", "keepalive_interval_s": 15, "grace_s": 600 }
-
-// app → daemon
-{ "type": "tool_registry_snapshot", "session_id": "…", "tools": [ToolDescriptor] }
-{ "type": "tool_registry_delta", "session_id": "…", "operation": "upsert", "tool": ToolDescriptor }
-{ "type": "tool_registry_delta", "session_id": "…", "operation": "remove", "name": "…" }
-{ "type": "tool_result", "session_id": "…", "id": "call_…", "result": <json> }
-{ "type": "tool_error", "session_id": "…", "id": "call_…",
-  "error": { "type": "<one of §5 tool_* types>", "message": "…", "details?": <json> } }
-{ "type": "tool_call_progress", "session_id": "…", "id": "call_…", "progress?": 0.5, "message?": "…" }
-{ "type": "event", "session_id": "…", "name": "…", "payload?": <json>, "ts": <unix ms> }
-
-// daemon → app
-{ "type": "tool_call", "session_id": "…", "id": "call_…", "name": "…", "args": <json object> }
-```
-
-`ToolDescriptor`:
-
-```jsonc
-{ "name": "…",                       // required, unique per session, [a-zA-Z0-9_-]{1,64}
-  "description": "…",                // required
-  "input_schema?": <json-schema>,    // draft 2020-12, from Standard Schema exporter
-  "output_schema?": <json-schema>,
-  "annotations?": { "readOnlyHint?": bool, "destructiveHint?": bool, "idempotentHint?": bool } }
-```
-
-Snapshot/delta validation is strict on the daemon side: every element must be a valid
-`ToolDescriptor` (name pattern enforced); an invalid snapshot → close 1008 reason
-`invalid_registry`. Never index into unvalidated data.
+- Every post-claim message must carry the active `session_id`; a mismatch closes the socket
+  rather than being tolerated.
+- Registry snapshots and deltas are validated strictly before use — an invalid snapshot
+  closes the socket (`invalid_registry`). Never index into unvalidated data.
+- Keepalive is WebSocket-level, not JSON, so a wedged app is detected by the transport
+  rather than by application-layer timeouts.
 
 ## 8. Bootstrap payload v2
 
-Deep link format unchanged: `<scheme>:///?cordierite=<base64url-no-padding>`. `cordierite link`
-additionally appends a separate, out-of-band `&pin=<sha256/...>` query param carrying the
-daemon's current SPKI fingerprint — the binary payload below does not change to carry it. Old
-app builds that don't look for `pin` simply ignore it. `pin` only matters to a debug build with
-no build-time pins configured, which trusts it for that session as a dev-mode convenience
-(embedded pins, when present, always win instead — see `docs/SECURITY.md`'s "Dev trust mode").
+Byte layout and delivery paths live in [PROTOCOL.md](PROTOCOL.md) §2. Two design points
+belong here:
 
-Binary layout (all integers big-endian):
-
-| Bytes | Field |
-| --- | --- |
-| 1 | version, `0x02` |
-| 1 | address family: `0x04` (IPv4) or `0x06` (IPv6) |
-| 4 or 16 | address |
-| 2 | port |
-| 1 + n | sessionId length (UTF-8) + bytes |
-| 32 | token |
-| 8 | expiresAt, unix **seconds** |
-
-v1 (`0x01`) payloads are rejected by v2 clients. `formatAgentWebSocketUrl` must bracket
-IPv6 literals (`wss://[fd00::1]:8443`).
-
-Delivery paths, by preference:
-
-1. **Emulator/simulator fast path (no deep link UX):** `cordierite link --open android`
-   runs `adb reverse tcp:<wssPort> tcp:<wssPort>` and fires the deep link via
-   `adb shell am start -a android.intent.action.VIEW -d '<link>'` with the advertised
-   address forced to `127.0.0.1`; `--open ios-sim` uses `xcrun simctl openurl booted
-   '<link>'`. Fully scriptable — this is the CI/agent path.
-2. **Physical device on LAN:** printed deep link + QR (as v1).
-3. **Remote/production:** the same deep link delivered out-of-band; policy + audit apply.
+- The link is `<scheme>:///?cordierite=<payload>&pin=<sha256/...>`. The `pin` is a **separate
+  query param, not part of the binary payload**, so adding it did not change the payload
+  format and older builds that ignore it still work. Anything parsing the link must stop at
+  the `&` — a naive "slice to end of string" swallows the pin and corrupts the payload.
+- The `pin` matters only to a build whose effective `trust` is `"link"` (§11). Embedded pins,
+  when configured, always win — see [SECURITY.md](SECURITY.md)'s "Trust modes".
 
 ## 9. MCP server
 
 `cordierite mcp` starts a **stdio** MCP server (SDK: `@modelcontextprotocol/sdk`) that
 proxies daemon RPC (auto-spawning the daemon like any client):
 
-- `tools/list`: live registry. Exactly one session → tools exposed under their own
-  names; multiple sessions → namespaced `<alias>__<name>`. Registry/session changes
-  emit `notifications/tools/list_changed`.
-- `tools/call` → `tools.call`; `tool_call_progress` frames map to MCP progress
-  notifications. Errors surface as MCP tool errors carrying the preserved `type`.
-- Descriptor `annotations` map to MCP tool annotations verbatim.
-- Two built-in management tools. `cordierite_connect` mints a link (`link.create`) and,
-  when a target argument is given (`android` / `ios-sim`), delivers it via the fast
-  path; returns the deep link + QR text otherwise. `cordierite_wait_for_session` then
-  blocks (up to a `timeoutMs`) until that session is claimed, or resolves immediately if
-  it already has been. Together these let an agent bootstrap a device session and know
-  when it's ready without shell access.
+- `tools/list` mirrors the live registry. One session → tools under their own names;
+  several → namespaced `<alias>__<name>`. Registry and session changes emit
+  `notifications/tools/list_changed`, so an agent's tool list tracks the device.
+- Tool calls, progress frames, errors (with their `type` preserved), and descriptor
+  annotations all map through verbatim — the MCP surface adds no semantics of its own.
+- Two built-in management tools, `cordierite_connect` and `cordierite_wait_for_session`,
+  let an agent mint a bootstrap link, deliver it to an emulator/simulator, and wait for the
+  claim — without shell access. This is what makes the agent path self-service.
 
 ## 10. CLI surface
 
-Thin renderer over the RPC. Global flags: `--json` (machine output; NDJSON for
-streams), `--no-color`, and `--state-dir`.
+The CLI is a **thin renderer over the RPC in §5** — it holds no state, opens no sockets, and
+owns no keys. Every command is one RPC call plus formatting, which is why the CLI and the MCP
+server can't drift in behavior: they are the same calls.
 
-| Command | Behavior |
-| --- | --- |
-| `cordierite keygen [--out <path>] [--force]` | non-interactive with `--out`; default writes `<state-dir>/key.pem`; prints `sha256/…` pin |
-| `cordierite link [--ttl <s>] [--qr] [--open android\|ios-sim] [--device <serial>] [--scheme <s>]` | mint a pending session, print its deep link, QR code, or deliver it to an emulator/simulator; `--device` applies only to `--open android` |
-| `cordierite ls` | sessions with alias, state, device, tool count |
-| `cordierite tools [selector] [name] [--full]` | list tools, or show one tool's schemas and annotations |
-| `cordierite invoke [selector] <tool> --input '<json>' [--timeout <ms>]` | call a tool |
-| `cordierite events [--follow] [selector]` | subscribe to the event bus; `--json` → NDJSON |
-| `cordierite revoke [selector]` | revoke a session |
-| `cordierite daemon run\|start\|stop\|status` | lifecycle (§4) |
-
-The `--scheme` needed to compose the deep link is taken from the flag, else
-`config.json`, else the CLI errors with a clear message.
+The per-command reference lives in the [`cordierite` package README](../packages/cordierite/README.md),
+which is where it stays current. Global flags: `--json` (machine output, NDJSON for streams),
+`--no-color`, `--state-dir`. The `--scheme` used to compose a deep link comes from the flag,
+else `config.json`, else a clear error.
 
 ## 11. React Native SDK
 
@@ -324,37 +260,32 @@ Package `@cordierite/react-native`. Entry points:
 - `@cordierite/react-native/auto` — side-effect entry: installs the deep-link bootstrap
   with defaults and starts native-lease recovery on import (the v1 root-import behavior,
   now opt-in).
-- `@cordierite/react-native/noop` — identical public API, inert implementation, for
-  release-build compile-out via Metro `resolveRequest` or conditional require. Document
-  the recipe in the package README.
+- `@cordierite/react-native/noop` — identical public API, inert implementation.
+- `@cordierite/react-native/metro` — `withCordierite(config, { include })`, the supported way
+  to swap the real entries for `/noop` at bundle time. It chains to any existing
+  `resolveRequest` and derives the redirected specifiers from `package.json`'s `exports`, so
+  a new entry point can't be silently missed.
 
 **Inclusion and trust are two independent, explicit config decisions — neither is derived
 from build type** (`docs/SECURITY.md` has the full threat-model writeup; this is the
 config-surface summary):
 
-- **Inclusion.** Whether Cordierite's native code is in a build at all is decided entirely by
-  autolinking (the app's `package.json` `expo.autolinking.{ios,android}.exclude`, or bare-RN's
-  `react-native.config.js`), not by anything in this package. Android's `CordieritePackage`
-  registers the TurboModule unconditionally whenever it is linked; iOS's
-  `CordieriteTurboBridge.swift`/`RCTNativeCordierite.mm` compile in unconditionally whenever
-  the pod is linked. There is no `#if DEBUG`/`FLAG_DEBUGGABLE` gate anywhere in either path —
-  autolinking exclusion is the only inclusion mechanism, on either platform. The JS-layer strip
-  is separate and additive: `noopIfNativeUnavailable` degrades the public API to exact `/noop`
-  behavior whenever the native module can't be found (because it was excluded, or because the
-  environment has none, e.g. Expo Go), and the `/noop` entry plus a Metro `resolveRequest` swap
-  let an app strip the JS bundle's Cordierite code independently of the native exclude — see
-  the package README's "Compiling Cordierite out of production builds".
-- **Trust.** What a build trusts, once the module is present, is decided by the explicit
-  `trust` config value: `"pin"` (only embedded `cliPins`) or `"link"` (trust the bootstrap
-  link's separate `pin` query param (§8), per session — the "dev mode" convenience). Default:
-  `"pin"` when `cliPins` is non-empty, `"link"` otherwise. The config plugin's `trust: "pin"`
-  requires non-empty `cliPins` in the same config; embedded pins, when configured, always win
-  over `linkPin` regardless of `trust`'s value, so config can only narrow trust, never widen
-  it. A `trust` value that is neither `"link"` nor `"pin"` is a hard error, both at
-  config/prebuild time and independently in the native trust-resolution logic
-  (`resolveTrustedPins` on both platforms) — deliberately, so a typo can never silently
-  downgrade an intended `"pin"` config into permissive link TOFU. No build-time debuggability
-  signal is consulted anywhere in this resolution.
+- **Inclusion** is decided entirely by autolinking, outside this package — there is no
+  `#if DEBUG` or `FLAG_DEBUGGABLE` gate in either platform's path. Whenever the module is
+  linked, it registers (Android) and compiles in (iOS), unconditionally. The JS layer strips
+  separately and additively: `noopIfNativeUnavailable` degrades the public API to exact
+  `/noop` behavior whenever the native module isn't found, for any reason (excluded, or an
+  environment like Expo Go that has none).
+- **Trust** is decided by the explicit `trust` value — `"pin"` (embedded `cliPins` only) or
+  `"link"` (the bootstrap link's `pin`, for that session). Defaults to `"pin"` when `cliPins`
+  is non-empty, `"link"` otherwise. Two invariants matter more than the config surface:
+  embedded pins always win over a link pin, so **config can only narrow trust, never widen
+  it**; and an unrecognized `trust` value is a hard error at both config time and in native
+  resolution, so a typo can't silently downgrade `"pin"` into permissive link TOFU.
+
+The full config surface (option names, native keys, recipes) lives in the
+[package README](../packages/react-native/README.md); the threat model lives in
+[SECURITY.md](SECURITY.md).
 
 Client behavior:
 
@@ -375,8 +306,10 @@ Client behavior:
   → `{ remove() }`. The disposer removes only its own registration (compare by
   registration identity, not name). Duplicate name registration logs a dev warning and
   overwrites.
-- `useCordieriteTool(definition, deps?)` — `useEffect` wrapper around
-  `registerTool`/`remove`.
+- `useCordieriteTool(definition, deps?, { enabled? })` — `useEffect` wrapper around
+  `registerTool`/`remove`. `enabled` (default `true`) is the supported way to gate a tool by
+  build variant without breaking the rules of hooks; registration is the app-side allowlist,
+  and it is the only enforcement point inside the app's own trust boundary (§12).
 - `postEvent(name, payload?)` — emits an `event` frame when active; silently drops (dev
   warning) otherwise.
 - Unified listener: `addCordieriteListener(kind, cb)` with kinds `stateChange`,
@@ -386,14 +319,12 @@ Client behavior:
 - App-side handler timeout: if a handler exceeds the call timeout hint, reply
   `tool_timeout` and ignore the late result.
 
-Native layer (iOS URLSession / Android OkHttp) keeps the v1 pinning implementation
-(verified correct) with these required fixes: all connection state serialized behind a
-single serial queue (iOS) / single-thread executor or lock (Android); iOS implements
-TurboModule `invalidate` (cancel socket + `invalidateAndCancel` the URLSession) and
-`didCompleteWithError`; protocol-level keepalive per §7; `connect` promise semantics
-identical on both platforms (resolve after TLS + claim/resume frame is sent; reject on
-pin mismatch and transport failure); Android reads `ALLOW_PRIVATE_LAN_ONLY` metadata
-with `getBoolean`; non-`ServerTrust` auth challenges get `.performDefaultHandling`.
+Native layer: iOS `URLSession`, Android OkHttp. Two rules keep the two platforms honest —
+all connection state is serialized (an actor on iOS, a single-thread executor/lock on
+Android), and `connect` has identical promise semantics on both (resolve once TLS is up and
+the claim/resume frame is sent; reject on pin mismatch and transport failure). Behavior that
+differs between platforms is a bug, not a platform detail; the parity tests exist to catch
+it.
 
 ## 12. Policy & audit
 
