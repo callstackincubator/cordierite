@@ -471,45 +471,120 @@ final class CordieriteConnectionManagerTests: XCTestCase {
     XCTAssertEqual(options.resumeToken, "resume-token-value")
   }
 
-  // MARK: - Opt-in hardening: dev-mode pin trust (resolveTrustedPins)
+  // MARK: - Explicit trust mode (resolveTrustedPins) — docs/tasks/05-explicit-trust-mode.md
 
-  func testConfiguredBundlePinsAlwaysWinRegardlessOfLinkPinOrBuildKind() {
-    for isDebugBuild in [true, false] {
-      for linkPin in [nil, "sha256/link-pin-should-be-ignored"] {
-        XCTAssertEqual(
-          resolveTrustedPins(bundlePins: ["sha256/embedded-pin"], linkPin: linkPin, isDebugBuild: isDebugBuild),
-          .configured(["sha256/embedded-pin"]),
-          "isDebugBuild=\(isDebugBuild) linkPin=\(linkPin ?? "nil")"
-        )
-      }
+  private let embeddedPins = ["sha256/embedded-pin"]
+  private let linkPinValue = "sha256/link-pin"
+
+  // Table row: trust="pin", non-empty embedded pins -> embedded pins only, linkPin ignored.
+  func testTrustPinWithEmbeddedPinsUsesEmbeddedPinsAndIgnoresLinkPin() {
+    for linkPin in [nil, "", linkPinValue] {
+      XCTAssertEqual(
+        resolveTrustedPins(trust: "pin", embeddedPins: embeddedPins, linkPin: linkPin),
+        .configured(Set(embeddedPins)),
+        "linkPin=\(linkPin ?? "nil")"
+      )
     }
   }
 
-  func testNoBundlePinsDebugBuildWithLinkPinTrustsTheLinkPinOnly() {
+  // Table row: trust="pin", empty embedded pins -> hard error.
+  func testTrustPinWithNoEmbeddedPinsHardErrorsRegardlessOfLinkPin() {
+    for linkPin in [nil, "", linkPinValue] {
+      XCTAssertEqual(
+        resolveTrustedPins(trust: "pin", embeddedPins: [], linkPin: linkPin),
+        .pinTrustRequiresEmbeddedPins,
+        "linkPin=\(linkPin ?? "nil")"
+      )
+    }
+  }
+
+  // Table row: trust="link", empty embedded pins -> trust linkPin.
+  func testTrustLinkWithNoEmbeddedPinsTrustsTheLinkPin() {
     XCTAssertEqual(
-      resolveTrustedPins(bundlePins: [], linkPin: "sha256/dev-mode-pin", isDebugBuild: true),
-      .devModeLinkPin("sha256/dev-mode-pin")
+      resolveTrustedPins(trust: "link", embeddedPins: [], linkPin: linkPinValue),
+      .linkPin(linkPinValue)
     )
   }
 
-  func testNoBundlePinsReleaseBuildWithLinkPinStillFailsClosed() {
+  // Table row: trust="link", empty embedded pins, no usable linkPin -> error.
+  func testTrustLinkWithNoEmbeddedPinsAndNoUsableLinkPinErrors() {
+    for linkPin in [nil, ""] {
+      XCTAssertEqual(
+        resolveTrustedPins(trust: "link", embeddedPins: [], linkPin: linkPin),
+        .linkTrustRequiresLinkPin,
+        "linkPin=\(linkPin ?? "nil")"
+      )
+    }
+  }
+
+  // Table row: trust="link", non-empty embedded pins -> embedded pins win, linkPin ignored.
+  func testTrustLinkWithEmbeddedPinsUsesEmbeddedPinsAndIgnoresLinkPin() {
+    for linkPin in [nil, "", linkPinValue] {
+      XCTAssertEqual(
+        resolveTrustedPins(trust: "link", embeddedPins: embeddedPins, linkPin: linkPin),
+        .configured(Set(embeddedPins)),
+        "linkPin=\(linkPin ?? "nil")"
+      )
+    }
+  }
+
+  // Missing-key default: no trust value, embedded pins present -> behaves like trust="pin".
+  func testMissingTrustWithEmbeddedPinsDefaultsToPinBehavior() {
     XCTAssertEqual(
-      resolveTrustedPins(bundlePins: [], linkPin: "sha256/dev-mode-pin", isDebugBuild: false),
-      .missing
+      resolveTrustedPins(trust: nil, embeddedPins: embeddedPins, linkPin: linkPinValue),
+      .configured(Set(embeddedPins))
     )
   }
 
-  func testNoBundlePinsDebugBuildWithoutLinkPinStillFailsClosed() {
+  // Missing-key default: no trust value, no embedded pins -> behaves like trust="link".
+  func testMissingTrustWithNoEmbeddedPinsDefaultsToLinkBehavior() {
     XCTAssertEqual(
-      resolveTrustedPins(bundlePins: [], linkPin: nil, isDebugBuild: true),
-      .missing
+      resolveTrustedPins(trust: nil, embeddedPins: [], linkPin: linkPinValue),
+      .linkPin(linkPinValue)
+    )
+    XCTAssertEqual(
+      resolveTrustedPins(trust: nil, embeddedPins: [], linkPin: nil),
+      .linkTrustRequiresLinkPin
     )
   }
 
-  func testNoBundlePinsDebugBuildWithEmptyLinkPinStillFailsClosed() {
+  // Empty-string trust must behave exactly like a missing key, not like an invalid value: an
+  // empty plist value should read as "absent" on iOS the same way Android's
+  // `parseTrustMetadataValue` normalizes it before `loadConfiguration` ever calls in.
+  func testEmptyStringTrustBehavesLikeAMissingKey() {
     XCTAssertEqual(
-      resolveTrustedPins(bundlePins: [], linkPin: "", isDebugBuild: true),
-      .missing
+      resolveTrustedPins(trust: "", embeddedPins: embeddedPins, linkPin: nil),
+      .configured(Set(embeddedPins))
+    )
+    XCTAssertEqual(
+      resolveTrustedPins(trust: "", embeddedPins: [], linkPin: linkPinValue),
+      .linkPin(linkPinValue)
+    )
+    XCTAssertEqual(
+      resolveTrustedPins(trust: "", embeddedPins: [], linkPin: nil),
+      .linkTrustRequiresLinkPin
+    )
+  }
+
+  // An unrecognized (but non-empty) trust string must hard-error, never silently fail *open* into
+  // the missing-key default's link-TOFU behavior — a typo like "pinn" or "Pin" must not be
+  // treated as weaker than what the author actually wrote.
+  func testUnrecognizedNonEmptyTrustValueIsAHardErrorEvenWhenEmbeddedPinsAreAbsent() {
+    for badTrust in ["PIN", "Link", "pinn", "none", "disabled"] {
+      XCTAssertEqual(
+        resolveTrustedPins(trust: badTrust, embeddedPins: [], linkPin: linkPinValue),
+        .invalidTrustValue(badTrust),
+        "trust=\(badTrust)"
+      )
+    }
+  }
+
+  // Table rows collapse once embedded pins are present: they win regardless of what `trust` says,
+  // even a garbage value — `trust` is simply irrelevant when pins are already embedded.
+  func testUnrecognizedTrustValueIsIrrelevantOnceEmbeddedPinsArePresent() {
+    XCTAssertEqual(
+      resolveTrustedPins(trust: "everything", embeddedPins: embeddedPins, linkPin: nil),
+      .configured(Set(embeddedPins))
     )
   }
 

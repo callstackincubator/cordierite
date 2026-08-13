@@ -26,6 +26,7 @@ import javax.net.ssl.X509TrustManager
 
 private const val ANDROID_PINS_KEY = "com.callstackincubator.cordierite.CLI_PINS"
 private const val ANDROID_PRIVATE_LAN_KEY = "com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY"
+private const val ANDROID_TRUST_KEY = "com.callstackincubator.cordierite.TRUST"
 private const val PROTOCOL_VERSION = 2
 
 /** Matches `config.json`'s `keepaliveIntervalSeconds` default (ARCHITECTURE §3). */
@@ -53,10 +54,11 @@ internal data class CordieriteConnectOptions(
     val deviceModel: String?,
     val deviceOs: String?,
     /**
-     * Opt-in hardening dev-mode: the bootstrap deep link's separate `pin` query param, forwarded
-     * unchanged from JS (`CordieriteConnectOptions.linkPin` in `Cordierite.types.ts`). Only ever
-     * consulted by `resolveTrustedPins` when no build-time `CLI_PINS` are configured, and even
-     * then only when the app is debuggable — see `loadConfiguration`.
+     * The bootstrap deep link's separate `pin` query param, forwarded unchanged from JS
+     * (`CordieriteConnectOptions.linkPin` in `Cordierite.types.ts`). Only ever consulted by
+     * `resolveTrustedPins` when no build-time `CLI_PINS` are configured and the explicit
+     * `TRUST` manifest value (or its missing-key default) resolves to `"link"` — see
+     * `loadConfiguration`.
      */
     val linkPin: String?,
 ) {
@@ -98,53 +100,88 @@ internal data class CordieriteConnectOptions(
     }
 }
 
-/** Outcome of `resolveTrustedPins` (opt-in hardening dev-mode pin trust). Mirrors iOS's
+/** Outcome of `resolveTrustedPins` (explicit trust mode). Mirrors iOS's
  * `CordieriteTrustedPinsResolution` one-to-one. */
 internal sealed class TrustedPinsResolution {
-    /** Build-time `CLI_PINS` are configured; `linkPin` is irrelevant and never even inspected once
-     * this case applies — embedded pins always win, they never merge with a `linkPin`. */
+    /** Embedded pins (build-time `CLI_PINS`) are configured; `linkPin` is irrelevant and never
+     * even inspected once this case applies — embedded pins always win regardless of `trust`, so
+     * config can never *widen* trust by switching to `"link"`. */
     data class Configured(
         val pins: Set<String>,
     ) : TrustedPinsResolution()
 
-    /** No build-time `CLI_PINS`, but the app is debuggable and `linkPin` is usable: trust that
-     * single pin for this connection only. Callers must log the loud dev-mode warning. */
-    data class DevModeLinkPin(
+    /** `trust` (explicit or via the missing-key default) resolved to `"link"`, no embedded pins
+     * are configured, and `linkPin` is usable: trust that single pin for this connection only.
+     * Callers must log the unconditional trust=link notice. */
+    data class LinkPin(
         val pin: String,
     ) : TrustedPinsResolution()
 
-    /** No build-time `CLI_PINS`, and either the app is not debuggable or there is no usable
-     * `linkPin`: the existing hard-error behavior from before opt-in hardening. */
-    object Missing : TrustedPinsResolution()
+    /** `trust` resolved to `"pin"` (explicit or via the missing-key default) but no embedded pins
+     * are configured. This is a config-time error the plugin refuses to produce, so it only
+     * happens via hand-edited native config. */
+    object PinTrustRequiresEmbeddedPins : TrustedPinsResolution()
+
+    /** `trust` resolved to `"link"`, no embedded pins are configured, and the connect options
+     * carried no usable `linkPin` to trust. */
+    object LinkTrustRequiresLinkPin : TrustedPinsResolution()
+
+    /** `trust` is present but is neither `"link"` nor `"pin"` (a typo/hand-edit), and no embedded
+     * pins are configured to fall back on regardless of `trust`'s text. This must never be treated
+     * as the missing-key default — that would let a mistyped `trust` value silently fail *open*
+     * into unpinned link TOFU instead of erroring. */
+    data class InvalidTrustValue(
+        val value: String,
+    ) : TrustedPinsResolution()
 }
 
 /**
- * Pure decision logic for opt-in hardening dev-mode (design doc part A): given the build-time
- * `CLI_PINS` read from the manifest and the connect options' `linkPin` (from the bootstrap deep
- * link's separate `pin` query param, if any), decides which SPKI pin(s) this connection trusts.
- * Factored out of `loadConfiguration` (which reads `PackageManager`/`ApplicationInfo`) so the
- * decision matrix is unit-testable without a `Context`/manifest fixture — mirrors iOS's
- * `resolveTrustedPins` one-to-one.
+ * Pure decision logic for explicit trust mode (`docs/tasks/05-explicit-trust-mode.md`): given the
+ * `TRUST` manifest value, the build-time `CLI_PINS` read from the manifest, and the connect
+ * options' `linkPin` (from the bootstrap deep link's separate `pin` query param, if any), decides
+ * which SPKI pin(s) this connection trusts. Factored out of `loadConfiguration` (which reads
+ * `PackageManager`/`ApplicationInfo`) so the decision matrix is unit-testable without a
+ * `Context`/manifest fixture — mirrors iOS's `resolveTrustedPins` one-to-one.
  *
- * `manifestPins` always wins when non-empty — `linkPin` never widens the trust set, it only ever
- * fills in for a *missing* embedded pin set, and only when the app is debuggable
- * (`ApplicationInfo.FLAG_DEBUGGABLE`). A non-debuggable app with no `CLI_PINS` configured returns
- * `Missing` regardless of `linkPin`, preserving the pre-existing hard-fail.
+ * | `trust` | embedded pins | behavior |
+ * | --- | --- | --- |
+ * | `"pin"` | non-empty | embedded pins only; `linkPin` ignored |
+ * | `"pin"` | empty | [PinTrustRequiresEmbeddedPins] — hard error |
+ * | `"link"` | empty | trust `linkPin`, or [LinkTrustRequiresLinkPin] if none is usable |
+ * | `"link"` | non-empty | embedded pins win, `linkPin` ignored (config can never *widen* trust) |
+ *
+ * A missing (`null`/empty-string) `trust` value defaults to `"pin"` if `embeddedPins` is
+ * non-empty, else `"link"` — matching the config plugin's own default so bare-RN and Expo apps
+ * behave identically. Embedded pins are checked first, so by the time a `null`/empty `trust` is
+ * actually consulted below, `embeddedPins` is already known empty and the default always resolves
+ * to `"link"`. A *present but unrecognized* `trust` string (anything other than `"link"`/`"pin"`)
+ * is [InvalidTrustValue] — it is never coerced into the missing-key default, which would let a
+ * typo silently widen trust into unpinned link TOFU. No build-time debuggability signal is ever
+ * consulted here.
  */
 internal fun resolveTrustedPins(
-    manifestPins: Set<String>,
+    trust: String?,
+    embeddedPins: Set<String>,
     linkPin: String?,
-    isDebuggable: Boolean,
 ): TrustedPinsResolution {
-    if (manifestPins.isNotEmpty()) {
-        return TrustedPinsResolution.Configured(manifestPins)
+    // Embedded pins always win once present, regardless of `trust`: config can never *widen*
+    // trust by declaring `trust: "link"` (or anything else) alongside real `cliPins`.
+    if (embeddedPins.isNotEmpty()) {
+        return TrustedPinsResolution.Configured(embeddedPins)
     }
 
-    if (isDebuggable && !linkPin.isNullOrEmpty()) {
-        return TrustedPinsResolution.DevModeLinkPin(linkPin)
-    }
+    val normalizedTrust = trust?.takeIf { it.isNotEmpty() }
 
-    return TrustedPinsResolution.Missing
+    return when (normalizedTrust) {
+        "pin" -> TrustedPinsResolution.PinTrustRequiresEmbeddedPins
+        "link", null ->
+            if (!linkPin.isNullOrEmpty()) {
+                TrustedPinsResolution.LinkPin(linkPin)
+            } else {
+                TrustedPinsResolution.LinkTrustRequiresLinkPin
+            }
+        else -> TrustedPinsResolution.InvalidTrustValue(normalizedTrust)
+    }
 }
 
 internal data class CordieriteErrorDetails(
@@ -206,6 +243,17 @@ internal fun parseAllowPrivateLanOnly(
         else -> true
     }
 }
+
+/**
+ * Reads the `TRUST` manifest meta-data value (`"link"` | `"pin"`). `Bundle.get()` returns `Any?`
+ * rather than a typed accessor — following the same tolerant-of-actual-declared-type pattern as
+ * [parseAllowPrivateLanOnly] rather than assuming `getString()` — so an unexpected type (or an
+ * absent key) is treated the same as a missing value instead of throwing a `ClassCastException`.
+ * An empty string is likewise treated as absent. [resolveTrustedPins] applies the missing-key
+ * default from there.
+ */
+internal fun parseTrustMetadataValue(rawValue: Any?): String? =
+    (rawValue as? String)?.takeIf { it.isNotEmpty() }
 
 /**
  * Builds the first protocol v2 frame sent on a fresh socket: `session_claim` (using `token`) or,
@@ -809,23 +857,33 @@ internal class CordieriteConnectionManager(
                 }
             }
 
-        val isDebuggable = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        val trust = parseTrustMetadataValue(metaData?.get(ANDROID_TRUST_KEY))
 
         configuredPins =
-            when (val resolution = resolveTrustedPins(manifestPins, linkPin, isDebuggable)) {
+            when (val resolution = resolveTrustedPins(trust, manifestPins, linkPin)) {
                 is TrustedPinsResolution.Configured -> resolution.pins
-                is TrustedPinsResolution.DevModeLinkPin -> {
-                    // Loud and unconditional (not gated behind any log level): a developer relying
-                    // on this path must not be able to miss it, since it is strictly weaker than a
-                    // real embedded pin.
+                is TrustedPinsResolution.LinkPin -> {
+                    // Loud and unconditional (not gated behind any log level): this is now a
+                    // deliberate configuration choice, not a dev-mode fallback, but the developer
+                    // relying on it must still not be able to miss it.
                     android.util.Log.w(
                         "Cordierite",
-                        "Cordierite: trusting pin from bootstrap link (dev mode). Release builds require embedded cliPins.",
+                        "Cordierite: trust=link — trusting the SPKI pin carried by the bootstrap link for this session.",
                     )
                     setOf(resolution.pin)
                 }
-                TrustedPinsResolution.Missing ->
-                    throw IllegalStateException("Cordierite CLI pins are not configured in AndroidManifest.xml.")
+                TrustedPinsResolution.PinTrustRequiresEmbeddedPins ->
+                    throw IllegalStateException(
+                        "Cordierite trust=\"pin\" requires CLI_PINS to be configured in AndroidManifest.xml.",
+                    )
+                TrustedPinsResolution.LinkTrustRequiresLinkPin ->
+                    throw IllegalStateException(
+                        "Cordierite trust=\"link\" but the bootstrap link carried no pin to trust.",
+                    )
+                is TrustedPinsResolution.InvalidTrustValue ->
+                    throw IllegalStateException(
+                        "Cordierite TRUST must be \"link\" or \"pin\", got \"${resolution.value}\".",
+                    )
             }
 
         allowPrivateLanOnly =

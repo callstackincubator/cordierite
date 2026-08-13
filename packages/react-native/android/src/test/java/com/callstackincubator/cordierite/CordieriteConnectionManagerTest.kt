@@ -83,50 +83,150 @@ class CordieriteConnectionManagerTest {
         assertFalse(isLocalIpv4Address("1.2.3.4.5"))
     }
 
-    // MARK: - Opt-in hardening: dev-mode pin trust (resolveTrustedPins)
+    // MARK: - Explicit trust mode (resolveTrustedPins) — docs/tasks/05-explicit-trust-mode.md
 
+    private val embeddedPins = setOf("sha256/embedded-pin")
+    private val linkPinValue = "sha256/link-pin"
+
+    // Table row: trust="pin", non-empty embedded pins -> embedded pins only, linkPin ignored.
     @Test
-    fun `configured manifest pins always win regardless of linkPin or debuggability`() {
-        for (isDebuggable in listOf(true, false)) {
-            for (linkPin in listOf(null, "sha256/link-pin-should-be-ignored")) {
-                assertEquals(
-                    TrustedPinsResolution.Configured(setOf("sha256/embedded-pin")),
-                    resolveTrustedPins(setOf("sha256/embedded-pin"), linkPin, isDebuggable),
-                )
-            }
+    fun `trust pin with embedded pins uses embedded pins and ignores linkPin`() {
+        for (linkPin in listOf(null, "", linkPinValue)) {
+            assertEquals(
+                TrustedPinsResolution.Configured(embeddedPins),
+                resolveTrustedPins(trust = "pin", embeddedPins = embeddedPins, linkPin = linkPin),
+            )
         }
     }
 
+    // Table row: trust="pin", empty embedded pins -> hard error.
     @Test
-    fun `no manifest pins, debuggable, with linkPin trusts the linkPin only`() {
+    fun `trust pin with no embedded pins hard-errors regardless of linkPin`() {
+        for (linkPin in listOf(null, "", linkPinValue)) {
+            assertEquals(
+                TrustedPinsResolution.PinTrustRequiresEmbeddedPins,
+                resolveTrustedPins(trust = "pin", embeddedPins = emptySet(), linkPin = linkPin),
+            )
+        }
+    }
+
+    // Table row: trust="link", empty embedded pins -> trust linkPin.
+    @Test
+    fun `trust link with no embedded pins trusts the linkPin`() {
         assertEquals(
-            TrustedPinsResolution.DevModeLinkPin("sha256/dev-mode-pin"),
-            resolveTrustedPins(emptySet(), "sha256/dev-mode-pin", isDebuggable = true),
+            TrustedPinsResolution.LinkPin(linkPinValue),
+            resolveTrustedPins(trust = "link", embeddedPins = emptySet(), linkPin = linkPinValue),
         )
     }
 
+    // Table row: trust="link", empty embedded pins, no usable linkPin -> error.
     @Test
-    fun `no manifest pins, not debuggable, with linkPin still fails closed`() {
+    fun `trust link with no embedded pins and no usable linkPin errors`() {
+        for (linkPin in listOf(null, "")) {
+            assertEquals(
+                TrustedPinsResolution.LinkTrustRequiresLinkPin,
+                resolveTrustedPins(trust = "link", embeddedPins = emptySet(), linkPin = linkPin),
+            )
+        }
+    }
+
+    // Table row: trust="link", non-empty embedded pins -> embedded pins win, linkPin ignored.
+    @Test
+    fun `trust link with embedded pins uses embedded pins and ignores linkPin (config cannot widen trust)`() {
+        for (linkPin in listOf(null, "", linkPinValue)) {
+            assertEquals(
+                TrustedPinsResolution.Configured(embeddedPins),
+                resolveTrustedPins(trust = "link", embeddedPins = embeddedPins, linkPin = linkPin),
+            )
+        }
+    }
+
+    // Missing-key default: no TRUST value, embedded pins present -> behaves like trust="pin".
+    @Test
+    fun `missing trust with embedded pins defaults to pin behavior`() {
         assertEquals(
-            TrustedPinsResolution.Missing,
-            resolveTrustedPins(emptySet(), "sha256/dev-mode-pin", isDebuggable = false),
+            TrustedPinsResolution.Configured(embeddedPins),
+            resolveTrustedPins(trust = null, embeddedPins = embeddedPins, linkPin = linkPinValue),
         )
     }
 
+    // Missing-key default: no TRUST value, no embedded pins -> behaves like trust="link".
     @Test
-    fun `no manifest pins, debuggable, without linkPin still fails closed`() {
+    fun `missing trust with no embedded pins defaults to link behavior`() {
         assertEquals(
-            TrustedPinsResolution.Missing,
-            resolveTrustedPins(emptySet(), null, isDebuggable = true),
+            TrustedPinsResolution.LinkPin(linkPinValue),
+            resolveTrustedPins(trust = null, embeddedPins = emptySet(), linkPin = linkPinValue),
+        )
+        assertEquals(
+            TrustedPinsResolution.LinkTrustRequiresLinkPin,
+            resolveTrustedPins(trust = null, embeddedPins = emptySet(), linkPin = null),
         )
     }
 
+    // Empty-string TRUST must behave exactly like a missing key, not like an invalid value: an
+    // empty manifest value should read as "absent", the same way `parseTrustMetadataValue` treats
+    // it before this function is ever called from `loadConfiguration`.
     @Test
-    fun `no manifest pins, debuggable, with empty linkPin still fails closed`() {
+    fun `empty string trust behaves like a missing key`() {
         assertEquals(
-            TrustedPinsResolution.Missing,
-            resolveTrustedPins(emptySet(), "", isDebuggable = true),
+            TrustedPinsResolution.Configured(embeddedPins),
+            resolveTrustedPins(trust = "", embeddedPins = embeddedPins, linkPin = null),
         )
+        assertEquals(
+            TrustedPinsResolution.LinkPin(linkPinValue),
+            resolveTrustedPins(trust = "", embeddedPins = emptySet(), linkPin = linkPinValue),
+        )
+        assertEquals(
+            TrustedPinsResolution.LinkTrustRequiresLinkPin,
+            resolveTrustedPins(trust = "", embeddedPins = emptySet(), linkPin = null),
+        )
+    }
+
+    // An unrecognized (but non-empty) trust string must hard-error, never silently fail *open*
+    // into the missing-key default's link-TOFU behavior — a typo like "pinn" or "Pin" must not be
+    // treated as weaker than what the author actually wrote.
+    @Test
+    fun `unrecognized non-empty trust value is a hard error, even when embedded pins are absent`() {
+        for (badTrust in listOf("PIN", "Link", "pinn", "none", "disabled")) {
+            assertEquals(
+                TrustedPinsResolution.InvalidTrustValue(badTrust),
+                resolveTrustedPins(trust = badTrust, embeddedPins = emptySet(), linkPin = linkPinValue),
+            )
+        }
+    }
+
+    // Table rows collapse once embedded pins are present: they win regardless of what `trust`
+    // says, even a garbage value — `trust` is simply irrelevant when pins are already embedded.
+    @Test
+    fun `unrecognized trust value is irrelevant once embedded pins are present`() {
+        assertEquals(
+            TrustedPinsResolution.Configured(embeddedPins),
+            resolveTrustedPins(trust = "everything", embeddedPins = embeddedPins, linkPin = null),
+        )
+    }
+
+    // MARK: - TRUST manifest meta-data parsing (parseTrustMetadataValue)
+
+    @Test
+    fun `absent TRUST metadata parses to null`() {
+        assertNull(parseTrustMetadataValue(null))
+    }
+
+    @Test
+    fun `String TRUST metadata is honored`() {
+        assertEquals("link", parseTrustMetadataValue("link"))
+        assertEquals("pin", parseTrustMetadataValue("pin"))
+    }
+
+    @Test
+    fun `empty String TRUST metadata parses to null`() {
+        assertNull(parseTrustMetadataValue(""))
+    }
+
+    @Test
+    fun `non-String TRUST metadata parses to null instead of throwing`() {
+        assertNull(parseTrustMetadataValue(true))
+        assertNull(parseTrustMetadataValue(42))
     }
 
     // MARK: - Protocol v2 first-frame shape (item 5)
