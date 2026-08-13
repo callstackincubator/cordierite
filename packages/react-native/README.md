@@ -269,40 +269,22 @@ Verify the exclusion actually took effect — this is the only way to catch the 
 
 `include` is a single option covering both platforms — there's no separate `ios`/`android` value — so if you only want to exclude on one platform, add that platform's autolinking exclude above without setting `include: false`, and prebuild will fail loudly telling you to reconcile the mismatch (either exclude on both platforms, or don't set `include: false`). If you're not using the config plugin at all (no `cliPins`, no other options needed), skip it entirely and this doesn't apply.
 
-**2. JS — swap the module at bundle time**, so no Cordierite JS (deep-link listener, tool registry, client state machine) ends up in the bundle either. Add a Metro `resolveRequest` override in `metro.config.js`:
+**2. JS — swap the module at bundle time**, so no Cordierite JS (deep-link listener, tool registry, client state machine) ends up in the bundle either. Use the `withCordierite` Metro helper from `@cordierite/react-native/metro` in `metro.config.js`:
 
 ```js
 const { getDefaultConfig } = require("expo/metro-config");
+const { withCordierite } = require("@cordierite/react-native/metro");
 
 const config = getDefaultConfig(__dirname);
-const isProductionBuild = process.env.CORDIERITE_ENABLED !== "1";
 
-if (isProductionBuild) {
-  const original = config.resolver.resolveRequest;
-  config.resolver.resolveRequest = (context, moduleName, platform) => {
-    if (moduleName === "@cordierite/react-native") {
-      return context.resolveRequest(
-        context,
-        "@cordierite/react-native/noop",
-        platform
-      );
-    }
-    if (moduleName === "@cordierite/react-native/auto") {
-      // `/noop` has no side effect on import, matching `/auto`'s shape without installing anything.
-      return context.resolveRequest(
-        context,
-        "@cordierite/react-native/noop",
-        platform
-      );
-    }
-    return original
-      ? original(context, moduleName, platform)
-      : context.resolveRequest(context, moduleName, platform);
-  };
-}
-
-module.exports = config;
+module.exports = withCordierite(config, {
+  include: process.env.CORDIERITE_ENABLED === "1",
+});
 ```
+
+`include` mirrors the config plugin's option of the same name (above) — default `true`, meaning "leave module resolution alone". With `include: false`, every specifier this package exposes as a real JS module entry point (derived from `package.json`'s `exports`, not a hardcoded `.`/`/auto` list, so a future entry point is covered automatically) is redirected to `@cordierite/react-native/noop`, which has no side effect on import, matching `/auto`'s shape without installing anything. `/noop` itself is never redirected.
+
+If `config.resolver.resolveRequest` is already set — as it typically will be, e.g. the playground's own workspace-symlink-dedup resolver — `withCordierite` **chains to it** for every resolution, redirected or not, instead of replacing it; it only falls back to `context.resolveRequest` when no existing resolver is present. Your existing resolver's return value is what callers see.
 
 If you'd rather not touch Metro config, a conditional `require` at each import site works too (module identity differs per call site, so this is more repetitive but avoids any bundler-level indirection):
 
