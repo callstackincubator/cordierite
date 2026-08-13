@@ -548,15 +548,43 @@ final class CordieriteConnectionManagerTests: XCTestCase {
     )
   }
 
-  // An unrecognized trust string must fail safe (same missing-key default), never widen trust.
-  func testUnrecognizedTrustValueFallsBackToTheMissingKeyDefault() {
+  // Empty-string trust must behave exactly like a missing key, not like an invalid value: an
+  // empty plist value should read as "absent" on iOS the same way Android's
+  // `parseTrustMetadataValue` normalizes it before `loadConfiguration` ever calls in.
+  func testEmptyStringTrustBehavesLikeAMissingKey() {
     XCTAssertEqual(
-      resolveTrustedPins(trust: "everything", embeddedPins: embeddedPins, linkPin: nil),
+      resolveTrustedPins(trust: "", embeddedPins: embeddedPins, linkPin: nil),
       .configured(Set(embeddedPins))
     )
     XCTAssertEqual(
-      resolveTrustedPins(trust: "everything", embeddedPins: [], linkPin: linkPinValue),
+      resolveTrustedPins(trust: "", embeddedPins: [], linkPin: linkPinValue),
       .linkPin(linkPinValue)
+    )
+    XCTAssertEqual(
+      resolveTrustedPins(trust: "", embeddedPins: [], linkPin: nil),
+      .linkTrustRequiresLinkPin
+    )
+  }
+
+  // An unrecognized (but non-empty) trust string must hard-error, never silently fail *open* into
+  // the missing-key default's link-TOFU behavior — a typo like "pinn" or "Pin" must not be
+  // treated as weaker than what the author actually wrote.
+  func testUnrecognizedNonEmptyTrustValueIsAHardErrorEvenWhenEmbeddedPinsAreAbsent() {
+    for badTrust in ["PIN", "Link", "pinn", "none", "disabled"] {
+      XCTAssertEqual(
+        resolveTrustedPins(trust: badTrust, embeddedPins: [], linkPin: linkPinValue),
+        .invalidTrustValue(badTrust),
+        "trust=\(badTrust)"
+      )
+    }
+  }
+
+  // Table rows collapse once embedded pins are present: they win regardless of what `trust` says,
+  // even a garbage value — `trust` is simply irrelevant when pins are already embedded.
+  func testUnrecognizedTrustValueIsIrrelevantOnceEmbeddedPinsArePresent() {
+    XCTAssertEqual(
+      resolveTrustedPins(trust: "everything", embeddedPins: embeddedPins, linkPin: nil),
+      .configured(Set(embeddedPins))
     )
   }
 

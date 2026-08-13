@@ -125,6 +125,14 @@ internal sealed class TrustedPinsResolution {
     /** `trust` resolved to `"link"`, no embedded pins are configured, and the connect options
      * carried no usable `linkPin` to trust. */
     object LinkTrustRequiresLinkPin : TrustedPinsResolution()
+
+    /** `trust` is present but is neither `"link"` nor `"pin"` (a typo/hand-edit), and no embedded
+     * pins are configured to fall back on regardless of `trust`'s text. This must never be treated
+     * as the missing-key default — that would let a mistyped `trust` value silently fail *open*
+     * into unpinned link TOFU instead of erroring. */
+    data class InvalidTrustValue(
+        val value: String,
+    ) : TrustedPinsResolution()
 }
 
 /**
@@ -142,36 +150,38 @@ internal sealed class TrustedPinsResolution {
  * | `"link"` | empty | trust `linkPin`, or [LinkTrustRequiresLinkPin] if none is usable |
  * | `"link"` | non-empty | embedded pins win, `linkPin` ignored (config can never *widen* trust) |
  *
- * A missing/unrecognized `trust` value defaults to `"pin"` if `embeddedPins` is non-empty, else
- * `"link"` — matching the config plugin's own default so bare-RN and Expo apps behave
- * identically. No `isDebuggable`/build-type input is ever consulted here.
+ * A missing (`null`/empty-string) `trust` value defaults to `"pin"` if `embeddedPins` is
+ * non-empty, else `"link"` — matching the config plugin's own default so bare-RN and Expo apps
+ * behave identically. Embedded pins are checked first, so by the time a `null`/empty `trust` is
+ * actually consulted below, `embeddedPins` is already known empty and the default always resolves
+ * to `"link"`. A *present but unrecognized* `trust` string (anything other than `"link"`/`"pin"`)
+ * is [InvalidTrustValue] — it is never coerced into the missing-key default, which would let a
+ * typo silently widen trust into unpinned link TOFU. No build-time debuggability signal is ever
+ * consulted here.
  */
 internal fun resolveTrustedPins(
     trust: String?,
     embeddedPins: Set<String>,
     linkPin: String?,
 ): TrustedPinsResolution {
-    val effectiveTrust =
-        when (trust) {
-            "link", "pin" -> trust
-            else -> if (embeddedPins.isNotEmpty()) "pin" else "link"
-        }
-
-    // Embedded pins always win once present, regardless of `effectiveTrust`: config can never
-    // *widen* trust by declaring `trust: "link"` alongside real `cliPins`.
+    // Embedded pins always win once present, regardless of `trust`: config can never *widen*
+    // trust by declaring `trust: "link"` (or anything else) alongside real `cliPins`.
     if (embeddedPins.isNotEmpty()) {
         return TrustedPinsResolution.Configured(embeddedPins)
     }
 
-    if (effectiveTrust == "pin") {
-        return TrustedPinsResolution.PinTrustRequiresEmbeddedPins
-    }
+    val normalizedTrust = trust?.takeIf { it.isNotEmpty() }
 
-    if (!linkPin.isNullOrEmpty()) {
-        return TrustedPinsResolution.LinkPin(linkPin)
+    return when (normalizedTrust) {
+        "pin" -> TrustedPinsResolution.PinTrustRequiresEmbeddedPins
+        "link", null ->
+            if (!linkPin.isNullOrEmpty()) {
+                TrustedPinsResolution.LinkPin(linkPin)
+            } else {
+                TrustedPinsResolution.LinkTrustRequiresLinkPin
+            }
+        else -> TrustedPinsResolution.InvalidTrustValue(normalizedTrust)
     }
-
-    return TrustedPinsResolution.LinkTrustRequiresLinkPin
 }
 
 internal data class CordieriteErrorDetails(
@@ -869,6 +879,10 @@ internal class CordieriteConnectionManager(
                 TrustedPinsResolution.LinkTrustRequiresLinkPin ->
                     throw IllegalStateException(
                         "Cordierite trust=\"link\" but the bootstrap link carried no pin to trust.",
+                    )
+                is TrustedPinsResolution.InvalidTrustValue ->
+                    throw IllegalStateException(
+                        "Cordierite TRUST must be \"link\" or \"pin\", got \"${resolution.value}\".",
                     )
             }
 

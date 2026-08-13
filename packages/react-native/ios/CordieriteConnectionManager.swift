@@ -124,6 +124,11 @@ enum CordieriteTrustedPinsResolution: Equatable {
   /// `trust` resolved to `"link"`, no embedded pins are configured, and the connect options
   /// carried no usable `linkPin` to trust.
   case linkTrustRequiresLinkPin
+  /// `trust` is present but is neither `"link"` nor `"pin"` (a typo/hand-edit), and no embedded
+  /// pins are configured to fall back on regardless of `trust`'s text. This must never be treated
+  /// as the missing-key default — that would let a mistyped `trust` value silently fail *open*
+  /// into unpinned link TOFU instead of erroring.
+  case invalidTrustValue(String)
 }
 
 /// Pure decision logic for explicit trust mode (`docs/tasks/05-explicit-trust-mode.md`): given
@@ -140,37 +145,38 @@ enum CordieriteTrustedPinsResolution: Equatable {
 /// | `"link"` | empty | trust `linkPin`, or `.linkTrustRequiresLinkPin` if none is usable |
 /// | `"link"` | non-empty | embedded pins win, `linkPin` ignored (config can never *widen* trust) |
 ///
-/// A missing/unrecognized `trust` value defaults to `"pin"` if `embeddedPins` is non-empty, else
-/// `"link"` — matching the config plugin's own default so bare-RN and Expo apps behave
-/// identically. No `isDebugBuild`/build-type input is ever consulted here.
+/// A missing (`nil`/empty-string) `trust` value defaults to `"pin"` if `embeddedPins` is
+/// non-empty, else `"link"` — matching the config plugin's own default so bare-RN and Expo apps
+/// behave identically. Embedded pins are checked first, so by the time a `nil`/empty `trust` is
+/// actually consulted below, `embeddedPins` is already known empty and the default always
+/// resolves to `"link"`. A *present but unrecognized* `trust` string (anything other than
+/// `"link"`/`"pin"`) is `.invalidTrustValue` — it is never coerced into the missing-key default,
+/// which would let a typo silently widen trust into unpinned link TOFU. No build-time
+/// debuggability signal is ever consulted here.
 func resolveTrustedPins(
   trust: String?,
   embeddedPins: [String],
   linkPin: String?
 ) -> CordieriteTrustedPinsResolution {
-  let effectiveTrust: String
-  switch trust {
-  case "link", "pin":
-    effectiveTrust = trust!
-  default:
-    effectiveTrust = embeddedPins.isEmpty ? "link" : "pin"
-  }
-
-  // Embedded pins always win once present, regardless of `effectiveTrust`: config can never
-  // *widen* trust by declaring `trust: "link"` alongside real `cliPins`.
+  // Embedded pins always win once present, regardless of `trust`: config can never *widen* trust
+  // by declaring `trust: "link"` (or anything else) alongside real `cliPins`.
   if !embeddedPins.isEmpty {
     return .configured(Set(embeddedPins))
   }
 
-  if effectiveTrust == "pin" {
+  let normalizedTrust = (trust?.isEmpty == false) ? trust : nil
+
+  switch normalizedTrust {
+  case "pin":
     return .pinTrustRequiresEmbeddedPins
+  case "link", nil:
+    if let linkPin, !linkPin.isEmpty {
+      return .linkPin(linkPin)
+    }
+    return .linkTrustRequiresLinkPin
+  case .some(let unrecognized):
+    return .invalidTrustValue(unrecognized)
   }
-
-  if let linkPin, !linkPin.isEmpty {
-    return .linkPin(linkPin)
-  }
-
-  return .linkTrustRequiresLinkPin
 }
 
 private struct DefaultSessionClaimDeviceFields {
@@ -317,6 +323,8 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
       throw CordieriteModuleError(message: "Cordierite trust=\"pin\" requires CordieriteCliPins to be configured in Info.plist.")
     case .linkTrustRequiresLinkPin:
       throw CordieriteModuleError(message: "Cordierite trust=\"link\" but the bootstrap link carried no pin to trust.")
+    case .invalidTrustValue(let value):
+      throw CordieriteModuleError(message: "Cordierite CordieriteTrust must be \"link\" or \"pin\", got \"\(value)\".")
     }
 
     // Fail closed: absent the plist key, only local/LAN addresses are allowed.

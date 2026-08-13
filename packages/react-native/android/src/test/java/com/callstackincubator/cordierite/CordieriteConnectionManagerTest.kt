@@ -163,16 +163,45 @@ class CordieriteConnectionManagerTest {
         )
     }
 
-    // An unrecognized trust string must fail safe (same missing-key default), never widen trust.
+    // Empty-string TRUST must behave exactly like a missing key, not like an invalid value: an
+    // empty manifest value should read as "absent", the same way `parseTrustMetadataValue` treats
+    // it before this function is ever called from `loadConfiguration`.
     @Test
-    fun `unrecognized trust value falls back to the missing-key default`() {
+    fun `empty string trust behaves like a missing key`() {
         assertEquals(
             TrustedPinsResolution.Configured(embeddedPins),
-            resolveTrustedPins(trust = "everything", embeddedPins = embeddedPins, linkPin = null),
+            resolveTrustedPins(trust = "", embeddedPins = embeddedPins, linkPin = null),
         )
         assertEquals(
             TrustedPinsResolution.LinkPin(linkPinValue),
-            resolveTrustedPins(trust = "everything", embeddedPins = emptySet(), linkPin = linkPinValue),
+            resolveTrustedPins(trust = "", embeddedPins = emptySet(), linkPin = linkPinValue),
+        )
+        assertEquals(
+            TrustedPinsResolution.LinkTrustRequiresLinkPin,
+            resolveTrustedPins(trust = "", embeddedPins = emptySet(), linkPin = null),
+        )
+    }
+
+    // An unrecognized (but non-empty) trust string must hard-error, never silently fail *open*
+    // into the missing-key default's link-TOFU behavior — a typo like "pinn" or "Pin" must not be
+    // treated as weaker than what the author actually wrote.
+    @Test
+    fun `unrecognized non-empty trust value is a hard error, even when embedded pins are absent`() {
+        for (badTrust in listOf("PIN", "Link", "pinn", "none", "disabled")) {
+            assertEquals(
+                TrustedPinsResolution.InvalidTrustValue(badTrust),
+                resolveTrustedPins(trust = badTrust, embeddedPins = emptySet(), linkPin = linkPinValue),
+            )
+        }
+    }
+
+    // Table rows collapse once embedded pins are present: they win regardless of what `trust`
+    // says, even a garbage value — `trust` is simply irrelevant when pins are already embedded.
+    @Test
+    fun `unrecognized trust value is irrelevant once embedded pins are present`() {
+        assertEquals(
+            TrustedPinsResolution.Configured(embeddedPins),
+            resolveTrustedPins(trust = "everything", embeddedPins = embeddedPins, linkPin = null),
         )
     }
 
