@@ -25,30 +25,30 @@ import { createUseCordieriteTool } from "./useCordieriteTool";
 export * from "./Cordierite.types";
 export type { InstallCordieriteDeepLinkBootstrapOptions } from "./deep-link-install";
 export type { CordierePublicApi, CordieriteSubscription } from "./public-api";
+export type { UseCordieriteToolOptions } from "./useCordieriteTool";
 
 const noopSubscription: CordieriteSubscription = { remove() {} };
 
 /** Accepts any registration and returns a disposer; the tool is never actually registered anywhere. */
 export function registerTool<
   TInputSchema extends
-    | import("@cordierite/shared").StandardSchemaV1
-    | undefined,
+    import("@cordierite/shared").StandardSchemaV1 | undefined,
   TOutputSchema extends
-    | import("@cordierite/shared").StandardSchemaV1
-    | undefined
+    import("@cordierite/shared").StandardSchemaV1 | undefined,
 >(
-  _registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>
+  _registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>,
 ): CordieriteSubscription {
   return noopSubscription;
 }
 
-/** `useEffect` wrapper around the inert `registerTool` above — same mount/deps behavior, no-op body. */
+/** `useEffect` wrapper around the inert `registerTool` above — same mount/deps/`options.enabled`
+ * behavior as the real entry, no-op body. */
 export const useCordieriteTool = createUseCordieriteTool(registerTool);
 
 /** No-op: never sends anything. */
 export async function postEvent(
   _name: string,
-  _payload?: unknown
+  _payload?: unknown,
 ): Promise<void> {}
 
 /** Always empty: this build never registers any tool anywhere. */
@@ -58,13 +58,13 @@ export function getRegisteredTools(): ToolDescriptor[] {
 
 /** No-op: this build never installs deep-link listeners. */
 export function installCordieriteDeepLinkBootstrap(
-  _options?: InstallCordieriteDeepLinkBootstrapOptions
+  _options?: InstallCordieriteDeepLinkBootstrapOptions,
 ): void {}
 
 /** No-op: the returned subscription is inert and the callback never fires. */
 export function addCordieriteListener<Kind extends CordieriteListenerKind>(
   _kind: Kind,
-  _callback: CordieriteUnifiedListenerMap[Kind]
+  _callback: CordieriteUnifiedListenerMap[Kind],
 ): CordieriteSubscription {
   return noopSubscription;
 }

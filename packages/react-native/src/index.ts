@@ -34,6 +34,7 @@ export {
 export { cordieriteNativeModule };
 export type { InstallCordieriteDeepLinkBootstrapOptions } from "./deep-link-install";
 export type { CordierePublicApi, CordieriteSubscription } from "./public-api";
+export type { UseCordieriteToolOptions } from "./useCordieriteTool";
 
 let cordieriteClientInstance: ReturnType<typeof createCordieriteClient> | null =
   null;
@@ -206,5 +207,7 @@ export function connect(input: CordieriteConnectInput): Promise<void> {
 /**
  * `useEffect` wrapper around `registerTool`: registers on mount and whenever `deps` changes,
  * disposing the previous registration first (identity-safe — see `registerTool`'s doc comment).
+ * `options.enabled` (default `true`) gates registration without breaking the rules of hooks —
+ * see the README's "Define tools in app startup code" section.
  */
 export const useCordieriteTool = createUseCordieriteTool(registerTool);

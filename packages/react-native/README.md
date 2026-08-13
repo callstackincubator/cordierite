@@ -159,6 +159,24 @@ export function CordieriteBootstrap() {
 
 Mount that component near app startup, or register from another module that loads on startup. The host can only list and invoke tools that your app has already registered.
 
+**Gating a tool by build variant:** `useCordieriteTool` takes a third `options` argument, `{ enabled?: boolean }` (default `true`). `enabled: false` never registers the tool, and removing it (or a hook that was already mounted) leaves no registration behind. Toggling `enabled` at runtime registers/unregisters cleanly — this is the supported way to make registration conditional, so put the condition in the argument instead of wrapping the hook call in an `if`, which is a rules-of-hooks violation:
+
+```ts
+useCordieriteTool(
+  {
+    name: "wipe-local-db",
+    description: "Destructive: clears the local database",
+    handler: async () => wipeLocalDb(),
+  },
+  [],
+  { enabled: process.env.EXPO_PUBLIC_CORDIERITE_TOOLS === "full" }
+);
+```
+
+The recommended predicate is an app-owned build flag inlined by the bundler at build time (`EXPO_PUBLIC_*` env vars, a Babel define plugin, etc.) — something your release pipeline controls explicitly, like `process.env.EXPO_PUBLIC_CORDIERITE_TOOLS === "full"` above. **`__DEV__` is the wrong default here**, for the same reason a `debuggable` build-type check is the wrong native gate: `__DEV__` is `false` in *any* release-bundled JS, including the release-signed, internally-distributed "testing" variant agents actually drive in CI — gating a destructive tool on `__DEV__` removes it exactly where it is needed. `__DEV__` is still fine for tools that are genuinely debug-only (e.g. a "dump internal state" tool with no purpose outside a local dev loop); it just should not be the example every app copies for hardening.
+
+**Consequence for agents and E2E flows:** because registration is the app-side allowlist, `tools/list` legitimately differs per build artifact — a CI testing build may expose a different tool set than a local dev build or a hardened production build. Automated flows should discover tools via `tools/list` rather than assume a fixed set is always present.
+
 ### 6. Start the daemon and test the flow
 
 `cordierite` auto-spawns its daemon on first use, so most CLI commands just work:
