@@ -171,4 +171,63 @@ jobs:
         run: >-
           xcodebuild build -workspace playground.xcworkspace -scheme playground -configuration Debug
           -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath build-included
           CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO
+      - name: cordierite doctor — assert present (default autolinking config)
+        run: >-
+          node packages/cordierite/bin.js doctor
+          playground/ios/build-included/Build/Products/Debug-iphonesimulator/playground.app
+          --assert-present
+      - name: Apply the package.json autolinking-exclude recipe
+        # Mutates the playground's checked-out config for this job only (never committed): adds the
+        # documented `expo.autolinking.ios.exclude` entry to package.json, and drops the
+        # `@cordierite/react-native` config plugin entry from app.json entirely (the README's own
+        # "skip this whole plugin entry" guidance for a build that doesn't carry Cordierite at all)
+        # so the plugin's own include/autolinking consistency assertion
+        # (docs/tasks/06-config-plugin-rewrite.md) never runs, and so it doesn't write
+        # CordieriteCliPins/CordieriteTrust/CordieriteAllowPrivateLanOnly Info.plist keys into a
+        # build that's supposed to carry no Cordierite footprint at all -- `artifact-inspect.ts`
+        # treats those keys as an inclusion signal, so leaving them in would make `--assert-absent`
+        # fail even with the native module correctly excluded. Mirrors the android job's mutation
+        # (docs/tasks/02-fix-autolinking-exclusion.md). `playground/plugins/with-native-tests.js`
+        # reads this same package.json signal and skips hand-adding the Cordierite pod once it sees
+        # the exclude, since excluding the package from iOS autolinking also stops its codegen
+        # (docs/tasks/13-ios-ci-doctor-gate.md) -- without that, the re-prebuilt Podfile would still
+        # hand-add a pod whose `RCTNativeCordierite.mm` imports a header codegen never generates,
+        # and the build below would fail to compile instead of producing an artifact to inspect.
+        working-directory: playground
+        run: |
+          node -e '
+            const fs = require("fs");
+
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.expo = pkg.expo || {};
+            pkg.expo.autolinking = pkg.expo.autolinking || {};
+            pkg.expo.autolinking.ios = { exclude: ["@cordierite/react-native"] };
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+
+            const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
+            app.expo.plugins = app.expo.plugins.filter(
+              (entry) => !(Array.isArray(entry) && entry[0] === "@cordierite/react-native")
+            );
+            fs.writeFileSync("app.json", JSON.stringify(app, null, 2) + "\n");
+          '
+      - name: Re-prebuild iOS with Cordierite excluded
+        working-directory: playground
+        env:
+          CI: "true"
+          EXPO_NO_TELEMETRY: "1"
+          LANG: en_US.UTF-8
+        run: pnpm exec expo prebuild --platform ios --clean
+      - name: Build playground for iOS Simulator (Cordierite excluded)
+        working-directory: playground/ios
+        run: >-
+          xcodebuild build -workspace playground.xcworkspace -scheme playground -configuration Debug
+          -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath build-excluded
+          CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO
+      - name: cordierite doctor — assert absent (excluded via package.json)
+        run: >-
+          node packages/cordierite/bin.js doctor
+          playground/ios/build-excluded/Build/Products/Debug-iphonesimulator/playground.app
+          --assert-absent
