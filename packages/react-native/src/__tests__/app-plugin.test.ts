@@ -85,7 +85,7 @@ describe("app.plugin.js: validatePins", () => {
     expect(validatePins([VALID_PIN])).toEqual([VALID_PIN]);
   });
 
-  // Opt-in hardening (design doc part B): cliPins becomes optional when not opting into release.
+  // cliPins becomes optional when not opting into release.
   test("with requireNonEmpty: false, an omitted cliPins normalizes to [] instead of throwing", () => {
     expect(validatePins(undefined, { requireNonEmpty: false })).toEqual([]);
   });
@@ -175,7 +175,7 @@ describe("app.plugin.js: normalizeOptions", () => {
     );
   });
 
-  // Opt-in hardening (design doc part B): cliPins becomes optional when not opting into release.
+  // cliPins becomes optional when not opting into release.
   // Test matrix below: enableInReleaseBuilds true/false/absent x cliPins valid/empty/invalid/absent.
 
   test("cliPins is optional when enableInReleaseBuilds is absent: normalizes to undefined, not []", () => {
@@ -251,7 +251,7 @@ describe("app.plugin.js: normalizeOptions", () => {
     expect(options.cliPins).toEqual([VALID_PIN]);
   });
 
-  // Opt-in hardening (design doc part B): cliPins set without enableInReleaseBuilds is very likely
+  // cliPins set without enableInReleaseBuilds is very likely
   // a misconfiguration -- the team almost certainly expects production trust to work.
   describe("enableInReleaseBuilds/cliPins mismatch warning", () => {
     test("warns when cliPins is set but enableInReleaseBuilds is absent", () => {
@@ -314,7 +314,7 @@ describe("app.plugin.js: applyInfoPlistChanges", () => {
     expect(typeof infoPlist["CordieriteAllowPrivateLanOnly"]).toBe("boolean");
   });
 
-  // Opt-in hardening (design doc part B): cliPins optional -- absent means no pins key at all.
+  // cliPins optional -- absent means no pins key at all.
   test("writes no CordieriteCliPins key at all when cliPins is undefined (absent)", () => {
     const infoPlist = applyInfoPlistChanges(
       {},
@@ -357,8 +357,8 @@ describe("app.plugin.js: applyAndroidManifestChanges", () => {
     );
 
     expect(pins?.$["android:value"]).toBe(JSON.stringify([VALID_PIN]));
-    // A real boolean survives in the in-memory manifest model (task 12: "write it in a form native
-    // actually reads"), not a stringified `"true"` -- distinguishing this from the pre-task-12 bug.
+    // A real boolean survives in the in-memory manifest model ("write it in a form native
+    // actually reads"), not a stringified `"true"` -- distinguishing this from the earlier bug.
     expect(privateLan?.$["android:value"]).toBe(true);
     expect(typeof privateLan?.$["android:value"]).toBe("boolean");
   });
@@ -372,7 +372,7 @@ describe("app.plugin.js: applyAndroidManifestChanges", () => {
     ).toThrow();
   });
 
-  // Opt-in hardening (design doc part B): default-inert release builds.
+  // Default-inert release builds.
   test("writes a real boolean ENABLE_IN_RELEASE meta-data value, defaulting to false", () => {
     const manifest = applyAndroidManifestChanges(minimalAndroidManifest(), {
       cliPins: [VALID_PIN],
@@ -415,7 +415,7 @@ describe("app.plugin.js: applyAndroidManifestChanges", () => {
     expect(enableInRelease?.$["android:value"]).toBe(true);
   });
 
-  // Opt-in hardening (design doc part B): cliPins optional -- absent means no pins meta-data at all.
+  // cliPins optional -- absent means no pins meta-data at all.
   test("writes no CLI_PINS meta-data at all when cliPins is undefined (absent)", () => {
     const manifest = applyAndroidManifestChanges(minimalAndroidManifest(), {
       cliPins: undefined,
@@ -478,7 +478,7 @@ describe("app.plugin.js: addEnableInReleaseFlagToPodfile", () => {
 
     expect(result).toContain(ENABLE_IN_RELEASE_PODFILE_MARKER);
     expect(result).toContain("target.name == 'Cordierite'");
-    // Both languages need the flag (task 08/overview §B): Swift via
+    // Both languages need the flag: Swift via
     // SWIFT_ACTIVE_COMPILATION_CONDITIONS, the ObjC++ bridge via GCC_PREPROCESSOR_DEFINITIONS.
     expect(result).toContain("SWIFT_ACTIVE_COMPILATION_CONDITIONS");
     expect(result).toContain("GCC_PREPROCESSOR_DEFINITIONS");

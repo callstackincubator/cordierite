@@ -1,6 +1,6 @@
 /**
  * Host key loading and leaf-certificate minting (ARCHITECTURE.md §3, §8). Reuses
- * `host-certificate.ts` (kept as-is through task 01) for the actual X.509 generation; this module
+ * `host-certificate.ts` for the actual X.509 generation; this module
  * owns key-file hygiene (refusing over-permissive key files) and re-minting the leaf when
  * the advertised address changes so the certificate's SAN stays valid.
  *

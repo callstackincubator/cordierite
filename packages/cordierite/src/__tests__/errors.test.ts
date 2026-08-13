@@ -1,5 +1,5 @@
 /**
- * Unit coverage for the exit-code mapping (task 06 scope item 4): the daemon's wire `ErrorType`s
+ * Unit coverage for the exit-code mapping: the daemon's wire `ErrorType`s
  * (ARCHITECTURE.md §5) bucket onto the sysexits-style classes in `errors.ts`, while `toCliError`'s
  * rendered `type` field preserves the wire type verbatim (never the bucket name) — the full
  * round-trip through a real daemon is covered by `tool-invocation.integration.test.ts`-style flows

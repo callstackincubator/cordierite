@@ -336,7 +336,7 @@ internal class CordieriteConnectionManager(
      * the per-connect client *before* the socket exists — before any ack can tell us the
      * server-negotiated interval. We seed it with the daemon's documented default and update it
      * from each ack's `keepalive_interval_s` (native parses the ack it already forwards, mirroring
-     * the iOS plumbing choice from task 09) so the *next* connect/resume uses the negotiated value.
+     * the iOS plumbing choice) so the *next* connect/resume uses the negotiated value.
      */
     private var negotiatedPingIntervalMillis = TimeUnit.SECONDS.toMillis(DEFAULT_PING_INTERVAL_SECONDS)
 

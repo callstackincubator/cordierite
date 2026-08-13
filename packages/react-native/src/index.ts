@@ -39,7 +39,7 @@ let cordieriteClientInstance: ReturnType<typeof createCordieriteClient> | null =
   null;
 
 /**
- * Default-inert release builds (opt-in hardening design doc part B): when the native module is
+ * Default-inert release builds: when the native module is
  * absent (Expo Go, a JS-only bundle) *or* inert (a release build with no `cliPins`/
  * `enableInReleaseBuilds` opt-in — Android's `CordieritePackage.getModule` returns `null`, iOS's
  * TurboModule implementation is compiled out; either way `TurboModuleRegistry` never finds it),
@@ -74,10 +74,10 @@ function noopIfNativeUnavailable<T>(
 }
 
 /**
- * Constructing a `CordieriteClient` (task 11) subscribes native event listeners immediately —
+ * Constructing a `CordieriteClient` subscribes native event listeners immediately —
  * harmless when the native module is unavailable (`CordieriteModule.ts`'s `addListener` never
  * throws) but still real work. Deferring the construction itself until first use keeps this root
- * entry genuinely side-effect-free at import time (ARCHITECTURE.md §11 / task 12), not merely
+ * entry genuinely side-effect-free at import time (ARCHITECTURE.md §11), not merely
  * non-throwing.
  */
 const getCordieriteClientInstance = (): ReturnType<

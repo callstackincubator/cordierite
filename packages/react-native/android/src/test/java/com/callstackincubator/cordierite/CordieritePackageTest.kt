@@ -5,8 +5,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pure-logic JVM tests for `CordieritePackage`'s default-inert-release-builds gate (opt-in
- * hardening design doc part B). `getModule` itself needs a `Context`/`ApplicationInfo` and isn't
+ * Pure-logic JVM tests for `CordieritePackage`'s default-inert-release-builds gate.
+ * `getModule` itself needs a `Context`/`ApplicationInfo` and isn't
  * exercised here — see `isCordieriteRegistrationEnabled` and `parseEnableInRelease`'s doc comments
  * for why the decision is factored out this way.
  */

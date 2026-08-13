@@ -1,8 +1,7 @@
 /**
- * Task 06 scope item 4: "Recreate an `exit-codes` test suite for the v2 commands (the v1 suite was
- * deleted with the v1 commands in task 01 ... its convention of asserting exact codes per failure
- * class is worth reproducing)." Each case here is a real CLI subprocess against a real daemon,
- * asserting both the exit code and the JSON error's `type`.
+ * An `exit-codes` test suite for the v2 commands: the v1 suite's convention of asserting exact
+ * codes per failure class is worth reproducing. Each case here is a real CLI subprocess against a
+ * real daemon, asserting both the exit code and the JSON error's `type`.
  */
 
 import { createServer as createNetServer } from "node:net";

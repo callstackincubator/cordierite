@@ -213,9 +213,9 @@ const snapshotTools = async (
 
 const BUILTIN_TOOL_NAMES = new Set(["cordierite_connect", "cordierite_wait_for_session"]);
 
-/** Every `tools/list` response always includes the two built-in management tools (task 08 scope
- * item 4) alongside whatever proxied device tools are live; tests that care only about the
- * proxied tools filter them out here rather than repeating the same two names everywhere. */
+/** Every `tools/list` response always includes the two built-in management tools alongside
+ * whatever proxied device tools are live; tests that care only about the proxied tools filter
+ * them out here rather than repeating the same two names everywhere. */
 const withoutBuiltinTools = <T extends { name: string }>(tools: T[]): T[] => {
   return tools.filter((tool) => !BUILTIN_TOOL_NAMES.has(tool.name));
 };

@@ -315,7 +315,7 @@ export type DaemonStream = {
 
 /**
  * Opens a persistent connection to the daemon (auto-spawning as needed) for use cases that need
- * server→client notifications, e.g. `events.subscribe` (subscription wiring lands in task 05).
+ * server→client notifications, e.g. `events.subscribe`.
  */
 export const openDaemonStream = async (
   options: Omit<CallDaemonOptions, "requestTimeoutMs"> & { requestTimeoutMs?: number },

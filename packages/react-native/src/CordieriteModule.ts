@@ -18,7 +18,7 @@ type NativeCordieriteModule = typeof import("./NativeCordierite");
 type NativeModuleLoader = () => NativeCordieriteModule;
 
 /**
- * ARCHITECTURE.md §11 / task 12: the root entry is side-effect-free, so the TurboModule lookup
+ * ARCHITECTURE.md §11: the root entry is side-effect-free, so the TurboModule lookup
  * (`TurboModuleRegistry.getEnforcing`, which throws when the native module was never registered —
  * Expo Go, a misconfigured build, or a JS-only environment) must happen lazily on the *first* native
  * call, never at import time. `require` here (not a static `import`) is what makes the lookup lazy:
@@ -73,7 +73,7 @@ const resolveNativeModule = (): NativeCordieriteModule["NativeCordierite"] => {
 
 /**
  * Probes whether the native module can be resolved, without throwing. Powers the root (`.`)
- * entry's automatic degrade-to-noop (opt-in hardening design doc part B: default-inert release
+ * entry's automatic degrade-to-noop (default-inert release
  * builds) — a release build with no `cliPins`/`enableInReleaseBuilds` opt-in never registers the
  * native module at all (Android: `CordieritePackage.getModule` returns `null`; iOS: the TurboModule
  * implementation is compiled out), so `resolveNativeModule()` throws exactly like it already does
@@ -214,8 +214,8 @@ export const cordieriteNativeModule: CordieriteNativeModuleLike = {
     }
   },
   /**
-   * Never throws: constructing a `CordieriteClient` (task 11) subscribes three of these at creation
-   * time, and that must stay side-effect-free at import time (task 12). When the native module is
+   * Never throws: constructing a `CordieriteClient` subscribes three of these at creation
+   * time, and that must stay side-effect-free at import time. When the native module is
    * unavailable the returned subscription is an inert no-op — the listener simply never fires until
    * an app-level native call (e.g. `connect()`) has a chance to surface the real, actionable error.
    */

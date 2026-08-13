@@ -140,11 +140,11 @@ export type SessionManagerOptions = {
   eventBus: EventBus;
   clock?: Clock;
   timers?: TimerFns;
-  /** Routes a validated `tool_result`/`tool_error`/`tool_call_progress` frame (task 05's
-   * `calls.ts` correlates it); wired by the composition root once both modules exist. */
+  /** Routes a validated `tool_result`/`tool_error`/`tool_call_progress` frame (`calls.ts`
+   * correlates it); wired by the composition root once both modules exist. */
   onToolFrame?: (message: ToolResultMessage | ToolErrorMessage | ToolCallProgressMessage) => void;
   /** Routes a validated app-side `event` frame; the composition root forwards it to the event bus
-   * as `app_event` (ARCHITECTURE.md §7/task 05 scope item 5). */
+   * as `app_event` (ARCHITECTURE.md §7). */
   onAppEvent?: (sessionId: string, alias: string, message: EventMessage) => void;
 };
 
@@ -170,7 +170,7 @@ export type SessionManager = {
   list: () => SessionSummary[];
   describe: (selector?: string) => SessionSummary;
   revoke: (selector?: string) => void;
-  /** Resolves a selector for the `tools.*` RPC surface (task 05): same selector rules as
+  /** Resolves a selector for the `tools.*` RPC surface: same selector rules as
    * `describe`/`revoke` (no_session/ambiguous_session/unknown_session), but returns the pieces
    * `tools.list`/`tools.call` need directly rather than a wire-shaped summary. */
   resolveForTools: (selector?: string) => {

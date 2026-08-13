@@ -1,8 +1,7 @@
 /**
  * The control-plane UDS JSON-RPC server (ARCHITECTURE.md §5). Framing: one JSON-RPC 2.0 message
  * per line (`\n`-delimited). Server→client notifications use method `"event"` and are pushed via
- * {@link notify} on a targeted connection (subscription wiring lands in task 05 — this module
- * only exposes the primitive).
+ * {@link notify} on a targeted connection — this module only exposes the primitive.
  */
 
 import { createServer, type Server, type Socket } from "node:net";
@@ -14,8 +13,7 @@ import type { ErrorType } from "@cordierite/shared";
 export const MAX_LINE_BYTES = 1024 * 1024;
 
 /** 4 MiB — a subscriber connection (`events.subscribe`) whose outbound buffer grows past this
- * (slow/dead reader) is dropped outright rather than left to back up the daemon indefinitely
- * (task 05 scope item 4). */
+ * (slow/dead reader) is dropped outright rather than left to back up the daemon indefinitely. */
 export const MAX_NOTIFY_BUFFERED_BYTES = 4 * 1024 * 1024;
 
 export class RpcApplicationError extends Error {
@@ -34,7 +32,7 @@ export class RpcApplicationError extends Error {
 export type RpcConnection = {
   readonly id: number;
   readonly socket: Socket;
-  /** Extensibility bag for future wiring (e.g. task 05's `events.subscribe` state). */
+  /** Extensibility bag for future wiring (e.g. `events.subscribe` state). */
   readonly state: Record<string, unknown>;
 };
 

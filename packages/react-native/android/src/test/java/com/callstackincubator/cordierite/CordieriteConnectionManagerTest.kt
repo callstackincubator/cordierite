@@ -16,11 +16,11 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Pure-logic JVM tests for the Android connection layer (task 10). Runs on the plain JVM (no
+ * Pure-logic JVM tests for the Android connection layer. Runs on the plain JVM (no
  * Robolectric, no emulator) via `./gradlew :cordierite_react-native:testDebugUnitTest` from
  * `playground/android` (the autolinked consumer app).
  *
- * Not covered here (documented gap, same category as task 09's iOS commit): the actual socket
+ * Not covered here (documented gap, same category as the iOS side): the actual socket
  * callback state machine driven through real
  * `okhttp3.WebSocketListener` callbacks, and `PinningTrustManager`/`computeSpkiPin` end-to-end
  * (both ultimately call `android.util.Base64`, which throws "not mocked" on a plain JVM unit-test

@@ -5,9 +5,9 @@ import type { Spec } from "../NativeCordierite";
 (globalThis as { __DEV__?: boolean }).__DEV__ = true;
 
 /**
- * The root entry must be side-effect-free and its TurboModule lookup lazy (ARCHITECTURE.md §11 /
- * task 12): importing it, and calling `registerTool`, must never *throw*. Since opt-in hardening
- * (design doc part B), an unavailable native module is no longer treated as necessarily a broken
+ * The root entry must be side-effect-free and its TurboModule lookup lazy (ARCHITECTURE.md §11):
+ * importing it, and calling `registerTool`, must never *throw*. Under default-inert release
+ * builds, an unavailable native module is no longer treated as necessarily a broken
  * dev build: `connect()` (and every other exported function) now degrades to the exact `./noop`
  * entry's behavior instead of throwing an actionable "rebuild your dev client" error — a release
  * build with no `cliPins`/`enableInReleaseBuilds` opt-in is expected to have no native module at

@@ -9,19 +9,19 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.module.model.ReactModuleInfo
 import com.facebook.react.module.model.ReactModuleInfoProvider
 
-/** Config-plugin-written manifest meta-data (opt-in hardening design doc part B): explicit,
+/** Config-plugin-written manifest meta-data: explicit,
  * non-default opt-in to registering Cordierite in a release build. The plugin requires non-empty
  * `cliPins` before it will set this to `true`. */
 private const val ENABLE_IN_RELEASE_KEY = "com.callstackincubator.cordierite.ENABLE_IN_RELEASE"
 
 /**
- * Default-inert release builds (opt-in hardening design doc part B): registers the module only
+ * Default-inert release builds: registers the module only
  * when the app is debuggable, or when it has explicitly opted in via `ENABLE_IN_RELEASE`
  * meta-data. A production app that never touched the config plugin's `enableInReleaseBuilds`
  * option gets no Cordierite module at all — `getModule` returns `null`, matching
  * `BaseReactPackage`'s documented contract for "this package does not provide this module". The
- * JS side degrades to exact `/noop` behavior when the native module is absent (opt-in hardening
- * design doc part B, task 09) — this gate is its native counterpart.
+ * JS side degrades to exact `/noop` behavior when the native module is absent
+ * — this gate is its native counterpart.
  *
  * Pure decision logic is factored into `isCordieriteRegistrationEnabled` / `parseEnableInRelease`
  * (mirrors `resolveTrustedPins` / `parseAllowPrivateLanOnly`'s testability pattern) so it does not
@@ -81,8 +81,8 @@ private fun readApplicationInfo(context: Context): ApplicationInfo? =
   }
 
 /**
- * Tolerant parsing of the config-plugin-written `ENABLE_IN_RELEASE` manifest meta-data (opt-in
- * hardening design doc part B). Mirrors `parseAllowPrivateLanOnly`'s tolerant Boolean-or-String
+ * Tolerant parsing of the config-plugin-written `ENABLE_IN_RELEASE` manifest meta-data.
+ * Mirrors `parseAllowPrivateLanOnly`'s tolerant Boolean-or-String
  * handling in `CordieriteConnectionManager.kt` (manifest meta-data can surface as either type
  * depending on how it was declared), but fails closed the other way: a missing key, an
  * unparseable String, or any other value type all resolve to `false` ("not opted in"), since the
@@ -101,8 +101,8 @@ internal fun parseEnableInRelease(hasKey: Boolean, rawValue: Any?): Boolean {
 }
 
 /**
- * Pure decision logic for whether `CordieritePackage` registers the native module at all (opt-in
- * hardening design doc part B). `isDebuggable` is `ApplicationInfo.FLAG_DEBUGGABLE`;
+ * Pure decision logic for whether `CordieritePackage` registers the native module at all.
+ * `isDebuggable` is `ApplicationInfo.FLAG_DEBUGGABLE`;
  * `enableInReleaseMetaData` is `parseEnableInRelease`'s result for the config-plugin-written
  * `ENABLE_IN_RELEASE` manifest flag. Unlike `resolveTrustedPins` (which pin trust a debug build
  * falls back to), this gate has no "weaker but usable" middle case — it's a plain OR, since

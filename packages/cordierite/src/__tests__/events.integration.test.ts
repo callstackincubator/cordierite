@@ -1,6 +1,6 @@
 /**
- * `cordierite events --json` (ARCHITECTURE.md §10, task 06 Testing section): "spawn the CLI as a
- * subprocess, assert line-delimited parseability." Drives a real daemon (auto-spawned by the first
+ * `cordierite events --json` (ARCHITECTURE.md §10): spawns the CLI as a subprocess and asserts
+ * line-delimited parseability. Drives a real daemon (auto-spawned by the first
  * CLI call) and a real `events` subprocess, asserts each stdout line is independently parseable
  * NDJSON, then confirms Ctrl-C (SIGINT) ends the stream cleanly (exit 0).
  */

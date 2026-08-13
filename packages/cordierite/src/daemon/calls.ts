@@ -10,7 +10,7 @@
  * This module knows nothing about sockets or the session state machine — `sessions.ts` (via the
  * composition root in `daemon.ts`) supplies a `send` function and routes incoming
  * `tool_result`/`tool_error`/`tool_call_progress` frames and suspend/revoke/expiry transitions back
- * in. That keeps a single seam (`call`) that a policy layer (task 13) can wrap.
+ * in. That keeps a single seam (`call`) that a policy layer can wrap.
  */
 
 import { randomBytes } from "node:crypto";

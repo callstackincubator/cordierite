@@ -22,7 +22,7 @@ export function createUseCordieriteTool(registerTool: ToolRegistrar) {
   /**
    * `useEffect` wrapper around `registerTool`: registers on mount and whenever `deps` changes,
    * disposing the previous registration first. Relies on the registry's identity-safe disposer
-   * (task 11) so remount / fast-refresh churn never leaks a stale registration or clobbers a newer
+   * so remount / fast-refresh churn never leaks a stale registration or clobbers a newer
    * one under the same tool name.
    */
   return function useCordieriteTool<

@@ -1,6 +1,6 @@
 /**
- * Typed in-process event bus (ARCHITECTURE.md §5 event kinds). The RPC layer (task 05, for
- * `events.subscribe`) and audit (task 13) subscribe here; this module only owns fan-out and must
+ * Typed in-process event bus (ARCHITECTURE.md §5 event kinds). The RPC layer (for
+ * `events.subscribe`) and audit subscribe here; this module only owns fan-out and must
  * never let a throwing subscriber take down the daemon or another subscriber.
  */
 

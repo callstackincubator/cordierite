@@ -2,7 +2,7 @@
 #import <React/RCTBridgeModule.h>
 #import <React/RCTInvalidating.h>
 
-// Default-inert release builds (docs/tasks/00-overview.md §B): the concrete TurboModule
+// Default-inert release builds: the concrete TurboModule
 // implementation below is compiled out entirely unless this is a debug build, or the app has
 // explicitly opted in via `CORDIERITE_ENABLE_RELEASE` (a preprocessor flag the config plugin's
 // `enableInReleaseBuilds` option defines on the *app* target, mirroring `SWIFT_ACTIVE_COMPILATION_CONDITIONS`
@@ -10,7 +10,7 @@
 // finds a "Cordierite" module: `TurboModuleRegistry` lookups on the JS side come back empty, which
 // is exactly what root `src/index.ts`'s `noopIfNativeUnavailable` (which delegates to the
 // `./noop` implementations) depends on to degrade automatically. Plain `DEBUG=1` is a reliable
-// gate for this pod's own Debug configs (see docs/tasks/01-ios-debug-flag-spike.md); custom
+// gate for this pod's own generated Debug configuration; custom
 // configs other than Debug/Release don't get `DEBUG` and stay inert unless
 // `CORDIERITE_ENABLE_RELEASE` is set.
 #if DEBUG || CORDIERITE_ENABLE_RELEASE

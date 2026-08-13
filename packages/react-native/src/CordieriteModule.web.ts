@@ -11,7 +11,7 @@
  * `cordieriteClient` at import time, which registers internal listeners.
  *
  * `isCordieriteNativeModuleAvailable` always returns `true` here — NOT because a native module
- * exists on web, but so that `index.ts`'s default-inert-release-builds degrade path (task 09) never
+ * exists on web, but so that `index.ts`'s default-inert-release-builds degrade path never
  * kicks in on this platform: Metro resolves `./CordieriteModule` to this `.web.ts` file for web
  * bundles, and web already has its own distinct, intentional "unsupported platform" error surface
  * above (`connect`/`send`/`close` throwing). Reporting "unavailable" here would silently swap that

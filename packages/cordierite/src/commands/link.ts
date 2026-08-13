@@ -12,7 +12,7 @@
  * is standard (non-URL-safe) base64 (`sha256/<44-char-base64>`, may contain `+`/`/`/`=`), so it is
  * percent-encoded here; native/JS parsers use `URLSearchParams`, which decodes it back.
  *
- * `--open android|ios-sim` (task 07) additionally forces the advertised address to `127.0.0.1`
+ * `--open android|ios-sim` additionally forces the advertised address to `127.0.0.1`
  * (the simulator/emulator reaches the daemon over localhost — the wss listener already binds all
  * interfaces) and delivers the link via adb/xcrun instead of just printing it.
  */

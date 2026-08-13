@@ -1,7 +1,7 @@
 /**
- * Task 16 scenario: policy/audit. Destructive-deny + audit line assertions, driven through the
- * real CLI subprocess (task 13's own suite exercises the same policy/audit engine directly against
- * the daemon's UDS RPC; this drives the identical policy decision through `cordierite invoke`).
+ * Policy/audit: destructive-deny + audit line assertions, driven through the real CLI subprocess
+ * (a separate unit suite exercises the same policy/audit engine directly against the daemon's UDS
+ * RPC; this drives the identical policy decision through `cordierite invoke`).
  */
 
 import { readFile } from "node:fs/promises";

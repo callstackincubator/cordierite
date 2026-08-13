@@ -5,7 +5,7 @@ import type { Spec } from "../NativeCordierite";
 (globalThis as { __DEV__?: boolean }).__DEV__ = true;
 
 /**
- * Default-inert release builds (opt-in hardening design doc part B): when the native module is
+ * Default-inert release builds: when the native module is
  * unavailable, every root (`.`) entry export must behave *exactly* like the corresponding `./noop`
  * export — not just "not throw", but produce the identical observable result — and log the dev-mode
  * warning exactly once no matter how many calls are made. `root-entry-laziness.test.ts` covers the

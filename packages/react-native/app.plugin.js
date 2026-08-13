@@ -7,20 +7,12 @@ const {
   withPodfile,
 } = require("expo/config-plugins");
 
-// NOTE: a few comments below say "task 12" / "task N" in a bare, unqualified way (e.g. "actionable
-// config errors", "Testing note"). Those predate this repo's `docs/tasks/` directory and its task
-// numbering (opt-in hardening: tasks 01-12) -- they're leftovers from an earlier, differently
-// numbered planning doc ("v2") and do NOT refer to `docs/tasks/12-playground-and-verification.md`,
-// which covers unrelated content. Left as-is rather than guessed-renumbered; treat them as "an
-// earlier design note said so", not as pointers into this directory.
-
 const PLUGIN_NAME = "@cordierite/react-native";
 const PLUGIN_VERSION = require("./package.json").version;
 const ANDROID_PINS_KEY = "com.callstackincubator.cordierite.CLI_PINS";
 const ANDROID_PRIVATE_LAN_KEY =
   "com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY";
-// Must match CordieritePackage.kt's ENABLE_IN_RELEASE_KEY exactly (opt-in hardening design doc
-// part B: default-inert release builds).
+// Must match CordieritePackage.kt's ENABLE_IN_RELEASE_KEY exactly (default-inert release builds).
 const ANDROID_ENABLE_IN_RELEASE_KEY =
   "com.callstackincubator.cordierite.ENABLE_IN_RELEASE";
 const IOS_PINS_KEY = "CordieriteCliPins";
@@ -33,9 +25,9 @@ const IOS_PRIVATE_LAN_KEY = "CordieriteAllowPrivateLanOnly";
 const SPKI_PIN_PATTERN = /^sha256\/[A-Za-z0-9+/]{43}=$/;
 
 /**
- * Throws naming the offending value, not just "invalid pins" (task 12: actionable config errors).
+ * Throws naming the offending value, not just "invalid pins" (actionable config errors).
  *
- * Opt-in hardening (design doc part B): `cliPins` is only *required* to be a non-empty array when
+ * `cliPins` is only *required* to be a non-empty array when
  * `requireNonEmpty` is true (i.e. `enableInReleaseBuilds: true` -- release builds without pins
  * have no way to trust anything, so that combination is refused outright). Everywhere else --
  * `requireNonEmpty: false`, the default matching every pre-existing call site -- an omitted
@@ -84,11 +76,11 @@ function configuredSchemes(expoConfig) {
 
 /**
  * Pure option validation/normalization -- no Expo mod side effects, so it is directly unit-testable
- * without the Expo mod-compiler machinery (task 12 Testing note). `expoConfig` is only consulted to
+ * without the Expo mod-compiler machinery. `expoConfig` is only consulted to
  * warn when `deepLinkScheme` is not actually declared in the app's `scheme` field.
  */
 function normalizeOptions(rawOptions, expoConfig) {
-  // Opt-in hardening (design doc part B): registering Cordierite in a release build at all is
+  // Registering Cordierite in a release build at all is
   // itself opt-in, and doing so requires non-empty cliPins -- a release build with no pins has no
   // way to trust anything, so that combination is refused at config time rather than shipping a
   // build that can only ever hard-fail every connection.
@@ -96,7 +88,7 @@ function normalizeOptions(rawOptions, expoConfig) {
     (rawOptions && rawOptions.enableInReleaseBuilds) === true;
   // `cliPinsProvided` tracks whether the option was present in the raw config at all, distinct from
   // `validatePins`' own `[]`-when-omitted normalization: an *absent* `cliPins` must write no pins
-  // keys downstream (overview §A dev-mode zero-config), whereas an *explicit* `cliPins: []` was
+  // keys downstream (dev-mode zero-config), whereas an *explicit* `cliPins: []` was
   // still a deliberate choice by the caller and is written as-is (and still trips the warning
   // below). `enableInReleaseBuilds: true` always implies `cliPinsProvided` -- `validatePins` above
   // already throws otherwise.
@@ -121,7 +113,7 @@ function normalizeOptions(rawOptions, expoConfig) {
     );
   }
 
-  // Opt-in hardening (design doc part B): a team that sets cliPins almost certainly expects pinned
+  // A team that sets cliPins almost certainly expects pinned
   // trust to work in production. Since release builds are now inert by default, silently ignoring
   // their cliPins would leave them shipping a build that can never connect and no signal why.
   if (cliPinsProvided && !enableInReleaseBuilds) {
@@ -204,7 +196,7 @@ function applyAndroidManifestChanges(androidManifest, options) {
 }
 
 const ENABLE_IN_RELEASE_PODFILE_MARKER =
-  "# Cordierite: enableInReleaseBuilds (opt-in hardening design doc part B)";
+  "# Cordierite: enableInReleaseBuilds (default-inert release builds)";
 
 /**
  * Defines `CORDIERITE_ENABLE_RELEASE` on *every one* of the Cordierite pod's own build
@@ -230,7 +222,7 @@ const ENABLE_IN_RELEASE_PODFILE_MARKER =
  * active via `DEBUG`) is what makes `enableInReleaseBuilds` cover custom iOS configurations the
  * same way it covers custom Android build types.
  *
- * Both languages need the flag defined consistently (task 08/overview §B): Swift reads
+ * Both languages need the flag defined consistently: Swift reads
  * `SWIFT_ACTIVE_COMPILATION_CONDITIONS`, the ObjC++ bridge (`RCTNativeCordierite.mm`) reads a
  * preprocessor macro from `GCC_PREPROCESSOR_DEFINITIONS` -- Xcode's standard "macro list" build
  * setting, hence the `NAME=1` form rather than a raw `-D` compiler flag. xcodeproj can hand back
@@ -312,7 +304,7 @@ const cordieritePlugin = createRunOncePlugin(
   PLUGIN_VERSION,
 );
 
-// Pure helpers exposed for unit tests only (task 12 Testing note) -- not part of the plugin's
+// Pure helpers exposed for unit tests only -- not part of the plugin's
 // public (Expo config) API.
 cordieritePlugin.__internal = {
   SPKI_PIN_PATTERN,

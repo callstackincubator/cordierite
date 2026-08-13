@@ -8,7 +8,7 @@ import {
 
 describe("CordieriteModule.web stub", () => {
   test(
-    "isCordieriteNativeModuleAvailable() is always true (task 09: the default-inert-release-" +
+    "isCordieriteNativeModuleAvailable() is always true (the default-inert-release-" +
       "builds degrade path must not misfire on web, which has its own throwing stub above)",
     () => {
       // Metro resolves `./CordieriteModule` to this `.web.ts` file for web bundles, so `index.ts`'s

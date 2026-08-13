@@ -66,7 +66,7 @@ export type LinkCommandData = {
    * hardening dev-mode: native clients trust this only in debug builds with no `cliPins`). */
   pin: string;
   /** Present (and `true`) only once `--open <target>` has successfully delivered the link
-   * (ARCHITECTURE.md §10/task 07). */
+   * (ARCHITECTURE.md §10). */
   delivered?: true;
   /** The `--open` target the link was delivered to, alongside `delivered`. */
   target?: "android" | "ios-sim";

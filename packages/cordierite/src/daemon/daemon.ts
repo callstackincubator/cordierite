@@ -454,7 +454,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           const tool = resolved.registry.get(name);
 
           if (!tool) {
-            // Deliberately no frame is sent to the app for an unknown tool (task 05 scope item 3).
+            // Deliberately no frame is sent to the app for an unknown tool.
             writeAudit("error", "tool_not_found");
             throw new RpcApplicationError("tool_not_found", `Tool "${name}" is not registered.`);
           }
@@ -462,7 +462,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           const policyDecision = evaluatePolicy(tool, { alias: resolved.alias }, config.policy);
 
           if (policyDecision === "deny") {
-            // Denied → no frame reaches the app, and the call never starts (task 13 scope item 1).
+            // Denied → no frame reaches the app, and the call never starts.
             activeEventBus.emit({
               kind: "tool_call_finished",
               sessionId: resolved.sessionId,
@@ -484,7 +484,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           // `callId` is available synchronously (before the app has answered) precisely so it can
           // be exposed to the RPC caller and stamped on every event in this call's lifecycle — the
           // MCP server correlates its own in-flight `tools.call` against `tool_call_progress`
-          // notifications by this id, unambiguous under concurrent calls (task 08).
+          // notifications by this id, unambiguous under concurrent calls.
           const { callId, result: callResult } = activeCallsManager.call(session, name, args, timeoutMs);
 
           activeEventBus.emit({
