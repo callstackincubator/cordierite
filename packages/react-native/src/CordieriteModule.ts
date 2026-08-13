@@ -73,11 +73,10 @@ const resolveNativeModule = (): NativeCordieriteModule["NativeCordierite"] => {
 
 /**
  * Probes whether the native module can be resolved, without throwing. Powers the root (`.`)
- * entry's automatic degrade-to-noop (default-inert release
- * builds) — a release build with no `cliPins`/`enableInReleaseBuilds` opt-in never registers the
- * native module at all (Android: `CordieritePackage.getModule` returns `null`; iOS: the TurboModule
- * implementation is compiled out), so `resolveNativeModule()` throws exactly like it already does
- * for Expo Go / a JS-only bundle — this reuses that same signal rather than adding a second one.
+ * entry's automatic degrade-to-noop: whether Cordierite's native module exists at all is decided
+ * entirely by autolinking (see `docs/tasks/00-overview.md`), so a build that excluded it never
+ * registers the module, and `resolveNativeModule()` throws exactly like it already does for
+ * Expo Go / a JS-only bundle — this reuses that same signal rather than adding a second one.
  */
 export const isCordieriteNativeModuleAvailable = (): boolean => {
   if (nativeModuleAvailable !== null) {

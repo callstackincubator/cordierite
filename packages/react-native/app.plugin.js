@@ -11,7 +11,8 @@ const PLUGIN_VERSION = require("./package.json").version;
 const ANDROID_PINS_KEY = "com.callstackincubator.cordierite.CLI_PINS";
 const ANDROID_PRIVATE_LAN_KEY =
   "com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY";
-// Must match CordieritePackage.kt's ENABLE_IN_RELEASE_KEY exactly (default-inert release builds).
+// CordieritePackage.kt no longer reads this meta-data key (native build-time gating was removed);
+// the plugin option that writes it is still present pending its own removal.
 const ANDROID_ENABLE_IN_RELEASE_KEY =
   "com.callstackincubator.cordierite.ENABLE_IN_RELEASE";
 const IOS_PINS_KEY = "CordieriteCliPins";
