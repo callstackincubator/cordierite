@@ -10,7 +10,9 @@ import { describe, expect, test } from "vitest";
 import { ERROR_TYPES, type ErrorType } from "@cordierite/shared";
 
 import {
+  assertionError,
   getExitCodeForError,
+  inspectionError,
   internalError,
   permissionError,
   sessionError,
@@ -45,9 +47,26 @@ describe("getExitCodeForError: CLI-originated errors", () => {
     [toolError("tool failed"), 72],
     [permissionError("denied"), 77],
     [internalError("boom"), 1],
+    [inspectionError("no unzip on PATH"), 66],
+    [assertionError("expected present, got absent"), 3],
   ] as const)("%s -> exit %i", (error, expectedCode) => {
     expect(getExitCodeForError(error)).toBe(expectedCode);
     expect(toCliError(error).type).toBe(error.type);
+  });
+
+  test("inspection_error and assertion_error are distinct exit codes from each other and from every other class", () => {
+    const codes = [
+      getExitCodeForError(usageError("x")),
+      getExitCodeForError(validationError("x")),
+      getExitCodeForError(sessionError("x")),
+      getExitCodeForError(toolError("x")),
+      getExitCodeForError(permissionError("x")),
+      getExitCodeForError(internalError("x")),
+      getExitCodeForError(inspectionError("x")),
+      getExitCodeForError(assertionError("x")),
+    ];
+
+    expect(new Set(codes).size).toBe(codes.length);
   });
 });
 

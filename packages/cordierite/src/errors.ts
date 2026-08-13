@@ -6,11 +6,21 @@ import type { CliError, CliErrorType } from "./cli/result-types.js";
 const EXIT_CODE_BY_ERROR_TYPE: Record<CliErrorType, number> = {
   usage_error: 64,
   validation_error: 65,
+  // EX_NOINPUT (66): "an input file did not exist or was not readable" — `doctor` throws this for a
+  // missing external tool or an unreadable/corrupt artifact, deliberately distinct from every other
+  // code here so a release pipeline can't mistake "we couldn't tell" for either a clean pass or an
+  // assertion failure (docs/tasks/08-cordierite-doctor.md).
+  inspection_error: 66,
   connection_error: 70,
   session_error: 71,
   tool_error: 72,
   permission_error: 77,
   internal_error: 1,
+  // `doctor --assert-present`/`--assert-absent`: the artifact was inspected successfully and the
+  // assertion did not hold. Distinct from `inspection_error` (66) — this means the answer is known
+  // and it's "no", not "couldn't tell" — and distinct from `internal_error` (1) so a caller can't
+  // conflate a normal assertion failure with an unexpected crash.
+  assertion_error: 3,
 };
 
 /**
@@ -72,6 +82,14 @@ export const permissionError = (message: string, details?: unknown): CordieriteC
 
 export const internalError = (message: string, details?: unknown): CordieriteCliError => {
   return new CordieriteCliError("internal_error", message, details);
+};
+
+export const inspectionError = (message: string, details?: unknown): CordieriteCliError => {
+  return new CordieriteCliError("inspection_error", message, details);
+};
+
+export const assertionError = (message: string, details?: unknown): CordieriteCliError => {
+  return new CordieriteCliError("assertion_error", message, details);
 };
 
 export const isCordieriteCliError = (value: unknown): value is CordieriteCliError => {

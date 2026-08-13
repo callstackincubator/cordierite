@@ -19,7 +19,12 @@ export type CliErrorType =
   | "session_error"
   | "tool_error"
   | "permission_error"
-  | "internal_error";
+  | "internal_error"
+  // `doctor`-specific: a tool was missing or an artifact could not be read/parsed (see
+  // `artifact-inspect.ts`'s doc comment for why this must never collapse into "absent").
+  | "inspection_error"
+  // `doctor --assert-present`/`--assert-absent`: inspection succeeded but the assertion failed.
+  | "assertion_error";
 
 export type CliError = {
   /** A `CliErrorType` for CLI-originated failures, or the verbatim daemon/app `ErrorType` for
@@ -109,6 +114,24 @@ export type DaemonStopCommandData = {
     ok: true;
     /** How the daemon was told to stop: a clean RPC round-trip, or a SIGTERM fallback. */
     method: "rpc" | "sigterm";
+  };
+};
+
+/** `cordierite doctor <artifact>`: artifact-level Cordierite inclusion report (docs/tasks/08). */
+export type DoctorCommandData = {
+  artifact: string;
+  platform: "ios" | "android";
+  format: "app" | "ipa" | "apk" | "aab";
+  present: boolean;
+  /** Which specific markers matched; empty when `present` is `false`. */
+  signals: string[];
+  /** Present only when `--assert-present`/`--assert-absent` was given. `holds` is always `true` on
+   * a successful result — a failed assertion throws instead (see `assertion_error`), so a caller
+   * reading only `ok: true` results never needs to re-check this field to know whether the gate
+   * passed. */
+  assertion?: {
+    expected: "present" | "absent";
+    holds: true;
   };
 };
 

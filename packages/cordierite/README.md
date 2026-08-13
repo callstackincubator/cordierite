@@ -38,6 +38,7 @@ The command writes an unencrypted PEM private key (PKCS#8) to `<state-dir>/key.p
 | `cordierite revoke [selector]` | revoke a session |
 | `cordierite daemon run\|start\|stop\|status` | daemon lifecycle |
 | `cordierite mcp` | start a stdio MCP server proxying connected apps' tools to MCP clients |
+| `cordierite doctor <artifact> [--assert-present\|--assert-absent]` | **release-gate step**: report or assert whether a built `.app`/`.ipa`/`.apk`/`.aab` contains Cordierite |
 
 Every command that targets a session accepts an optional `selector` (a session id or an alias from `cordierite ls`); omit it when exactly one session is active. Global flags: `--json` (machine-readable output), `--no-color`, `--state-dir <path>` (default `~/.cordierite`). Run `cordierite <command> --help` for the exact flags of any command, or `cordierite --help` for the full list.
 
@@ -63,6 +64,35 @@ Add `cordierite mcp` to the agent's MCP server config — no separate server pro
 ```
 
 Once configured, the connected app's tools appear as MCP tools automatically: `tools/list` mirrors the live registry (namespaced `<alias>__<name>` when more than one session is active), and `tools/call` proxies straight to the app with progress and errors preserved. Two built-in management tools let an agent bootstrap a session without shell access: `cordierite_connect` mints a link (optionally delivering it directly to a booted `android`/`ios-sim` target), and `cordierite_wait_for_session` waits for that session to be claimed.
+
+## Release gate: `cordierite doctor`
+
+Cordierite's inclusion in a build is controlled entirely by autolinking exclusion (see the root README and `docs/SECURITY.md`) — there is no runtime `debuggable` check to catch a pipeline that forgot to exclude the package. `cordierite doctor` is the replacement: an artifact-level assertion you run against the thing you're about to ship, not the config you think produced it.
+
+```bash
+cordierite doctor ./build/MyApp.ipa --assert-absent
+cordierite doctor ./build/app-release.apk --assert-absent
+```
+
+It inspects a built `.app`/`.ipa`/`.apk`/`.aab` for Cordierite's native code (the `RCTNativeCordierite` Objective-C class and the plugin-authored `Info.plist` keys on iOS; the `com.callstackincubator.cordierite` dex package and `AndroidManifest.xml` meta-data keys on Android) and reports `present`/`absent` — or, with `--assert-present`/`--assert-absent`, exits non-zero when the artifact doesn't match what you expected:
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | inspection succeeded; no assertion was given, or the assertion held |
+| `3` | inspection succeeded, but `--assert-present`/`--assert-absent` did not hold |
+| `64` | usage error (bad flags, or an artifact extension that isn't `.app`/`.ipa`/`.apk`/`.aab`) |
+| `66` | the artifact could not be inspected — a required external tool (`unzip`) was missing, or the artifact was unreadable/corrupt. **Never treated as "absent"**: a broken check must fail loudly, not rubber-stamp a release. |
+
+CI snippet, run against your production release build right before you ship it:
+
+```yaml
+- name: Assert Cordierite is excluded from the production build
+  run: npx cordierite doctor ./build/app-release.apk --assert-absent
+- name: Assert Cordierite is excluded from the production build (iOS)
+  run: npx cordierite doctor ./build/MyApp.ipa --assert-absent
+```
+
+For an internally-distributed "testing" build that an agent drives, invert the assertion (`--assert-present`) so a forgotten inclusion — not just a forgotten exclusion — fails CI too.
 
 ## Programmatic use
 
