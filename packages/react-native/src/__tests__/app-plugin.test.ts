@@ -456,6 +456,62 @@ describe("app.plugin.js: resolvePackageJsonAutolinkingExclude", () => {
   // `app.json`/`app.config.*` are never consulted here -- verified as the real behavior in task
   // 02. This function only ever receives a parsed `package.json`, so there is nothing further to
   // assert beyond "this function has no app.json/app.config parameter at all".
+
+  // The CocoaPods driver that runs at `pod install` time always invokes the real resolver with
+  // `--platform apple`, not `ios` (`expo-modules-autolinking`'s `scripts/ios/autolinking_manager.rb`),
+  // and `parsePackageJsonOptions` only falls back to the `ios` sub-object when `apple` is absent --
+  // an `apple` entry wins outright, it does not merge with `ios`. `platform: "ios"` here must
+  // mirror that fallback order exactly, or this assertion could disagree with what `pod install`
+  // actually does. See the drift-guard suite below, which pins this against the real resolver.
+  describe("apple/ios fallback (mirrors the real --platform apple invocation)", () => {
+    test("an apple-only exclude is seen when resolving for ios", () => {
+      const packageJson = {
+        expo: { autolinking: { apple: { exclude: [PACKAGE_NAME] } } },
+      };
+      expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual([
+        PACKAGE_NAME,
+      ]);
+    });
+
+    test("apple wins outright over ios when both are present (no merge)", () => {
+      const packageJson = {
+        expo: {
+          autolinking: {
+            apple: { exclude: [] },
+            ios: { exclude: [PACKAGE_NAME] },
+          },
+        },
+      };
+      // `apple: { exclude: [] }` is present, so it wins outright -- the ios-only exclude is never
+      // consulted, exactly like the real resolver.
+      expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual(
+        [],
+      );
+    });
+
+    test("falls back to ios when apple is absent", () => {
+      const packageJson = {
+        expo: { autolinking: { ios: { exclude: [PACKAGE_NAME] } } },
+      };
+      expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual([
+        PACKAGE_NAME,
+      ]);
+    });
+
+    test("android is unaffected by an apple key", () => {
+      const packageJson = {
+        expo: {
+          autolinking: {
+            exclude: [PACKAGE_NAME],
+            apple: { exclude: [] },
+          },
+        },
+      };
+      expect(
+        resolvePackageJsonAutolinkingExclude(packageJson, "android"),
+      ).toEqual([PACKAGE_NAME]);
+    });
+  });
 });
 
 describe("app.plugin.js: isExcludedByReactNativeConfig", () => {
@@ -596,7 +652,7 @@ describe("app.plugin.js: drift guard against the real expo-modules-autolinking r
       require(autolinkingExportsPath) as {
         mergeLinkingOptionsAsync: (options: {
           projectRoot: string;
-          platform: "ios" | "android";
+          platform: "ios" | "android" | "apple";
         }) => Promise<{ exclude?: string[] }>;
       }
     ).mergeLinkingOptionsAsync;
@@ -661,6 +717,28 @@ describe("app.plugin.js: drift guard against the real expo-modules-autolinking r
         },
       },
     },
+    {
+      // The CocoaPods driver that runs at `pod install` time always invokes the real resolver
+      // with `--platform apple`, never `ios` -- see the fallback comment on
+      // `resolvePackageJsonAutolinkingExclude`. This fixture is the case that comment exists for.
+      name: "an apple-only exclude, resolved the way pod install actually resolves it",
+      packageJson: {
+        name: "fixture-app",
+        expo: { autolinking: { apple: { exclude: [PACKAGE_NAME] } } },
+      },
+    },
+    {
+      name: "apple wins outright over ios when both are present",
+      packageJson: {
+        name: "fixture-app",
+        expo: {
+          autolinking: {
+            apple: { exclude: [] },
+            ios: { exclude: [PACKAGE_NAME] },
+          },
+        },
+      },
+    },
   ];
 
   for (const fixture of fixtures) {
@@ -668,14 +746,23 @@ describe("app.plugin.js: drift guard against the real expo-modules-autolinking r
       const mergeLinkingOptionsAsync = loadRealResolver();
 
       await withFixtureProject(fixture.packageJson, async (projectRoot) => {
-        for (const platform of ["ios", "android"] as const) {
+        // `ourPlatform` is this plugin's contract-facing platform name ("ios"/"android");
+        // `realPlatform` is what the resolver is actually invoked with in production for that
+        // contract platform -- `pod install` always passes "apple" for iOS (see the fallback
+        // comment above), never "ios".
+        const platformPairs = [
+          { ourPlatform: "ios", realPlatform: "apple" },
+          { ourPlatform: "android", realPlatform: "android" },
+        ] as const;
+
+        for (const { ourPlatform, realPlatform } of platformPairs) {
           const real = await mergeLinkingOptionsAsync({
             projectRoot,
-            platform,
+            platform: realPlatform,
           });
           const ours = resolvePackageJsonAutolinkingExclude(
             fixture.packageJson,
-            platform,
+            ourPlatform,
           );
           expect(ours).toEqual(real.exclude ?? []);
         }
