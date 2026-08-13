@@ -28,18 +28,6 @@ Pod::Spec.new do |s|
     'OTHER_SWIFT_FLAGS' => '-strict-concurrency=complete',
   }
 
-  # Default-inert release builds: `CordieriteTurboBridge.swift`
-  # and `RCTNativeCordierite.mm` compile out their module implementation unless `DEBUG` is set
-  # (reliable for this pod's own generated Debug configuration; custom configurations added by
-  # the consuming app are not guaranteed to define it) or the
-  # app has opted in via `CORDIERITE_ENABLE_RELEASE`. That flag is NOT set here on the pod's own
-  # xcconfig — opting in is an *app*-level decision, deliberately outside this podspec's control,
-  # made by the config plugin's `enableInReleaseBuilds` option (bare RN: via the app's Podfile
-  # `post_install` / `pod_target_xcconfig`). To opt in, the flag must be defined for BOTH
-  # languages on the Cordierite pod target:
-  #   SWIFT_ACTIVE_COMPILATION_CONDITIONS => '$(inherited) CORDIERITE_ENABLE_RELEASE'
-  #   GCC_PREPROCESSOR_DEFINITIONS        => '$(inherited) CORDIERITE_ENABLE_RELEASE=1'
-
   if defined?(install_modules_dependencies)
     install_modules_dependencies(s)
   else

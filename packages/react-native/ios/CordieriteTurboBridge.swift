@@ -1,16 +1,5 @@
 import Foundation
 
-// Default-inert release builds: compiled out entirely unless
-// this is a debug build, or the app has explicitly opted in via `CORDIERITE_ENABLE_RELEASE` (a
-// Swift compilation condition the config plugin's `enableInReleaseBuilds` option adds to
-// `SWIFT_ACTIVE_COMPILATION_CONDITIONS` on the *app* target — mirroring the `CORDIERITE_ENABLE_RELEASE`
-// preprocessor flag `RCTNativeCordierite.mm` gates on). `RCTNativeCordierite.mm`'s `@interface`
-// declares an ivar of this class's type, so that file is gated identically — the two must always
-// agree on whether this class exists in a given build. Plain `#if DEBUG` is a reliable gate for
-// this pod's own generated Debug configuration; custom configs other
-// than Debug/Release don't get `DEBUG` and stay inert unless `CORDIERITE_ENABLE_RELEASE` is set.
-#if DEBUG || CORDIERITE_ENABLE_RELEASE
-
 /// Bridges Swift connection logic to Objective-C++ (`RCTNativeCordierite`).
 ///
 /// `@unchecked Sendable`: the only stored state is `manager`, an actor reference (itself
@@ -135,5 +124,3 @@ public final class CordieriteTurboBridge: NSObject, @unchecked Sendable {
     }
   }
 }
-
-#endif // DEBUG || CORDIERITE_ENABLE_RELEASE
