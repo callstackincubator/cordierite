@@ -6,6 +6,7 @@ import {
   handleDaemonStatusCommand,
   handleDaemonStopCommand,
 } from "../commands/daemon.js";
+import { handleDoctorCommand } from "../commands/doctor.js";
 import { handleEventsCommand } from "../commands/events.js";
 import { handleInvokeCommand } from "../commands/invoke.js";
 import { handleKeygenCommand } from "../commands/keygen.js";
@@ -217,6 +218,19 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
             dispose: () => {},
           },
         },
+      );
+    }
+
+    case "doctor": {
+      return executeCommand(
+        "doctor",
+        () =>
+          handleDoctorCommand({
+            artifactPath: parsedArgs[0],
+            assertPresent: Boolean(parsedOptions.assertPresent),
+            assertAbsent: Boolean(parsedOptions.assertAbsent),
+          }),
+        io,
       );
     }
 

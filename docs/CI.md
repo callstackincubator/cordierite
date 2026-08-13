@@ -22,6 +22,34 @@
   - GitHub Actions allows every action, does not require SHA pinning, and gives the default GITHUB_TOKEN write access.
   - No protected npm GitHub environment exists.
 
+## Release gate: `cordierite doctor`
+
+Opt-in hardening removes the runtime `debuggable`/`#if DEBUG` check that used to catch a
+production build that forgot to exclude Cordierite via autolinking (docs/tasks/00-overview.md,
+docs/tasks/08-cordierite-doctor.md). `cordierite doctor <artifact> [--assert-present |
+--assert-absent]` (packages/cordierite/README.md, "Release gate") is the replacement: it inspects
+a built `.app`/`.ipa`/`.apk`/`.aab` directly, rather than trusting the config that's supposed to
+have produced it, and exits non-zero when the assertion fails.
+
+  - `0`: the artifact matches the asserted expectation (or no assertion was given).
+  - `3`: inspection succeeded, but the artifact didn't match `--assert-present`/`--assert-absent`.
+  - `66`: the artifact could not be inspected at all (missing `unzip`, unreadable/corrupt
+    artifact) — always a distinct failure from `3`, and never silently treated as "absent" or "the
+    check passed".
+
+CI snippet, run against the production release build right before it's distributed:
+
+```yaml
+- name: Assert Cordierite is excluded from the production build
+  run: npx cordierite doctor ./build/app-release.apk --assert-absent
+- name: Assert Cordierite is excluded from the production build (iOS)
+  run: npx cordierite doctor ./build/MyApp.ipa --assert-absent
+```
+
+Wiring this repo's own CI to run `doctor` against the playground's Release build is tracked
+separately (docs/tasks/09-docs-migration-ci.md) — this section documents the command's contract so
+that task has a source of truth to wire against.
+
 ## Release policy
 
 Publish production releases only for now. The deployment workflow must reject prerelease versions and publish every

@@ -59,6 +59,7 @@ describe("CLI integration", () => {
         "events [selector]",
         "revoke [selector]",
         "mcp",
+        "doctor <artifact>",
         "daemon [action]",
       ]),
     );
@@ -90,6 +91,10 @@ describe("CLI integration", () => {
 
     const eventsHelp = helpFor("events");
     expect(eventsHelp).toContain("--follow");
+
+    const doctorHelp = helpFor("doctor");
+    expect(doctorHelp).toContain("--assert-present");
+    expect(doctorHelp).toContain("--assert-absent");
   });
 
   test("version is available from the binary entrypoint", () => {
