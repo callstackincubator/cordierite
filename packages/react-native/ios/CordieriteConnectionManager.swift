@@ -179,6 +179,82 @@ func resolveTrustedPins(
   }
 }
 
+/**
+ * The raw `CordieriteTrust`/`CordieriteCliPins`/`CordieriteAllowPrivateLanOnly` Info.plist values,
+ * parsed but not yet run through `resolveTrustedPins`. The single Bundle-reading path shared by
+ * `configureFromBundle` (real connect attempts) and `currentCordieriteBuildConfig()` (JS diagnostics via
+ * `getConstants()`), so the two can never read different data out of the bundle.
+ */
+struct CordieriteManifestConfig {
+  let trust: String?
+  let embeddedPins: [String]
+  let allowPrivateLanOnly: Bool
+}
+
+/// See `CordieriteManifestConfig`.
+func readCordieriteManifestConfig() -> CordieriteManifestConfig {
+  let info = Bundle.main.infoDictionary ?? [:]
+  return CordieriteManifestConfig(
+    trust: info[trustPlistKey] as? String,
+    embeddedPins: info[cliPinsPlistKey] as? [String] ?? [],
+    // Fail closed: absent the plist key, only local/LAN addresses are allowed.
+    allowPrivateLanOnly: info[allowPrivateLanOnlyPlistKey] as? Bool ?? true
+  )
+}
+
+/// The small diagnostic surface exposed to JS via `getConstants()` (`docs/tasks/07-native-module-constants.md`).
+struct CordieriteBuildConfig: Equatable {
+  let trust: String
+  let hasEmbeddedPins: Bool
+  let allowPrivateLanOnly: Bool
+}
+
+/**
+ * Maps a `resolveTrustedPins` outcome to `CordieriteBuildConfig`. Reusing that function's own
+ * outcome — rather than re-deriving "trust"/"hasEmbeddedPins" from the raw plist values with
+ * separate logic — guarantees this can never disagree with what a real `connect()` attempt would
+ * use for the same plist state. `trust` reports the *effective* bucket ("pin" whenever embedded
+ * pins win, "link" otherwise) rather than echoing the raw config string, except
+ * `.invalidTrustValue`, whose raw text is surfaced as-is so a hand-edited typo is visible instead
+ * of silently coerced.
+ */
+func cordieriteBuildConfig(
+  resolution: CordieriteTrustedPinsResolution,
+  allowPrivateLanOnly: Bool
+) -> CordieriteBuildConfig {
+  switch resolution {
+  case .configured:
+    return CordieriteBuildConfig(trust: "pin", hasEmbeddedPins: true, allowPrivateLanOnly: allowPrivateLanOnly)
+  case .linkPin:
+    return CordieriteBuildConfig(trust: "link", hasEmbeddedPins: false, allowPrivateLanOnly: allowPrivateLanOnly)
+  case .pinTrustRequiresEmbeddedPins:
+    return CordieriteBuildConfig(trust: "pin", hasEmbeddedPins: false, allowPrivateLanOnly: allowPrivateLanOnly)
+  case .linkTrustRequiresLinkPin:
+    return CordieriteBuildConfig(trust: "link", hasEmbeddedPins: false, allowPrivateLanOnly: allowPrivateLanOnly)
+  case .invalidTrustValue(let value):
+    return CordieriteBuildConfig(trust: value, hasEmbeddedPins: false, allowPrivateLanOnly: allowPrivateLanOnly)
+  }
+}
+
+/**
+ * Backs the TurboModule's `getConstants()`. Reads the bundle through the exact same
+ * `readCordieriteManifestConfig()`/`resolveTrustedPins` path `configureFromBundle` uses for a real
+ * `connect()` — `linkPin` is `nil` here since no connect attempt (and therefore no bootstrap link)
+ * is in flight when JS asks for the build config; see `cordieriteBuildConfig`'s doc comment for
+ * what that means for the reported `trust` value. A free function (not an actor method): purely a
+ * `Bundle.main` read, so it needs no actor hop and can be called synchronously from the TurboModule
+ * bridge.
+ */
+func currentCordieriteBuildConfig() -> CordieriteBuildConfig {
+  let manifestConfig = readCordieriteManifestConfig()
+  let resolution = resolveTrustedPins(
+    trust: manifestConfig.trust,
+    embeddedPins: manifestConfig.embeddedPins,
+    linkPin: nil
+  )
+  return cordieriteBuildConfig(resolution: resolution, allowPrivateLanOnly: manifestConfig.allowPrivateLanOnly)
+}
+
 private struct DefaultSessionClaimDeviceFields {
   let manufacturer: String
   let model: String
@@ -306,11 +382,9 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
   /// `linkPin` comes from the connect options (the bootstrap deep link's `pin` param, if any) —
   /// see `resolveTrustedPins` for the trust decision itself.
   func configureFromBundle(linkPin: String?) throws {
-    let info = Bundle.main.infoDictionary ?? [:]
-    let pins = info[cliPinsPlistKey] as? [String] ?? []
-    let trust = info[trustPlistKey] as? String
+    let manifestConfig = readCordieriteManifestConfig()
 
-    switch resolveTrustedPins(trust: trust, embeddedPins: pins, linkPin: linkPin) {
+    switch resolveTrustedPins(trust: manifestConfig.trust, embeddedPins: manifestConfig.embeddedPins, linkPin: linkPin) {
     case .configured(let trustedPins):
       configuredPins = trustedPins
     case .linkPin(let pin):
@@ -327,8 +401,7 @@ actor CordieriteConnectionManager: NSObject, URLSessionDelegate, URLSessionWebSo
       throw CordieriteModuleError(message: "Cordierite CordieriteTrust must be \"link\" or \"pin\", got \"\(value)\".")
     }
 
-    // Fail closed: absent the plist key, only local/LAN addresses are allowed.
-    allowPrivateLanOnly = info[allowPrivateLanOnlyPlistKey] as? Bool ?? true
+    allowPrivateLanOnly = manifestConfig.allowPrivateLanOnly
   }
 
   func connect(options: CordieriteConnectOptions) async throws {

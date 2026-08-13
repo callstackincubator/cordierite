@@ -18,7 +18,10 @@
  * actionable error for the generic inert noop behavior instead, which is the "misfire on web" the
  * task explicitly rules out.
  */
-import type { CordieriteConnectionState } from "./Cordierite.types";
+import type {
+  CordieriteBuildConfig,
+  CordieriteConnectionState,
+} from "./Cordierite.types";
 import type { ResumeLeaseStore } from "./client/resume-lease";
 import type { CordieriteNativeModuleLike } from "./client-types";
 import { logger } from "./logger";
@@ -52,6 +55,18 @@ export const cordieriteNativeModule: CordieriteNativeModuleLike = {
     };
   },
 };
+
+/**
+ * Web has no native module to read a build config from. Unlike `getState`/`addListener` (called
+ * unconditionally from internal code paths, so they degrade quietly), this mirrors `connect`/
+ * `send`/`close`: a diagnostic call an app makes deliberately, so — since
+ * `isCordieriteNativeModuleAvailable` is forced `true` on web (see the file-level doc comment) and
+ * `index.ts`'s `noopIfNativeUnavailable` therefore always takes this "available" branch on web —
+ * it throws the same actionable "unsupported platform" error rather than silently reporting a fake
+ * build config.
+ */
+export const getCordieriteNativeBuildConfig = (): CordieriteBuildConfig =>
+  unsupported("getCordieriteBuildConfig");
 
 /** @internal Unsupported platforms never have a native process-memory lease. */
 export const cordieriteNativeResumeLeaseStore: ResumeLeaseStore = {

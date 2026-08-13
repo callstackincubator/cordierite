@@ -123,6 +123,18 @@ class NativeCordieriteModule(
         manager.clearResumeLease()
     }
 
+    // Codegen special-cases `getConstants()` (legacy bridge constants export) and generates a
+    // `final` implementation on `NativeCordieriteSpec` that validates and forwards this method's
+    // return value instead — see the generated `NativeCordieriteSpec.getConstants()`.
+    override fun getTypedExportedConstants(): MutableMap<String, Any> {
+        val config = manager.getBuildConfig()
+        return mutableMapOf(
+            "trust" to config.trust,
+            "hasEmbeddedPins" to config.hasEmbeddedPins,
+            "allowPrivateLanOnly" to config.allowPrivateLanOnly,
+        )
+    }
+
     override fun invalidate() {
         manager.invalidate()
         super.invalidate()

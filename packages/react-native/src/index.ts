@@ -1,6 +1,7 @@
 import type { ToolDescriptor } from "@cordierite/shared";
 
 import type {
+  CordieriteBuildConfig,
   CordieriteClientState,
   CordieriteConnectInput,
   CordieriteListenerKind,
@@ -10,6 +11,7 @@ import type {
 import {
   cordieriteNativeModule,
   cordieriteNativeResumeLeaseStore,
+  getCordieriteNativeBuildConfig,
   isCordieriteNativeModuleAvailable,
 } from "./CordieriteModule";
 import { parseBootstrapPayload, parseBootstrapUrl } from "./bootstrap";
@@ -200,6 +202,20 @@ export function connect(input: CordieriteConnectInput): Promise<void> {
   return noopIfNativeUnavailable(
     () => cordieriteClient.connect(input),
     () => noop.connect(input),
+  );
+}
+
+/**
+ * Effective trust/pin config this build was compiled with — read from the TurboModule's
+ * `getConstants()`, the exact same manifest/plist source `resolveTrustedPins` (task 05) uses on
+ * both platforms, never a second parse. Diagnostics only: this never enables dead-code elimination
+ * (bundling runs before native config is known) — see `docs/tasks/07-native-module-constants.md`.
+ * On the `./noop` entry this reports the documented "absent" shape instead of a real trust mode.
+ */
+export function getCordieriteBuildConfig(): CordieriteBuildConfig {
+  return noopIfNativeUnavailable(
+    () => getCordieriteNativeBuildConfig(),
+    () => noop.getCordieriteBuildConfig(),
   );
 }
 

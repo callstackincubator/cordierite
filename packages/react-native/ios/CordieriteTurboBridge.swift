@@ -115,6 +115,17 @@ public final class CordieriteTurboBridge: NSObject, @unchecked Sendable {
     manager.clearResumeLease()
   }
 
+  /// Purely a `Bundle.main` read (`currentCordieriteBuildConfig()`), so no actor hop is needed —
+  /// synchronous, like `getState()`.
+  @objc public func getConstants() -> NSDictionary {
+    let config = currentCordieriteBuildConfig()
+    return [
+      "trust": config.trust,
+      "hasEmbeddedPins": config.hasEmbeddedPins,
+      "allowPrivateLanOnly": config.allowPrivateLanOnly,
+    ]
+  }
+
   /// TurboModule invalidation entry point (see `RCTNativeCordierite.invalidate`). Cancels the
   /// socket, invalidates the URLSession, and drops event callbacks so a Metro reload fully
   /// releases the transport instead of leaving a wedged "connecting or active" state.
