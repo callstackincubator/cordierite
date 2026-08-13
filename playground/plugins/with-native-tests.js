@@ -7,8 +7,13 @@ const { withPodfile } = require("expo/config-plugins");
 // as a local config plugin rather than as a `@cordierite/react-native` plugin option.
 //
 // CocoaPods only creates a pod's test target when its test spec is explicitly requested from the
-// Podfile, and Expo Autolinking (see this app's `autolinking.ios.exclude` in app.json) intentionally
-// links just the production pod -- so this plugin adds the one Podfile line needed to opt in.
+// Podfile. This app excludes `@cordierite/react-native` from Expo Autolinking on both platforms
+// (see `expo.autolinking.ios.exclude` / `.android.exclude` in `package.json` -- autolinking reads
+// that config from `package.json`, never from `app.json`), so nothing else links the iOS pod. This
+// plugin is what actually puts it back for iOS, with the `Tests` test spec requested, so the
+// `Cordierite.podspec`'s `test_spec 'Tests'` target exists for `pnpm test` / CI to exercise. Android
+// has no equivalent here and stays genuinely excluded, since nothing in the playground needs its
+// native module.
 
 const CORDIERITE_PACKAGE_PATH = path.dirname(
   require.resolve("@cordierite/react-native/package.json"),

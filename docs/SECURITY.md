@@ -184,8 +184,10 @@ production just turns on the pieces below rather than using a different architec
   1. **Native:** exclude `@cordierite/react-native` from autolinking (app-root
      `react-native.config.js`: `dependencies["@cordierite/react-native"].platforms =
      { ios: null, android: null }`; Expo-managed equivalent: `expo.autolinking.ios.exclude`
-     / `expo.autolinking.android.exclude` in `app.json`). This is what actually removes
-     the compiled native pod/module from the app binary.
+     / `expo.autolinking.android.exclude` — but this must live in **`package.json`**, not
+     `app.json`. `expo-modules-autolinking` reads this config from `package.json` only; the
+     same block in `app.json` is a silent no-op that still ships the native module). This
+     is what actually removes the compiled native pod/module from the app binary.
   2. **JS:** swap the module at bundle time with a Metro `resolveRequest` override that
      resolves `@cordierite/react-native` (and `/auto`) to `@cordierite/react-native/noop`
      instead. This removes the deep-link listener and tool registry from the JS bundle.
