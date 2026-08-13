@@ -182,7 +182,7 @@ func resolveTrustedPins(
 /**
  * The raw `CordieriteTrust`/`CordieriteCliPins`/`CordieriteAllowPrivateLanOnly` Info.plist values,
  * parsed but not yet run through `resolveTrustedPins`. The single Bundle-reading path shared by
- * `configureFromBundle` (real connect attempts) and `currentBuildConfig()` (JS diagnostics via
+ * `configureFromBundle` (real connect attempts) and `currentCordieriteBuildConfig()` (JS diagnostics via
  * `getConstants()`), so the two can never read different data out of the bundle.
  */
 struct CordieriteManifestConfig {

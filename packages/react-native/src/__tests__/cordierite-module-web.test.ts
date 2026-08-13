@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   cordieriteNativeModule,
   cordieriteNativeResumeLeaseStore,
+  getCordieriteNativeBuildConfig,
   isCordieriteNativeModuleAvailable,
 } from "../CordieriteModule.web";
 
@@ -46,6 +47,16 @@ describe("CordieriteModule.web stub", () => {
     expect(() => {
       subscription.remove();
     }).not.toThrow();
+  });
+
+  test("getCordieriteNativeBuildConfig() throws: no native module to read on web", () => {
+    // Regression test (task 07 self-review): `index.ts`'s `getCordieriteBuildConfig` imports
+    // `getCordieriteNativeBuildConfig` from `./CordieriteModule`, which Metro resolves to this
+    // `.web.ts` file on web bundles. Since `isCordieriteNativeModuleAvailable()` is forced `true`
+    // above, `noopIfNativeUnavailable` always takes this "available" branch on web — an omitted
+    // export here would throw an unactionable "is not a function" instead of this file's
+    // intentional "unsupported platform" error.
+    expect(() => getCordieriteNativeBuildConfig()).toThrow();
   });
 
   test("resume lease store is inert and nonthrowing", () => {

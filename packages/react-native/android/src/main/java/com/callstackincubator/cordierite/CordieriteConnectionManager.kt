@@ -546,12 +546,30 @@ internal class CordieriteConnectionManager(
      * `connect()` — `linkPin` is `null` here since no connect attempt (and therefore no bootstrap
      * link) is in flight when JS asks for the build config; see [cordieriteBuildConfig]'s doc
      * comment for what that means for the reported `trust` value.
+     *
+     * Unlike [loadConfiguration] (whose caller, `performConnect`, already wraps it in a try/catch
+     * that rejects the connect promise), a thrown exception here would propagate out of the
+     * TurboModule's `getConstants()` — which RN's generated spec calls eagerly and unconditionally,
+     * unlike a normal method the app chooses to invoke. `PackageManager.getApplicationInfo`
+     * (`NameNotFoundException` for one's own installed package) and `JSONArray` (a malformed
+     * hand-edited `CLI_PINS`) are the only things that can throw here; iOS's equivalent read can
+     * never throw at all (`as?` casts default to empty/absent instead). Catching keeps this
+     * diagnostic call as non-throwing as the read genuinely allows, without adding any parsing
+     * logic beyond what [readCordieriteManifestConfig] already does.
      */
-    fun getBuildConfig(): CordieriteBuildConfig {
-        val manifestConfig = readCordieriteManifestConfig(context)
-        val resolution = resolveTrustedPins(manifestConfig.trust, manifestConfig.embeddedPins, linkPin = null)
-        return cordieriteBuildConfig(resolution, manifestConfig.allowPrivateLanOnly)
-    }
+    fun getBuildConfig(): CordieriteBuildConfig =
+        try {
+            val manifestConfig = readCordieriteManifestConfig(context)
+            val resolution = resolveTrustedPins(manifestConfig.trust, manifestConfig.embeddedPins, linkPin = null)
+            cordieriteBuildConfig(resolution, manifestConfig.allowPrivateLanOnly)
+        } catch (e: Exception) {
+            android.util.Log.w("Cordierite", "getConstants(): could not read the manifest config.", e)
+            // Fail closed, and use a `trust` value no real resolution ever produces (never a bare
+            // "link"/"pin", and distinct from an echoed raw invalid config string, which would
+            // always be non-empty and Info.plist/manifest-authored) so this is never confused with
+            // a real trust bucket.
+            CordieriteBuildConfig(trust = "unreadable", hasEmbeddedPins = false, allowPrivateLanOnly = true)
+        }
 
     private fun performConnect(
         options: CordieriteConnectOptions,
