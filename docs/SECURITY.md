@@ -101,7 +101,7 @@ development.
 configuration alone. Set `cliPins` (which makes `trust: "pin"` the default) on any build you
 don't want accepting a link-carried pin. Separately, if you don't want Cordierite's native
 code present in a build at all — regardless of trust mode — exclude it from autolinking (see
-"Compile out of release builds" below); `cordierite doctor` (`docs/CI.md`) verifies that
+"Compile out of a build you don't want carrying Cordierite at all" below); `cordierite doctor` (`docs/CI.md`) verifies that
 exclusion actually took effect in a built artifact, rather than trusting the config that was
 supposed to produce it.
 

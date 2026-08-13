@@ -51,13 +51,16 @@ CI snippet, run against the production release build right before it's distribut
 **This repo's own CI wires the gate** (`test.yaml`'s `android` job): after the existing
 `testDebugUnitTest`/`assembleDebug` step, it assembles the playground's Android **Release**
 build with Cordierite included (the default) and asserts `--assert-present` against the
-resulting APK; it then applies the documented `package.json` autolinking-exclude recipe (plus
-flipping the config plugin's `include` option to `false`, so its own include/autolinking
-consistency check doesn't reject the now-intentional mismatch), re-prebuilds and reassembles
-Release, and asserts `--assert-absent`. This is the regression test for
-`docs/tasks/02-fix-autolinking-exclusion.md`'s original failure mode — the documented exclusion
-recipe had never worked — verified against a real built artifact each run, not by inspecting the
-config. The `package.json`/`app.json` mutation happens in the CI job only and is never committed.
+resulting APK; it then applies the documented `package.json` autolinking-exclude recipe and
+drops the `@cordierite/react-native` config plugin entry from `app.json` entirely (matching the
+README's own "skip this whole plugin entry" guidance for a build that shouldn't carry Cordierite
+at all — this also avoids the plugin writing `CLI_PINS`/`TRUST` manifest meta-data that
+`artifact-inspect.ts` would otherwise read as an inclusion signal even with the native module
+correctly excluded), re-prebuilds and reassembles Release, and asserts `--assert-absent`. This is
+the regression test for `docs/tasks/02-fix-autolinking-exclusion.md`'s original failure mode —
+the documented exclusion recipe had never worked — verified against a real built artifact each
+run, not by inspecting the config. The `package.json`/`app.json` mutation happens in the CI job
+only and is never committed.
 
 The equivalent iOS wiring is not yet automated: the playground's `with-native-tests` Expo plugin
 hand-adds the `Cordierite` pod (for the XCTest target `test.yaml`'s `ios` job already runs), and

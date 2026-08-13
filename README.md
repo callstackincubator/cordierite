@@ -16,7 +16,7 @@ Shipping ad-hoc debug UIs in production builds is risky: they leak intent, widen
 - **Session bootstrap**: one-time, session-bound channel after claim - appropriate for production when pins and provisioning match your threat model.
 - **Hardened local control plane**: the CLI and MCP server talk to the daemon over a Unix domain socket gated by filesystem permissions (`0700` directory, `0600` socket) - not an open localhost port.
 - **Policy + audit**: operator ergonomics on the daemon side - deny classes of tool by annotation (`destructiveHint`) or by name, and every call is appended to an audit log regardless of outcome. This runs on the operator's machine, the trust boundary itself, so it is not a substitute for the app-side control below. See [`docs/SECURITY.md`](docs/SECURITY.md) for the full threat model and a key-rotation runbook.
-- **Explicit inclusion, not a hidden build-type gate**: whether Cordierite's native code ships in a build at all is decided in one place - the app's autolinking configuration - not by any runtime debuggable check. See "Whether Cordierite is in your build" below.
+- **Explicit inclusion, not a hidden build-type gate**: whether Cordierite's native code ships in a build at all is decided in one place - the app's autolinking configuration - not by any runtime debuggable check. See "Whether Cordierite is in your build, and what it trusts" below.
 
 ## Monorepo layout
 
@@ -182,6 +182,12 @@ This is a per-prebuild / per-`pod install` decision, not a build-variant flag - 
 
 > **Maintainer-shaped setups only:** excluding the package from autolinking on iOS also stops its **codegen** from running for that package. An app that excludes it there but still references the `Cordierite` pod by hand (for example, to attach an XCTest target) will fail to compile - `RCTNativeCordierite.mm` imports the generated `CordieriteSpec.h`, which codegen no longer produces once the module is excluded. Normal consumer apps never hit this; it only bites setups that both exclude and hand-add the pod.
 
+If you also use the `@cordierite/react-native` config plugin, set its `include` option to `false` on every platform you exclude above - the plugin's default (`include: true`) asserts that autolinking still includes the package on **both** `ios` and `android`, and fails prebuild with a copy-pasteable fix if either platform's real autolinking config disagrees with what `include` says:
+
+```json
+["@cordierite/react-native", { "include": false }]
+```
+
 **2. What does it trust, once it's in the build?** The `trust` config option, independent of platform build type:
 
 ```json
@@ -218,11 +224,12 @@ After changing native configuration, rebuild the app.
 
 ## Migration from 0.3.1
 
-`enableInReleaseBuilds` never shipped in any published release - npm's latest for both packages is `0.3.1`, which has no build-type gating and no `enableInReleaseBuilds` option at all. If you're on `0.3.1` (or older), migrating is:
+`enableInReleaseBuilds` never shipped in any published release - npm's latest for both packages is `0.3.1`, which has no build-type gating and no `enableInReleaseBuilds` option at all. `0.3.1`'s config plugin also had no `include`/`trust` concept: it required a non-empty `cliPins` unconditionally (`"@cordierite/react-native requires a non-empty cliPins array"` at prebuild otherwise) and only ever trusted those embedded pins - there was no link-carried-pin / zero-config flow at all in `0.3.1`. If you're on `0.3.1` (or older), migrating is:
 
-- **Nothing changes by default.** `0.3.1` already ships Cordierite in every build and already trusts a link-carried pin when no `cliPins` are configured - that behavior is unchanged.
-- **If you were already setting `cliPins`,** nothing else is required; `trust` defaults to `"pin"` automatically whenever `cliPins` is non-empty, matching what `0.3.1` already did with embedded pins. Set `trust` explicitly only if you want to be certain, or if you want `"link"` trust alongside configured pins for some reason (the plugin warns if you do, since embedded pins win regardless).
-- **If you want Cordierite stripped from a build** (a release build you don't want carrying it at all), that's new: add the `package.json` autolinking exclude above. Nothing in `0.3.1` could do this, so this is an opt-in improvement, not a required migration step.
+- **Every `0.3.1` app already has `cliPins` configured** (the plugin made it mandatory), so `trust` defaults to `"pin"` automatically and nothing about what your build trusts changes. You do not need to add `trust: "pin"` explicitly, though doing so is harmless and makes the choice explicit.
+- **The zero-config `trust: "link"` flow is new**, not a `0.3.1` behavior carried forward - it only applies to a build with no `cliPins` configured at all, which no real `0.3.1` app has. Nothing to do here unless you want to adopt it for a new, pins-free build variant.
+- **`allowPrivateLanOnly`'s default flipped from `false` to `true` (fail-closed).** `0.3.1` defaulted to allowing any address unless you explicitly opted into private-LAN-only; this release defaults to private-LAN-only unless you explicitly opt out. If your `0.3.1` app relies on non-private/remote bootstrap targets and never set `allowPrivateLanOnly` explicitly, set `allowPrivateLanOnly: false` explicitly now to keep that behavior - otherwise those bootstrap attempts will start being rejected.
+- **Excluding Cordierite from a build via autolinking is not new** - `expo.autolinking.<platform>.exclude` in `package.json` is a feature of `expo-modules-autolinking` itself and worked the same way against `0.3.1`. What's new in this release is the plugin's own `include` option (default `true`), which asserts that your declared intent matches your real autolinking config and fails prebuild with a copy-pasteable fix when it doesn't - useful, but not required to adopt the exclude recipe itself.
 - **If your config ever referenced `enableInReleaseBuilds`,** it never worked on a published version - there is nothing to remove from a real `0.3.1` install. (Only a pre-release build from this repo's `main` branch between `0.3.1` and this release would have had it; that option now throws a config-time error naming its removal if left in place.)
 
 ## Security summary

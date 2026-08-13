@@ -261,6 +261,14 @@ Verify the exclusion actually took effect — this is the only way to catch the 
 
 > **Excluding on iOS also disables codegen for this package.** `expo-modules-autolinking` only generates `CordieriteSpec` (the TurboModule codegen output `RCTNativeCordierite.mm` imports) for packages it actually autolinks. If your app excludes `@cordierite/react-native` from iOS autolinking but still references the `Cordierite` pod directly — for example to attach an XCTest target, as this repo's own playground does — the build fails because the generated header no longer exists. This only affects setups that both exclude and hand-add the pod; a normal consumer app that just wants Cordierite gone never hits it.
 
+**If your app also uses the `@cordierite/react-native` Expo config plugin**, set its `include` option to `false` on every platform you exclude above. The plugin's default (`include: true`) asserts that autolinking actually includes the package on both `ios` and `android`, and throws a copy-pasteable error at prebuild if either platform's autolinking config excludes it while `include` still says `true`:
+
+```json
+["@cordierite/react-native", { "include": false }]
+```
+
+`include` is a single option covering both platforms — there's no separate `ios`/`android` value — so if you only want to exclude on one platform, add that platform's autolinking exclude above without setting `include: false`, and prebuild will fail loudly telling you to reconcile the mismatch (either exclude on both platforms, or don't set `include: false`). If you're not using the config plugin at all (no `cliPins`, no other options needed), skip it entirely and this doesn't apply.
+
 **2. JS — swap the module at bundle time**, so no Cordierite JS (deep-link listener, tool registry, client state machine) ends up in the bundle either. Add a Metro `resolveRequest` override in `metro.config.js`:
 
 ```js
