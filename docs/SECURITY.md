@@ -67,7 +67,7 @@ fresh clone of this repo (or a fresh app project) works with zero setup:
   unconditionally (not gated behind any log level):
 
   ```
-  Cordierite: trusting pin from bootstrap link (dev mode). Release builds require embedded cliPins.
+  Cordierite: trust=link — trusting the SPKI pin carried by the bootstrap link for this session.
   ```
 
 - The moment `cliPins` is configured, that embedded set always wins regardless of `trust`'s
