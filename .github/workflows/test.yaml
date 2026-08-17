@@ -161,6 +161,13 @@ jobs:
       # source file, so mtimes are always new and a timestamp-keyed cache would never hit.
       CCACHE_COMPILERCHECK: content
       CCACHE_SLOPPINESS: clang_index_store,file_stat_matches,include_file_ctime,include_file_mtime,ivfsoverlay,pch_defines,modules,system_headers,time_macros
+      # Required, together with the `modules` sloppiness above, for ccache to cache anything at all
+      # here: these pods compile with -fmodules, and ccache's limited Clang-modules support needs
+      # both direct mode and depend mode. Without it ccache reports 98.9% of calls as uncacheable
+      # ("Could not use modules"). Depend mode needs the compiler to emit -MD/-MMD, which Xcode
+      # already does. It hashes the dependency file instead of preprocessing, so misses are cheaper
+      # too; the cost is a lower hit rate, since any compiler-option change now changes the hash.
+      CCACHE_DEPEND: "1"
       CCACHE_MAXSIZE: 2G
     steps:
       - name: Check out source
