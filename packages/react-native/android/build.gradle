@@ -34,6 +34,11 @@ apply plugin: "kotlin-android"
 group = "com.callstackincubator.cordierite"
 version = "0.4.0-rc.1" // keep in sync with package.json
 
+// Only configured when autolinking has already decided to link Cordierite, so the line appearing
+// at all is the proof. Ungated: a release build carrying Cordierite by mistake is the failure
+// worth catching, and this is grep-able in CI output. iOS prints the same line from the podspec.
+logger.lifecycle("[cordierite] native module INCLUDED in this build (v${version})")
+
 android {
   namespace "com.callstackincubator.cordierite"
   compileSdk safeExtGet("compileSdkVersion", 35)

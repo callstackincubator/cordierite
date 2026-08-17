@@ -26,6 +26,7 @@
     },
     "./package.json": "./package.json",
     "./app.plugin.js": "./app.plugin.js",
+    "./autolink-env.js": "./autolink-env.js",
     "./metro": {
       "types": "./metro.d.ts",
       "default": "./metro.js"

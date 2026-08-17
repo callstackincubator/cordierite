@@ -17,15 +17,25 @@ for anyone on 0.3.x. Highlights since 0.3.1:
   background daemon process instead of talking to devices directly; the wire protocol, session
   engine, and invocation RPC surface were all rewritten.
 - **Breaking: `enableInReleaseBuilds` removed from the React Native config plugin, with no
-  deprecation shim.** Passing it at all (`true` or `false`) now throws at prebuild, naming
-  `include`/`trust` as the replacement. Whether native code ships is decided purely by autolinking
-  — present by default (`include: true`); set `include: false` on the plugin *and* exclude the
-  package via `react-native.config.js` / `expo.autolinking` to compile it out. What a build trusts
-  is decided by `trust` — `"pin"` when `cliPins` is configured, `"link"` otherwise (trust the SPKI
-  pin carried by the bootstrap link, per session) — and is no longer tied to whether the build is
-  debuggable. A 0.3.x config that set `enableInReleaseBuilds` (either value) must simply delete
-  that option; see `packages/react-native/README.md`'s "Hardening for production / internal
-  builds" and "Compiling Cordierite out of production builds" sections for the full migration.
+  deprecation shim.** Passing it at all (`true` or `false`) now throws at prebuild, naming the
+  replacement. Whether native code ships is decided by autolinking alone, driven by the
+  `CORDIERITE_ENABLED` environment variable: unset or empty means included (so a build that never
+  mentions Cordierite still gets it), `0`/`false` opts the package out of autolinking on both
+  platforms, and any other value is a config error. The package ships its own
+  `react-native.config.js` that reads it, and `@cordierite/react-native/metro` reads the same
+  variable to strip the JS, so one pipeline variable removes both surfaces with no app-side config.
+  It must be set when autolinking resolves (`pod install` / gradle configure), not merely when the
+  app compiles. What a build trusts is decided by `trust` — `"pin"` when `cliPins` is configured,
+  `"link"` otherwise (trust the SPKI pin carried by the bootstrap link, per session) — and is no
+  longer tied to whether the build is debuggable. A 0.3.x config that set `enableInReleaseBuilds`
+  (either value) must simply delete that option; see `packages/react-native/README.md`'s
+  "Hardening for production / internal builds" and "Compiling Cordierite out of production builds"
+  sections for the full migration.
+- **When Cordierite is linked, its podspec and `build.gradle` print `[cordierite] native module
+  INCLUDED in this build`** during pod install / gradle configure. Nothing prints when it is
+  excluded, because nothing runs — the line exists to catch a release build that carries
+  Cordierite by mistake. `cordierite doctor` remains the authority, since it inspects the built
+  artifact rather than the build log.
 - **New:** `cordierite doctor <artifact>` — inspects a built `.app`/`.ipa`/`.apk`/`.aab` directly
   to assert whether Cordierite is present or absent, replacing the old runtime `debuggable`/`#if
   DEBUG` check as the release-gate mechanism.

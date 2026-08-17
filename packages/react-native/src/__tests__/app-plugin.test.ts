@@ -10,14 +10,16 @@ import { describe, expect, test } from "vitest";
 const require = createRequire(import.meta.url);
 
 type NormalizedOptions = {
-  include: boolean;
   trust: "link" | "pin";
   cliPins: string[];
   allowPrivateLanOnly: boolean;
   deepLinkScheme: string | undefined;
 };
 
-const cordieritePlugin = require("../../app.plugin.js") as {
+const cordieritePlugin = require("../../app.plugin.js") as ((
+  config: Record<string, unknown>,
+  options?: Record<string, unknown>,
+) => { mods?: Record<string, unknown> }) & {
   __internal: {
     SPKI_PIN_PATTERN: RegExp;
     validatePins: (cliPins: unknown) => string[];
@@ -37,20 +39,6 @@ const cordieritePlugin = require("../../app.plugin.js") as {
       androidManifest: unknown,
       options: NormalizedOptions,
     ) => unknown;
-    resolvePackageJsonAutolinkingExclude: (
-      packageJson: unknown,
-      platform: "ios" | "android",
-    ) => string[];
-    isExcludedByReactNativeConfig: (
-      reactNativeConfig: unknown,
-      platform: "ios" | "android",
-    ) => boolean;
-    assertIncludeMatchesAutolinking: (args: {
-      include: boolean;
-      platform: "ios" | "android";
-      packageJson: unknown;
-      reactNativeConfig: unknown;
-    }) => void;
   };
 };
 
@@ -60,9 +48,6 @@ const {
   normalizeOptions,
   applyInfoPlistChanges,
   applyAndroidManifestChanges,
-  resolvePackageJsonAutolinkingExclude,
-  isExcludedByReactNativeConfig,
-  assertIncludeMatchesAutolinking,
 } = cordieritePlugin.__internal;
 
 const PACKAGE_NAME = "@cordierite/react-native";
@@ -107,12 +92,12 @@ describe("app.plugin.js: validatePins", () => {
 });
 
 describe("app.plugin.js: normalizeOptions", () => {
-  test("enableInReleaseBuilds throws, naming include/trust", () => {
+  test("enableInReleaseBuilds throws, naming CORDIERITE_ENABLED/trust", () => {
     expect(() => normalizeOptions({ enableInReleaseBuilds: true }, {})).toThrow(
       /"enableInReleaseBuilds" has been removed/,
     );
     expect(() => normalizeOptions({ enableInReleaseBuilds: true }, {})).toThrow(
-      /"include"/,
+      /CORDIERITE_ENABLED/,
     );
     expect(() => normalizeOptions({ enableInReleaseBuilds: true }, {})).toThrow(
       /"trust"/,
@@ -125,20 +110,29 @@ describe("app.plugin.js: normalizeOptions", () => {
     ).toThrow(/"enableInReleaseBuilds" has been removed/);
   });
 
-  test("include defaults to true", () => {
-    const { options } = normalizeOptions({}, {});
-    expect(options.include).toBe(true);
+  test("include throws, naming CORDIERITE_ENABLED (both values -- the option is gone)", () => {
+    for (const value of [true, false]) {
+      expect(() => normalizeOptions({ include: value }, {})).toThrow(
+        /"include" has been removed/,
+      );
+      expect(() => normalizeOptions({ include: value }, {})).toThrow(
+        /CORDIERITE_ENABLED/,
+      );
+    }
   });
 
-  test("include: false is honored", () => {
-    const { options } = normalizeOptions({ include: false }, {});
-    expect(options.include).toBe(false);
-  });
-
-  test("include must be a boolean", () => {
-    expect(() => normalizeOptions({ include: "yes" }, {})).toThrow(
-      /"include" must be a boolean/,
-    );
+  test("an unparseable CORDIERITE_ENABLED fails at prebuild, where a throw actually stops the build", () => {
+    const previous = process.env.CORDIERITE_ENABLED;
+    process.env.CORDIERITE_ENABLED = "flase";
+    try {
+      expect(() => normalizeOptions({}, {})).toThrow(/CORDIERITE_ENABLED/);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CORDIERITE_ENABLED;
+      } else {
+        process.env.CORDIERITE_ENABLED = previous;
+      }
+    }
   });
 
   test("trust defaults to link when cliPins is absent", () => {
@@ -281,12 +275,54 @@ describe("app.plugin.js: configuredSchemes", () => {
   });
 });
 
+describe("app.plugin.js: CORDIERITE_ENABLED=0 leaves no footprint", () => {
+  const withEnv = (value: string | undefined, run: () => void) => {
+    const previous = process.env.CORDIERITE_ENABLED;
+    if (value === undefined) {
+      delete process.env.CORDIERITE_ENABLED;
+    } else {
+      process.env.CORDIERITE_ENABLED = value;
+    }
+    try {
+      run();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CORDIERITE_ENABLED;
+      } else {
+        process.env.CORDIERITE_ENABLED = previous;
+      }
+    }
+  };
+
+  // `artifact-inspect.ts` treats CLI_PINS/TRUST as an inclusion signal, so a plugin that still
+  // wrote them into an excluded build would fail `doctor --assert-absent` on a genuinely clean
+  // artifact -- the regression this guards.
+  const runPlugin = () =>
+    cordieritePlugin(
+      { name: "app", _internal: { projectRoot: "/tmp/app" } },
+      { cliPins: [VALID_PIN] },
+    ) as { mods?: Record<string, unknown> };
+
+  test("registers no Info.plist or manifest mods", () => {
+    withEnv("0", () => {
+      expect(runPlugin().mods).toBeUndefined();
+    });
+  });
+
+  test("registers both platforms' mods when enabled", () => {
+    withEnv(undefined, () => {
+      const mods = runPlugin().mods;
+      expect(mods?.ios).toBeDefined();
+      expect(mods?.android).toBeDefined();
+    });
+  });
+});
+
 describe("app.plugin.js: applyInfoPlistChanges", () => {
   test("writes pins, trust, and a real boolean allowPrivateLanOnly", () => {
     const infoPlist = applyInfoPlistChanges(
       {},
       {
-        include: true,
         trust: "pin",
         cliPins: [VALID_PIN],
         allowPrivateLanOnly: true,
@@ -303,7 +339,6 @@ describe("app.plugin.js: applyInfoPlistChanges", () => {
     const infoPlist = applyInfoPlistChanges(
       {},
       {
-        include: true,
         trust: "link",
         cliPins: [],
         allowPrivateLanOnly: true,
@@ -327,7 +362,6 @@ describe("app.plugin.js: applyAndroidManifestChanges", () => {
 
   test("writes the pins JSON string, trust, and a real boolean allowPrivateLanOnly meta-data value", () => {
     const manifest = applyAndroidManifestChanges(minimalAndroidManifest(), {
-      include: true,
       trust: "pin",
       cliPins: [VALID_PIN],
       allowPrivateLanOnly: true,
@@ -359,7 +393,6 @@ describe("app.plugin.js: applyAndroidManifestChanges", () => {
 
   test("writes an empty CLI_PINS meta-data value when cliPins is []", () => {
     const manifest = applyAndroidManifestChanges(minimalAndroidManifest(), {
-      include: true,
       trust: "link",
       cliPins: [],
       allowPrivateLanOnly: true,
@@ -375,7 +408,6 @@ describe("app.plugin.js: applyAndroidManifestChanges", () => {
 
   test("never writes an ENABLE_IN_RELEASE meta-data key", () => {
     const manifest = applyAndroidManifestChanges(minimalAndroidManifest(), {
-      include: true,
       trust: "pin",
       cliPins: [VALID_PIN],
       allowPrivateLanOnly: true,
@@ -393,7 +425,6 @@ describe("app.plugin.js: applyAndroidManifestChanges", () => {
       applyAndroidManifestChanges(
         { manifest: { application: [] } },
         {
-          include: true,
           trust: "pin",
           cliPins: [VALID_PIN],
           allowPrivateLanOnly: true,
@@ -402,371 +433,4 @@ describe("app.plugin.js: applyAndroidManifestChanges", () => {
       ),
     ).toThrow();
   });
-});
-
-describe("app.plugin.js: resolvePackageJsonAutolinkingExclude", () => {
-  test("returns [] when expo.autolinking is absent", () => {
-    expect(resolvePackageJsonAutolinkingExclude({}, "ios")).toEqual([]);
-  });
-
-  test("reads the root exclude list when no platform override exists", () => {
-    const packageJson = {
-      expo: { autolinking: { exclude: [PACKAGE_NAME] } },
-    };
-    expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual([
-      PACKAGE_NAME,
-    ]);
-    expect(
-      resolvePackageJsonAutolinkingExclude(packageJson, "android"),
-    ).toEqual([PACKAGE_NAME]);
-  });
-
-  test("a platform-specific exclude fully replaces the root exclude (no concatenation)", () => {
-    const packageJson = {
-      expo: {
-        autolinking: {
-          exclude: ["some-other-package"],
-          ios: { exclude: [PACKAGE_NAME] },
-        },
-      },
-    };
-    expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual([
-      PACKAGE_NAME,
-    ]);
-    // android has no override, so it still sees the root list.
-    expect(
-      resolvePackageJsonAutolinkingExclude(packageJson, "android"),
-    ).toEqual(["some-other-package"]);
-  });
-
-  test("an explicit empty platform override clears the root exclude for that platform", () => {
-    const packageJson = {
-      expo: {
-        autolinking: {
-          exclude: [PACKAGE_NAME],
-          android: { exclude: [] },
-        },
-      },
-    };
-    expect(
-      resolvePackageJsonAutolinkingExclude(packageJson, "android"),
-    ).toEqual([]);
-  });
-
-  // `app.json`/`app.config.*` are never consulted here -- verified as the real behavior in task
-  // 02. This function only ever receives a parsed `package.json`, so there is nothing further to
-  // assert beyond "this function has no app.json/app.config parameter at all".
-
-  // The CocoaPods driver that runs at `pod install` time always invokes the real resolver with
-  // `--platform apple`, not `ios` (`expo-modules-autolinking`'s `scripts/ios/autolinking_manager.rb`),
-  // and `parsePackageJsonOptions` only falls back to the `ios` sub-object when `apple` is absent --
-  // an `apple` entry wins outright, it does not merge with `ios`. `platform: "ios"` here must
-  // mirror that fallback order exactly, or this assertion could disagree with what `pod install`
-  // actually does. See the drift-guard suite below, which pins this against the real resolver.
-  describe("apple/ios fallback (mirrors the real --platform apple invocation)", () => {
-    test("an apple-only exclude is seen when resolving for ios", () => {
-      const packageJson = {
-        expo: { autolinking: { apple: { exclude: [PACKAGE_NAME] } } },
-      };
-      expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual([
-        PACKAGE_NAME,
-      ]);
-    });
-
-    test("apple wins outright over ios when both are present (no merge)", () => {
-      const packageJson = {
-        expo: {
-          autolinking: {
-            apple: { exclude: [] },
-            ios: { exclude: [PACKAGE_NAME] },
-          },
-        },
-      };
-      // `apple: { exclude: [] }` is present, so it wins outright -- the ios-only exclude is never
-      // consulted, exactly like the real resolver.
-      expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual(
-        [],
-      );
-    });
-
-    test("falls back to ios when apple is absent", () => {
-      const packageJson = {
-        expo: { autolinking: { ios: { exclude: [PACKAGE_NAME] } } },
-      };
-      expect(resolvePackageJsonAutolinkingExclude(packageJson, "ios")).toEqual([
-        PACKAGE_NAME,
-      ]);
-    });
-
-    test("android is unaffected by an apple key", () => {
-      const packageJson = {
-        expo: {
-          autolinking: {
-            exclude: [PACKAGE_NAME],
-            apple: { exclude: [] },
-          },
-        },
-      };
-      expect(
-        resolvePackageJsonAutolinkingExclude(packageJson, "android"),
-      ).toEqual([PACKAGE_NAME]);
-    });
-  });
-});
-
-describe("app.plugin.js: isExcludedByReactNativeConfig", () => {
-  test("false when reactNativeConfig is null", () => {
-    expect(isExcludedByReactNativeConfig(null, "ios")).toBe(false);
-  });
-
-  test("false when the package has no dependency entry", () => {
-    expect(isExcludedByReactNativeConfig({ dependencies: {} }, "ios")).toBe(
-      false,
-    );
-  });
-
-  test("true when the platform is explicitly null", () => {
-    const rnConfig = {
-      dependencies: { [PACKAGE_NAME]: { platforms: { ios: null } } },
-    };
-    expect(isExcludedByReactNativeConfig(rnConfig, "ios")).toBe(true);
-    expect(isExcludedByReactNativeConfig(rnConfig, "android")).toBe(false);
-  });
-});
-
-describe("app.plugin.js: assertIncludeMatchesAutolinking", () => {
-  test("include: true and not excluded anywhere passes silently", () => {
-    expect(() =>
-      assertIncludeMatchesAutolinking({
-        include: true,
-        platform: "ios",
-        packageJson: {},
-        reactNativeConfig: null,
-      }),
-    ).not.toThrow();
-  });
-
-  test("include: true but excluded via package.json throws, naming the file", () => {
-    expect(() =>
-      assertIncludeMatchesAutolinking({
-        include: true,
-        platform: "ios",
-        packageJson: { expo: { autolinking: { exclude: [PACKAGE_NAME] } } },
-        reactNativeConfig: null,
-      }),
-    ).toThrow(/package\.json/);
-  });
-
-  test("include: true but excluded via react-native.config.js throws, naming that file", () => {
-    expect(() =>
-      assertIncludeMatchesAutolinking({
-        include: true,
-        platform: "android",
-        packageJson: {},
-        reactNativeConfig: {
-          dependencies: { [PACKAGE_NAME]: { platforms: { android: null } } },
-        },
-      }),
-    ).toThrow(/react-native\.config\.js/);
-  });
-
-  test("include: true but excluded only on the other platform passes for this platform", () => {
-    expect(() =>
-      assertIncludeMatchesAutolinking({
-        include: true,
-        platform: "android",
-        packageJson: {
-          expo: { autolinking: { ios: { exclude: [PACKAGE_NAME] } } },
-        },
-        reactNativeConfig: null,
-      }),
-    ).not.toThrow();
-  });
-
-  test("include: true but excluded on both platforms reports the platform passed in, not just 'mismatch'", () => {
-    const packageJson = {
-      expo: {
-        autolinking: {
-          ios: { exclude: [PACKAGE_NAME] },
-          android: { exclude: [PACKAGE_NAME] },
-        },
-      },
-    };
-    expect(() =>
-      assertIncludeMatchesAutolinking({
-        include: true,
-        platform: "ios",
-        packageJson,
-        reactNativeConfig: null,
-      }),
-    ).toThrow(/ios/);
-    expect(() =>
-      assertIncludeMatchesAutolinking({
-        include: true,
-        platform: "android",
-        packageJson,
-        reactNativeConfig: null,
-      }),
-    ).toThrow(/android/);
-  });
-
-  test("include: false and excluded passes silently", () => {
-    expect(() =>
-      assertIncludeMatchesAutolinking({
-        include: false,
-        platform: "ios",
-        packageJson: { expo: { autolinking: { exclude: [PACKAGE_NAME] } } },
-        reactNativeConfig: null,
-      }),
-    ).not.toThrow();
-  });
-
-  test("include: false but not excluded throws with a copy-pasteable package.json snippet", () => {
-    expect(() =>
-      assertIncludeMatchesAutolinking({
-        include: false,
-        platform: "ios",
-        packageJson: {},
-        reactNativeConfig: null,
-      }),
-    ).toThrow(/"exclude": \["@cordierite\/react-native"\]/);
-  });
-});
-
-describe("app.plugin.js: drift guard against the real expo-modules-autolinking resolver", () => {
-  // This is the "prefer reading the same config the resolver reads over reimplementing the
-  // merge" acceptance criterion from docs/tasks/06-config-plugin-rewrite.md: it runs the actual
-  // `expo-modules-autolinking` package (a transitive dependency via the `expo` devDependency)
-  // against a fixture project and asserts `resolvePackageJsonAutolinkingExclude`'s output matches
-  // it exactly, so an upstream merge-behavior change breaks this test instead of silently
-  // drifting from reality.
-  const loadRealResolver = () => {
-    const expoPackageJsonPath = require.resolve("expo/package.json", {
-      paths: [path.resolve(__dirname, "..", "..")],
-    });
-    const autolinkingExportsPath = require.resolve(
-      "expo-modules-autolinking/build/exports.js",
-      { paths: [path.dirname(expoPackageJsonPath)] },
-    );
-    return (
-      require(autolinkingExportsPath) as {
-        mergeLinkingOptionsAsync: (options: {
-          projectRoot: string;
-          platform: "ios" | "android" | "apple";
-        }) => Promise<{ exclude?: string[] }>;
-      }
-    ).mergeLinkingOptionsAsync;
-  };
-
-  const withFixtureProject = async <T>(
-    packageJson: Record<string, unknown>,
-    run: (projectRoot: string) => Promise<T>,
-  ): Promise<T> => {
-    const dir = fs.mkdtempSync(
-      path.join(os.tmpdir(), "cordierite-autolinking-fixture-"),
-    );
-    try {
-      fs.writeFileSync(
-        path.join(dir, "package.json"),
-        JSON.stringify(packageJson, null, 2),
-      );
-      // Awaited before cleanup below runs -- otherwise the fixture directory would be removed
-      // out from under the real resolver's async file read.
-      return await run(dir);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  };
-
-  const fixtures: {
-    name: string;
-    packageJson: Record<string, unknown>;
-  }[] = [
-    {
-      name: "no expo.autolinking at all",
-      packageJson: { name: "fixture-app" },
-    },
-    {
-      name: "root exclude only",
-      packageJson: {
-        name: "fixture-app",
-        expo: { autolinking: { exclude: [PACKAGE_NAME] } },
-      },
-    },
-    {
-      name: "platform-specific exclude overrides root",
-      packageJson: {
-        name: "fixture-app",
-        expo: {
-          autolinking: {
-            exclude: ["some-other-package"],
-            ios: { exclude: [PACKAGE_NAME] },
-          },
-        },
-      },
-    },
-    {
-      name: "explicit empty platform override clears the root exclude",
-      packageJson: {
-        name: "fixture-app",
-        expo: {
-          autolinking: {
-            exclude: [PACKAGE_NAME],
-            android: { exclude: [] },
-          },
-        },
-      },
-    },
-    {
-      // The CocoaPods driver that runs at `pod install` time always invokes the real resolver
-      // with `--platform apple`, never `ios` -- see the fallback comment on
-      // `resolvePackageJsonAutolinkingExclude`. This fixture is the case that comment exists for.
-      name: "an apple-only exclude, resolved the way pod install actually resolves it",
-      packageJson: {
-        name: "fixture-app",
-        expo: { autolinking: { apple: { exclude: [PACKAGE_NAME] } } },
-      },
-    },
-    {
-      name: "apple wins outright over ios when both are present",
-      packageJson: {
-        name: "fixture-app",
-        expo: {
-          autolinking: {
-            apple: { exclude: [] },
-            ios: { exclude: [PACKAGE_NAME] },
-          },
-        },
-      },
-    },
-  ];
-
-  for (const fixture of fixtures) {
-    test(`matches the real resolver: ${fixture.name}`, async () => {
-      const mergeLinkingOptionsAsync = loadRealResolver();
-
-      await withFixtureProject(fixture.packageJson, async (projectRoot) => {
-        // `ourPlatform` is this plugin's contract-facing platform name ("ios"/"android");
-        // `realPlatform` is what the resolver is actually invoked with in production for that
-        // contract platform -- `pod install` always passes "apple" for iOS (see the fallback
-        // comment above), never "ios".
-        const platformPairs = [
-          { ourPlatform: "ios", realPlatform: "apple" },
-          { ourPlatform: "android", realPlatform: "android" },
-        ] as const;
-
-        for (const { ourPlatform, realPlatform } of platformPairs) {
-          const real = await mergeLinkingOptionsAsync({
-            projectRoot,
-            platform: realPlatform,
-          });
-          const ours = resolvePackageJsonAutolinkingExclude(
-            fixture.packageJson,
-            ourPlatform,
-          );
-          expect(ours).toEqual(real.exclude ?? []);
-        }
-      });
-    });
-  }
 });

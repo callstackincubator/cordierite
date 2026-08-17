@@ -40,7 +40,7 @@ jobs:
 
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -77,6 +77,35 @@ jobs:
         run: >-
           ./gradlew :cordierite_react-native:testDebugUnitTest assembleDebug
           --no-daemon --no-build-cache --no-configuration-cache
+      - name: Assemble Android release (Cordierite included, the default)
+        working-directory: playground/android
+        run: >-
+          ./gradlew assembleRelease
+          --no-daemon --no-build-cache --no-configuration-cache
+      - name: cordierite doctor — assert present (default autolinking config)
+        run: >-
+          node packages/cordierite/bin.js doctor
+          playground/android/app/build/outputs/apk/release/app-release.apk
+          --assert-present
+      - name: Re-prebuild Android with Cordierite excluded
+        working-directory: playground
+        env:
+          CORDIERITE_ENABLED: "0"
+          CI: "true"
+          EXPO_NO_TELEMETRY: "1"
+        run: pnpm exec expo prebuild --platform android --no-install --clean
+      - name: Assemble Android release (Cordierite excluded)
+        env:
+          CORDIERITE_ENABLED: "0"
+        working-directory: playground/android
+        run: >-
+          ./gradlew assembleRelease
+          --no-daemon --no-build-cache --no-configuration-cache
+      - name: cordierite doctor — assert absent (excluded via CORDIERITE_ENABLED)
+        run: >-
+          node packages/cordierite/bin.js doctor
+          playground/android/app/build/outputs/apk/release/app-release.apk
+          --assert-absent
 
   ios:
     runs-on: macos-15
@@ -118,4 +147,32 @@ jobs:
         run: >-
           xcodebuild build -workspace playground.xcworkspace -scheme playground -configuration Debug
           -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath build-included
           CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO
+      - name: cordierite doctor — assert present (default autolinking config)
+        run: >-
+          node packages/cordierite/bin.js doctor
+          playground/ios/build-included/Build/Products/Debug-iphonesimulator/playground.app
+          --assert-present
+      - name: Re-prebuild iOS with Cordierite excluded
+        working-directory: playground
+        env:
+          CORDIERITE_ENABLED: "0"
+          CI: "true"
+          EXPO_NO_TELEMETRY: "1"
+          LANG: en_US.UTF-8
+        run: pnpm exec expo prebuild --platform ios --clean
+      - name: Build playground for iOS Simulator (Cordierite excluded)
+        env:
+          CORDIERITE_ENABLED: "0"
+        working-directory: playground/ios
+        run: >-
+          xcodebuild build -workspace playground.xcworkspace -scheme playground -configuration Debug
+          -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath build-excluded
+          CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO
+      - name: cordierite doctor — assert absent (excluded via CORDIERITE_ENABLED)
+        run: >-
+          node packages/cordierite/bin.js doctor
+          playground/ios/build-excluded/Build/Products/Debug-iphonesimulator/playground.app
+          --assert-absent

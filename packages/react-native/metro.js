@@ -8,6 +8,8 @@
  * autolinking (`docs/tasks/00-overview.md`'s "Inclusion" contract), not by this file. Neither
  * half alone removes both; see the README's "Compiling Cordierite out of production" section.
  */
+const { isCordieriteAutolinkEnabled } = require("./autolink-env");
+
 const PACKAGE_NAME = "@cordierite/react-native";
 
 /** The specifier every redirected import gets rewritten to. Never itself redirected. */
@@ -25,6 +27,7 @@ const NOOP_SPECIFIER = `${PACKAGE_NAME}/noop`;
 const NON_MODULE_SUBPATHS = new Set([
   "./package.json",
   "./app.plugin.js",
+  "./autolink-env.js",
   "./metro",
 ]);
 
@@ -66,11 +69,11 @@ function deriveRedirectSpecifiers(exportsField) {
 }
 
 /**
- * `withCordierite(config, options?)` — wraps a Metro `config` so that, when `include: false`,
+ * `withCordierite(config, options?)` — wraps a Metro `config` so that, when Cordierite is excluded,
  * every specifier derived from this package's `exports` (see `deriveRedirectSpecifiers`) resolves
  * to `@cordierite/react-native/noop` instead, stripping the deep-link listener, tool registry, and
- * client state machine from the bundle. `include` mirrors the config plugin's option of the same
- * name (see `docs/tasks/00-overview.md`) — default `true`, meaning "leave resolution alone".
+ * client state machine from the bundle. With no `include` option it reads `CORDIERITE_ENABLED`,
+ * the same variable that drives native autolinking, so one pipeline variable strips both surfaces.
  *
  * Composition: the single most important behavior here. A caller's existing
  * `config.resolver.resolveRequest` (the playground has one, for workspace symlink dedup) is
@@ -85,8 +88,13 @@ function deriveRedirectSpecifiers(exportsField) {
  * later assignment to the returned config object is invisible to this function.
  */
 function withCordierite(config, options) {
+  // Defaults to the same `CORDIERITE_ENABLED` reading that drives native autolinking, so one
+  // pipeline variable strips both surfaces. An explicit `include` still wins, for apps keying the
+  // JS strip off their own predicate.
   const include =
-    options && options.include !== undefined ? options.include : true;
+    options && options.include !== undefined
+      ? options.include
+      : isCordieriteAutolinkEnabled();
   if (include) {
     return config;
   }

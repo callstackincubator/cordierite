@@ -264,6 +264,12 @@ describe("withCordierite: driven end-to-end by a real (modified) package.json", 
         JSON.stringify(pkg, null, 2),
       );
       fs.copyFileSync(realMetroJsPath, path.join(scratchDir, "metro.js"));
+      // `metro.js` requires `./autolink-env` for its `CORDIERITE_ENABLED` default, so the copy
+      // needs it beside them or the scratch require fails before any redirect is exercised.
+      fs.copyFileSync(
+        require.resolve("../../autolink-env.js"),
+        path.join(scratchDir, "autolink-env.js"),
+      );
 
       const scratchRequire = createRequire(path.join(scratchDir, "metro.js"));
       const scratchMetro = scratchRequire("./metro.js") as {

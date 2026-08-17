@@ -69,7 +69,7 @@ Add the **`@cordierite/react-native`** config plugin to Expo config. `cliPins` i
 
 Generate the pin with `cordierite keygen`, which prints the exact `sha256/...` fingerprint value to use. Then run your normal prebuild / rebuild flow so native config receives those values.
 
-Leave `cliPins`/`trust` unset entirely if you're fine with link-per-session trust — it's the default, and a plain zero-config setup can skip this whole plugin entry (unless you also want `include: false` — see "Compiling Cordierite out of production builds" below).
+Leave `cliPins`/`trust` unset entirely if you're fine with link-per-session trust — it's the default, and a plain zero-config setup can skip this whole plugin entry.
 
 #### Bare React Native
 
@@ -209,19 +209,43 @@ Whether Cordierite's native code ships in a build, and what it trusts once it do
 
 **`getCordieriteBuildConfig()`** reports the effective trust configuration a running build actually has — `{ trust, hasEmbeddedPins, allowPrivateLanOnly }` — read via `getConstants()` from the exact same native manifest/plist parse `connect()`'s `resolveTrustedPins` uses, never a second parse path, so it can never disagree with what a real connect attempt would do. `trust` reports the *effective* bucket (`"pin"` whenever embedded pins are present, since they always win; `"link"` otherwise), not the raw config string. On `./noop`, it reports the documented absent shape: `{ trust: "absent", hasEmbeddedPins: false, allowPrivateLanOnly: true }`.
 
-**Resulting matrix (`include` × `trust`, not build-type-keyed):**
+**Resulting matrix (`CORDIERITE_ENABLED` × `trust`, not build-type-keyed):**
 
-| `include` | `trust` | Result |
+| `CORDIERITE_ENABLED` | `trust` | Result |
 | --- | --- | --- |
-| `true` (default) | `"link"` (default without `cliPins`) | Native code ships; trusts the bootstrap link's pin, per session |
-| `true` (default) | `"pin"` | Native code ships; trusts only embedded `cliPins` |
-| `false` | n/a | Native code excluded from the build entirely — see below |
+| unset (default) | `"link"` (default without `cliPins`) | Native code ships; trusts the bootstrap link's pin, per session |
+| unset (default) | `"pin"` | Native code ships; trusts only embedded `cliPins` |
+| `0` / `false` | n/a | Native code excluded from the build entirely — see below |
 
 ## Compiling Cordierite out of production builds
 
-The native code above ships in every build by default, regardless of `trust` — a build with `trust: "pin"` and no matching daemon still carries the compiled Cordierite pod/module, just unable to connect to anything. To exclude the native code entirely, exclude the package from autolinking (below). Neither half of the recipe removes native code by itself — importing `/noop` only swaps out the *JS* module; it does not touch what CocoaPods/Gradle compiled into the app binary. The correct recipe is the pair:
+The native code above ships in every build by default, regardless of `trust` — a build with `trust: "pin"` and no matching daemon still carries the compiled Cordierite pod/module, just unable to connect to anything.
 
-**1. Native — exclude the dependency from autolinking**, so zero native Cordierite code is compiled in. In a `react-native.config.js` at your app root:
+**Set `CORDIERITE_ENABLED=0` in the pipeline that builds it.** That is the whole recipe, and it needs no config in your app:
+
+```bash
+CORDIERITE_ENABLED=0 npx expo prebuild && CORDIERITE_ENABLED=0 npx expo run:ios --configuration Release
+```
+
+Accepted values are `1`/`true` and `0`/`false`, case-insensitive; unset or empty means enabled, so a build that never mentions Cordierite still gets it. Any other value is a config error, raised at prebuild.
+
+Cordierite ships its own `react-native.config.js` that reads the variable and opts the package out of autolinking on both platforms, and `@cordierite/react-native/metro` reads the same variable to strip the JS. One variable, both surfaces.
+
+**It must be set when autolinking resolves** — `pod install` and gradle configure — not merely when the app compiles. Flipping it and rebuilding without re-running install does nothing, silently.
+
+**Deliberately not keyed to Debug/Release.** A release-signed internal build that agents drive still needs Cordierite; a build-type check would strip it exactly where it is wanted, which is why the `debuggable`/`#if DEBUG` gate was removed in 0.4.0. The pipeline states intent explicitly instead.
+
+Verify the result against the artifact rather than the build log:
+
+```bash
+cordierite doctor path/to/app-release.apk --assert-absent
+```
+
+When Cordierite *is* linked, its podspec and `build.gradle` print `[cordierite] native module INCLUDED in this build` during pod install / gradle configure. Nothing prints when it is excluded, because nothing runs — the line exists to catch a release build that carries Cordierite by mistake, which is the failure that matters. Treat `doctor` as the authority; the log is an early warning.
+
+### Excluding it permanently, without the environment variable
+
+If a project should never carry Cordierite on a given platform — regardless of pipeline — declare the exclusion in the app instead. In a `react-native.config.js` at your app root:
 
 ```js
 module.exports = {
@@ -261,15 +285,9 @@ Verify the exclusion actually took effect — this is the only way to catch the 
 
 > **Excluding on iOS also disables codegen for this package.** `expo-modules-autolinking` only generates `CordieriteSpec` (the TurboModule codegen output `RCTNativeCordierite.mm` imports) for packages it actually autolinks. If your app excludes `@cordierite/react-native` from iOS autolinking but still references the `Cordierite` pod directly — for example to attach an XCTest target, as this repo's own playground does — the build fails because the generated header no longer exists. This only affects setups that both exclude and hand-add the pod; a normal consumer app that just wants Cordierite gone never hits it.
 
-**If your app also uses the `@cordierite/react-native` Expo config plugin**, set its `include` option to `false` on every platform you exclude above. The plugin's default (`include: true`) asserts that autolinking actually includes the package on both `ios` and `android`, and throws a copy-pasteable error at prebuild if either platform's autolinking config excludes it while `include` still says `true`:
+There is no corresponding plugin option to keep in sync. Earlier 0.4.0 prereleases had an `include` option that only *asserted* the plugin's intent matched autolinking; it was removed once `CORDIERITE_ENABLED` drove autolinking directly, since there were no longer two sources to reconcile. Passing it now throws at prebuild, naming the replacement.
 
-```json
-["@cordierite/react-native", { "include": false }]
-```
-
-`include` is a single option covering both platforms — there's no separate `ios`/`android` value — so if you only want to exclude on one platform, add that platform's autolinking exclude above without setting `include: false`, and prebuild will fail loudly telling you to reconcile the mismatch (either exclude on both platforms, or don't set `include: false`). If you're not using the config plugin at all (no `cliPins`, no other options needed), skip it entirely and this doesn't apply.
-
-**2. JS — swap the module at bundle time**, so no Cordierite JS (deep-link listener, tool registry, client state machine) ends up in the bundle either. Use the `withCordierite` Metro helper from `@cordierite/react-native/metro` in `metro.config.js`:
+**JS — swap the module at bundle time**, so no Cordierite JS (deep-link listener, tool registry, client state machine) ends up in the bundle either. Excluding the native module alone does not do this: the real JS entry is still bundled, it just finds no native module and goes inert. Use the `withCordierite` Metro helper from `@cordierite/react-native/metro` in `metro.config.js`:
 
 ```js
 const { getDefaultConfig } = require("expo/metro-config");
@@ -277,14 +295,12 @@ const { withCordierite } = require("@cordierite/react-native/metro");
 
 const config = getDefaultConfig(__dirname);
 
-module.exports = withCordierite(config, {
-  // Unset/anything but "0" keeps Cordierite in the bundle -- matches `include`'s own default, so
-  // a plain `expo start`/dev build is never accidentally stripped.
-  include: process.env.CORDIERITE_ENABLED !== "0",
-});
+module.exports = withCordierite(getDefaultConfig(__dirname));
 ```
 
-`include` mirrors the config plugin's option of the same name (above) — default `true`, meaning "leave module resolution alone". With `include: false`, every specifier this package exposes as a real JS module entry point (derived from `package.json`'s `exports`, not a hardcoded `.`/`/auto` list, so a future entry point is covered automatically) is redirected to `@cordierite/react-native/noop`, which has no side effect on import, matching `/auto`'s shape without installing anything. `/noop` itself is never redirected.
+With no options it reads `CORDIERITE_ENABLED` itself, so the same variable that drops the native module strips the JS. Pass `{ include: false }` to force the strip, or `{ include: <your own predicate> }` to key it off something else entirely.
+
+When stripping, every specifier this package exposes as a real JS module entry point (derived from `package.json`'s `exports`, not a hardcoded `.`/`/auto` list, so a future entry point is covered automatically) is redirected to `@cordierite/react-native/noop`, which has no side effect on import, matching `/auto`'s shape without installing anything. `/noop` itself is never redirected.
 
 If `config.resolver.resolveRequest` is already set — as it typically will be, e.g. the playground's own workspace-symlink-dedup resolver — `withCordierite` **chains to it** for every resolution, redirected or not, instead of replacing it; it only falls back to `context.resolveRequest` when no existing resolver is present. Your existing resolver's return value is what callers see. **Call `withCordierite` last**, after anything else that sets `config.resolver.resolveRequest` — it captures the existing resolver by reference when called, so a later assignment overwrites (and silently discards) the strip instead of composing with it.
 
@@ -298,7 +314,7 @@ const { registerTool, useCordieriteTool } = __DEV__
 
 Either way, `/noop` is typed identically to the root entry (both implement the same shared interface — see `src/public-api.ts` and `src/__tests__/noop-parity.test.ts`), so switching between them is a drop-in swap: `registerTool` still returns a disposer, `connect()` still returns a `Promise<void>` (it just always rejects with a `CordieriteDisabledError`, `code: "cordierite_disabled"`), and `getCordieriteState()` always reports `"idle"`.
 
-**Either half alone still yields a working, inert app.** The `/noop` Metro swap alone gives you an app with no Cordierite JS running but the native pod still compiled in (unused); the autolinking exclude alone gives you an app with no native Cordierite code but that still imports the real JS entry, which finds no native module and degrades to the same `/noop`-equivalent behavior described in "Hardening for production / internal builds" above. Combine both when you want neither surface present at all — for example, to satisfy an app-store reviewer who wants no "remote control" surface whatsoever, not just an inert one.
+**Either half alone still yields a working, inert app.** The `/noop` Metro swap alone gives you an app with no Cordierite JS running but the native pod still compiled in (unused); the autolinking exclude alone gives you an app with no native Cordierite code but that still imports the real JS entry, which finds no native module and degrades to the same `/noop`-equivalent behavior described in "Hardening for production / internal builds" above. `CORDIERITE_ENABLED=0` drives both halves at once, which is what you want to satisfy an app-store reviewer who expects no "remote control" surface whatsoever, not just an inert one.
 
 ## Platform compatibility
 
