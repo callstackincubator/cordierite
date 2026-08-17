@@ -94,7 +94,7 @@ jobs:
           name: npm-packages
           path: release
       - name: Publish shared package
-        run: npm publish release/cordierite-shared-*.tgz --access public --provenance --tag latest
+        run: npm publish ./release/cordierite-shared-*.tgz --access public --provenance --tag latest
 
   publish-cli:
     needs: publish-shared
@@ -119,7 +119,7 @@ jobs:
           name: npm-packages
           path: release
       - name: Publish CLI package
-        run: npm publish release/cordierite-[0-9]*.tgz --access public --provenance --tag latest
+        run: npm publish ./release/cordierite-[0-9]*.tgz --access public --provenance --tag latest
 
   publish-react-native:
     needs: publish-shared
@@ -144,4 +144,4 @@ jobs:
           name: npm-packages
           path: release
       - name: Publish React Native package
-        run: npm publish release/cordierite-react-native-*.tgz --access public --provenance --tag latest
+        run: npm publish ./release/cordierite-react-native-*.tgz --access public --provenance --tag latest
