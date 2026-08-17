@@ -94,6 +94,19 @@ Publish production releases only for now. The deployment workflow must reject pr
 approved release with the `latest` dist-tag. Do not add `next` or `rc` publishing until prereleases are deliberately
 supported.
 
+Update `CHANGELOG.md` by hand as part of the commit that bumps the three package versions for a release. There's no
+changelog-generation tooling (Changesets was evaluated and rejected for this repo — three packages that always
+version in lockstep get little value from a tool built around independent per-package version graphs, and its
+standard CI publish flow doesn't compose with this repo's per-package OIDC environment gates below); a short,
+hand-written entry per release is proportionate for a single-maintainer repo.
+
+0.1.0 through 0.3.1 were published to npm (confirmed via `npm view <pkg> time`) before `deploy.yaml` existed —
+that workflow was only added on 2026-07-17, over three months after the 0.3.1 release commit (`c451163`,
+2026-04-08). Those releases were published by hand. **The current `deploy.yaml` OIDC/trusted-publishing pipeline
+has not yet been used for a real publish**; the 0.4.0 release will be its first. Treat that as an open risk to
+de-risk (e.g. a dry run or careful review of the trusted-publisher configuration) before cutting 0.4.0, not as a
+proven path.
+
  ## Implemented workflows
 
    Workflow       Trigger                            Jobs
