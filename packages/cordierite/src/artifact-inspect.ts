@@ -41,16 +41,26 @@
  *   identifiers, so R8 never touches them, but they only exist at all if the config plugin ran. Both
  *   encodings AAPT2 can choose for the manifest string pool (UTF-8 or UTF-16LE) are checked.
  *
- * No single signal is treated as authoritative on its own for "absent": presence is an OR across all
- * signals for a platform, specifically so a minified dex that dropped one literal doesn't flip a real
- * inclusion to "absent" just because one check missed.
+ * On iOS, no single signal is authoritative on its own for "absent": presence is an OR across both
+ * signals, specifically so a stripped binary that dropped one literal doesn't flip a real inclusion
+ * to "absent" just because one check missed.
+ *
+ * On Android, `present` is decided by the keep-rule marker alone, not an OR across all three
+ * signals. The other two are reported in `signals` for corroboration/debugging but cannot flip
+ * `present` to `true` on their own: `android/build.gradle`'s `CORDIERITE_ENABLED`-gated source-set
+ * swap (docs/tasks/00-overview.md, "Revisited post-implementation") compiles a genuine no-op
+ * `CordieritePackage` into a default release build at the *same* fully-qualified name the real one
+ * uses (required so the shared, non-variant-aware `PackageList.java` still resolves), and the
+ * config plugin writes the same manifest meta-data regardless of variant (Expo mods edit the single
+ * merged manifest, not a per-variant one). Both fallback signals therefore fire on that harmless
+ * stub exactly as they would on the real module, and can no longer prove inclusion by themselves.
  *
  * `cordierite doctor` is strictly better than the runtime check it replaces (docs/tasks/00-overview.md
  * "What we give up, deliberately"). The keep-rule marker closes the previously-documented gap where a
  * bare-RN app with no config plugin and no keep rule could evade both older Android signals under R8
  * minification (docs/tasks/10-android-detection-keep-rule.md) — that gap applied to builds produced before
  * this library shipped the marker/keep rule; an app that pins an older `@cordierite/react-native` version
- * still lacks it.
+ * still lacks it, and doctor cannot detect inclusion on such a build at all.
  */
 
 import { execFile } from "node:child_process";
@@ -392,10 +402,15 @@ export const inspectArtifact = async (
 
   const signals = platform === "ios" ? detectIosSignals(bytes) : detectAndroidSignals(bytes);
 
+  // Android: only the keep-rule marker proves inclusion (see the file-level doc comment) -- the
+  // other two Android signals are reported but can't flip `present` on their own.
+  const present =
+    platform === "android" ? signals.includes("android-keep-rule-marker") : signals.length > 0;
+
   return {
     platform,
     format,
-    present: signals.length > 0,
+    present,
     signals,
   };
 };

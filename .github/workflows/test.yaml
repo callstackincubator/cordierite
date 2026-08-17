@@ -114,12 +114,39 @@ jobs:
         run: >-
           ./gradlew :cordierite_react-native:testDebugUnitTest assembleDebug
           --build-cache --no-configuration-cache -PreactNativeArchitectures=arm64-v8a
-      - name: Assemble Android release (Cordierite included, the default)
+      - name: cordierite doctor — assert present (debug, the default)
+        run: >-
+          node packages/cordierite/bin.js doctor
+          playground/android/app/build/outputs/apk/debug/app-debug.apk
+          --assert-present
+      - name: Assemble Android release (default autolinking config)
+        working-directory: playground/android
+        # Same android/ directory as the debug build above, still generated from the unset
+        # CORDIERITE_ENABLED prebuild — android/build.gradle's release source-set swap compiles
+        # the no-op CordieritePackage stub for this variant by default.
+        run: >-
+          ./gradlew assembleRelease
+          --build-cache --no-configuration-cache -PreactNativeArchitectures=arm64-v8a
+      - name: cordierite doctor — assert absent (release, the default)
+        run: >-
+          node packages/cordierite/bin.js doctor
+          playground/android/app/build/outputs/apk/release/app-release.apk
+          --assert-absent
+      - name: Re-prebuild Android with Cordierite enabled for release
+        working-directory: playground
+        env:
+          CORDIERITE_ENABLED: "1"
+          CI: "true"
+          EXPO_NO_TELEMETRY: "1"
+        run: pnpm exec expo prebuild --platform android --no-install --clean
+      - name: Assemble Android release (Cordierite explicitly enabled)
+        env:
+          CORDIERITE_ENABLED: "1"
         working-directory: playground/android
         run: >-
           ./gradlew assembleRelease
           --build-cache --no-configuration-cache -PreactNativeArchitectures=arm64-v8a
-      - name: cordierite doctor — assert present (default autolinking config)
+      - name: cordierite doctor — assert present (release, CORDIERITE_ENABLED=1)
         run: >-
           node packages/cordierite/bin.js doctor
           playground/android/app/build/outputs/apk/release/app-release.apk
@@ -263,7 +290,9 @@ jobs:
           -derivedDataPath build-included ARCHS=arm64 ONLY_ACTIVE_ARCH=NO
           C_COMPILER_LAUNCHER="$CCACHE_BIN" CLANG_ENABLE_EXPLICIT_MODULES_WITH_COMPILER_LAUNCHER=YES
           CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO
-      - name: cordierite doctor — assert present (default autolinking config)
+      - name: cordierite doctor — assert present (debug, the default)
+        # Debug only -- iOS Release-configuration coverage for the new dev-only default is not
+        # wired here yet (matching Debug is `Debug`; Release links only when CORDIERITE_ENABLED=1).
         run: >-
           node packages/cordierite/bin.js doctor
           playground/ios/build-included/Build/Products/Debug-iphonesimulator/playground.app

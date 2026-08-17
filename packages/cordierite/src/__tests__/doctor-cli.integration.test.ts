@@ -31,7 +31,7 @@ describe("cordierite doctor: CLI wiring", () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "included.apk");
     await buildZipFixture(apkPath, {
-      "classes.dex": "Lcom/callstackincubator/cordierite/X;",
+      "classes.dex": "Lcom/callstackincubator/cordierite/X;Lcom/callstackincubator/cordierite/CordieriteNativeMarker;",
       "AndroidManifest.xml": "placeholder manifest",
     });
 
@@ -46,7 +46,7 @@ describe("cordierite doctor: CLI wiring", () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "included.apk");
     await buildZipFixture(apkPath, {
-      "classes.dex": "Lcom/callstackincubator/cordierite/X;",
+      "classes.dex": "Lcom/callstackincubator/cordierite/X;Lcom/callstackincubator/cordierite/CordieriteNativeMarker;",
       "AndroidManifest.xml": "placeholder manifest",
     });
 
@@ -59,7 +59,7 @@ describe("cordierite doctor: CLI wiring", () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "included.apk");
     await buildZipFixture(apkPath, {
-      "classes.dex": "Lcom/callstackincubator/cordierite/X;",
+      "classes.dex": "Lcom/callstackincubator/cordierite/X;Lcom/callstackincubator/cordierite/CordieriteNativeMarker;",
       "AndroidManifest.xml": "placeholder manifest",
     });
 
@@ -125,7 +125,7 @@ describe("cordierite doctor: CLI wiring", () => {
     const root = await withFixtureRoot();
     const apkPath = path.join(root, "included.apk");
     await buildZipFixture(apkPath, {
-      "classes.dex": "Lcom/callstackincubator/cordierite/X;",
+      "classes.dex": "Lcom/callstackincubator/cordierite/X;Lcom/callstackincubator/cordierite/CordieriteNativeMarker;",
       "AndroidManifest.xml": "placeholder manifest",
     });
 

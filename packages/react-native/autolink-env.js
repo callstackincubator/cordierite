@@ -12,12 +12,17 @@ const FALSY = new Set(["0", "false"]);
  * Empty is treated as unset: CI commonly exports a declared-but-unpopulated variable, and failing
  * those pipelines would be hostile. An unrecognized value throws instead of falling back, because
  * fail-open on a typo would silently ship Cordierite into a production build.
+ *
+ * Returns `"unset"` (dev-only default), `true` (every build variant including release), or
+ * `false` (excluded everywhere) -- `react-native.config.js` needs that three-way split;
+ * `isCordieriteAutolinkEnabled` below collapses `"unset"` into `true` for callers that only care
+ * whether Cordierite ships in *any* variant.
  */
-function isCordieriteAutolinkEnabled(env = process.env) {
+function parseCordieriteEnabled(env = process.env) {
   const raw = env[ENV_VAR];
 
   if (raw === undefined || raw.trim() === "") {
-    return true;
+    return "unset";
   }
 
   const normalized = raw.trim().toLowerCase();
@@ -36,4 +41,13 @@ function isCordieriteAutolinkEnabled(env = process.env) {
   );
 }
 
-module.exports = { isCordieriteAutolinkEnabled, ENV_VAR };
+/** True unless explicitly disabled -- Cordierite is present in at least the dev build. */
+function isCordieriteAutolinkEnabled(env = process.env) {
+  return parseCordieriteEnabled(env) !== false;
+}
+
+module.exports = {
+  isCordieriteAutolinkEnabled,
+  parseCordieriteEnabled,
+  ENV_VAR,
+};

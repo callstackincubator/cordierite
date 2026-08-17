@@ -116,9 +116,9 @@ describe("artifact-inspect: iOS .app (unpacked directory fixture)", () => {
 });
 
 describe("artifact-inspect: Android .apk (synthetic zip fixture)", () => {
-  test("included: reports present with the dex-package-symbol signal", async () => {
+  test("dex-package-symbol alone (no keep-rule marker) is reported but does not prove presence -- a no-op stub compiled at the real package's FQCN (android/build.gradle's CORDIERITE_ENABLED-gated source-set swap) triggers this same signal", async () => {
     const root = await withFixtureRoot();
-    const apkPath = path.join(root, "included.apk");
+    const apkPath = path.join(root, "dex-package-symbol-only.apk");
 
     await buildZipFixture(apkPath, {
       "classes.dex": Buffer.concat([
@@ -132,8 +132,30 @@ describe("artifact-inspect: Android .apk (synthetic zip fixture)", () => {
 
     expect(result.platform).toBe("android");
     expect(result.format).toBe("apk");
+    expect(result.present).toBe(false);
+    expect(result.signals).toEqual(["android-dex-package-symbol"]);
+  });
+
+  test("dex-package-symbol plus the keep-rule marker: genuinely included, reports present", async () => {
+    const root = await withFixtureRoot();
+    const apkPath = path.join(root, "included.apk");
+
+    await buildZipFixture(apkPath, {
+      "classes.dex": Buffer.concat([
+        Buffer.from("dex\n035\0"),
+        Buffer.from("Lcom/callstackincubator/cordierite/CordieritePackage;"),
+        Buffer.from("Lcom/callstackincubator/cordierite/CordieriteNativeMarker;"),
+      ]),
+      "AndroidManifest.xml": "binary-axml-placeholder-no-cordierite-keys",
+    });
+
+    const result = await inspectArtifact(apkPath);
+
+    expect(result.platform).toBe("android");
+    expect(result.format).toBe("apk");
     expect(result.present).toBe(true);
     expect(result.signals).toContain("android-dex-package-symbol");
+    expect(result.signals).toContain("android-keep-rule-marker");
   });
 
   test("included via the CordieriteNativeMarker keep-rule symbol alone (primary signal, synthetic: see artifact-fixtures.ts and the task report for what a real R8 build additionally verifies)", async () => {
@@ -157,9 +179,9 @@ describe("artifact-inspect: Android .apk (synthetic zip fixture)", () => {
     expect(result.signals).toContain("android-keep-rule-marker");
   });
 
-  test("included via AndroidManifest.xml meta-data keys alone, UTF-16LE encoded (corroborating signal, survives dex minification)", async () => {
+  test("AndroidManifest.xml meta-data keys alone, UTF-16LE encoded, is reported but does not prove presence -- the config plugin writes these unconditionally regardless of build variant, so they survive on a default-release build that only carries the no-op stub", async () => {
     const root = await withFixtureRoot();
-    const apkPath = path.join(root, "included-manifest-only.apk");
+    const apkPath = path.join(root, "manifest-only.apk");
 
     await buildZipFixture(apkPath, {
       // Simulates a release build where R8 renamed the dex package (no "callstackincubator" string
@@ -171,7 +193,7 @@ describe("artifact-inspect: Android .apk (synthetic zip fixture)", () => {
 
     const result = await inspectArtifact(apkPath);
 
-    expect(result.present).toBe(true);
+    expect(result.present).toBe(false);
     expect(result.signals).toEqual(["android-manifest-meta-data-keys"]);
     expect(result.signals).not.toContain("android-dex-package-symbol");
   });
@@ -199,7 +221,9 @@ describe("artifact-inspect: Android .aab (bonus format coverage)", () => {
     const aabPath = path.join(root, "included.aab");
 
     await buildZipFixture(aabPath, {
-      "base/dex/classes.dex": Buffer.from("Lcom/callstackincubator/cordierite/CordieritePackage;"),
+      "base/dex/classes.dex": Buffer.from(
+        "Lcom/callstackincubator/cordierite/CordieritePackage;Lcom/callstackincubator/cordierite/CordieriteNativeMarker;",
+      ),
       "base/manifest/AndroidManifest.xml": "no keys here",
     });
 
