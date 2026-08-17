@@ -167,6 +167,13 @@ jobs:
       # ("Could not use modules"). Depend mode needs the compiler to emit -MD/-MMD, which Xcode
       # already does. It hashes the dependency file instead of preprocessing, so misses are cheaper
       # too; the cost is a lower hit rate, since any compiler-option change now changes the hash.
+      #
+      # Measured on this job: warm, 579 cacheable calls and 579 hits, and the job runs in ~7m
+      # against ~34m before any of this. Cold, the bookkeeping is a net loss — the first run after
+      # an eviction came in around 20m, worse than the ~14m this job takes with ccache removed
+      # entirely. So a slow iOS run here usually means the cache was evicted, not that something
+      # regressed. Note ~63% of intercepted calls are link steps ccache can do nothing with, and
+      # -fmodules compiles it still refuses outright; the hits come from the rest.
       CCACHE_DEPEND: "1"
       CCACHE_MAXSIZE: 2G
     steps:
