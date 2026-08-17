@@ -132,6 +132,19 @@ exclude ships a working Cordierite, where today the `debuggable` check would hav
 Task 08 (`cordierite doctor`) is the replacement: an artifact-level assertion you can run as
 a release gate. It is not optional to this design.
 
+**Revisited post-implementation:** the shipped default (unset `CORDIERITE_ENABLED` = included
+in every variant) turned out to be the opposite of the intended dev-only default, and was
+reported as a bug. The fix restores a build-type split, but through the same single mechanism
+this task establishes rather than a second overlapping switch: `react-native.config.js` sets
+CocoaPods' `:configurations` / Gradle's `buildTypes` (real per-variant linking, keyed on
+`Debug`/`Release` and `debug`/`release` by name) based on `CORDIERITE_ENABLED` — unset links
+`Debug`/`debug` only, `1`/`true` links every variant, `0`/`false` excludes everywhere. This is
+narrower than the `debuggable`/`#if DEBUG` gate this task removed (no runtime check, no
+custom-flavor detection), so problem #1 above (the gate keyed on the wrong axis) still does not
+recur: a release-signed internal/QA build simply sets `CORDIERITE_ENABLED=1` for that pipeline,
+same as it would have set `CORDIERITE_ENABLED=0` to exclude. `cordierite doctor` remains the
+artifact-level check either way.
+
 ## Task list and ordering
 
 | # | Task | Depends on |

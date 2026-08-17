@@ -8,6 +8,18 @@ This file is maintained by hand. There is no automated changelog tooling (see
 `docs/CI.md#release-policy` for why) — update this file as part of the commit that bumps the
 package versions for a release.
 
+## Unreleased
+
+- **Fix: release builds no longer carry Cordierite's native module by default.** Previously,
+  leaving `CORDIERITE_ENABLED` unset shipped Cordierite in every build variant, including
+  release — the opposite of the intended dev-only default. `react-native.config.js` now sets
+  CocoaPods' `:configurations` and Gradle's `buildTypes` per `CORDIERITE_ENABLED`: unset links
+  only `Debug`/`debug`, `1`/`true` links every variant (for a release-signed internal/QA build
+  that still needs Cordierite), and `0`/`false` excludes it everywhere, unchanged. This is a
+  real per-variant linking decision (CocoaPods/Gradle), not a runtime check. See
+  `packages/react-native/README.md`'s "Compiling Cordierite out of production builds" for the
+  updated matrix.
+
 ## Unreleased (0.4.0)
 
 0.4.0 is a rewrite of the CLI/daemon/protocol layer and is expected to contain breaking changes

@@ -40,7 +40,7 @@ npm install cordierite
 
 **No key, no pins, and no config plugin needed at all — in any build type.** The daemon auto-generates its own `key.pem` the first time it starts (printing its `sha256/...` fingerprint), and `cordierite link` composes that fingerprint into the deep link as a separate `pin` query param. Whenever no build-time `cliPins`/`CLI_PINS` are configured, the effective `trust` mode is `"link"` by default: the native client trusts that link-carried pin for the session it arrived with, logging unconditionally: `Cordierite: trust=link — trusting the SPKI pin carried by the bootstrap link for this session.` This is no longer tied to whether the build is debuggable — only to whether pins are configured. The moment `cliPins` is configured, that embedded set always wins regardless of `trust`, and the link's `pin` is ignored — see [`docs/SECURITY.md`](../../docs/SECURITY.md)'s "Trust modes" section for the full writeup.
 
-Skip straight to step 3 (scheme) and step 4 (import) if that's all you need. The rest of this section is for **production and internal-distribution builds that want pinned trust** — Cordierite ships in every build by default regardless, so this is about tightening what it trusts (and, separately, about excluding it from a build entirely — see "Compiling Cordierite out of production builds" below).
+Skip straight to step 3 (scheme) and step 4 (import) if that's all you need. The rest of this section is for **production and internal-distribution builds that want pinned trust** — debug builds ship Cordierite by default regardless, so this is about tightening what it trusts once it's there (and, separately, about controlling *whether* it ships at all in a given build variant — see "Compiling Cordierite out of production builds" below).
 
 ### 3. Configure native pinning and app scheme
 
@@ -200,7 +200,7 @@ Omit the session selector when you only have one active session — `cordierite`
 
 Whether Cordierite's native code ships in a build, and what it trusts once it does, are two independent, explicit config decisions — neither is derived from whether the build is debuggable:
 
-- **Inclusion** is decided entirely by autolinking (see "Compiling Cordierite out of production builds" below), not by anything this package does at runtime. By default the native module is present and registers/compiles in unconditionally. `CordieritePackage.getModule` (Android) and `CordieriteTurboBridge.swift`/`RCTNativeCordierite.mm` (iOS) no longer contain any build-type check at all — if the module is autolinked, it's in the build, full stop.
+- **Inclusion** is decided entirely by autolinking (see "Compiling Cordierite out of production builds" below), not by anything this package does at runtime. By default the native module is present in **debug** builds and absent from **release** builds — a real per-variant CocoaPods/Gradle linking decision (`:configurations` / `buildTypes`), not a `#if DEBUG`/`FLAG_DEBUGGABLE` check baked into compiled code. `CordieritePackage.getModule` (Android) and `CordieriteTurboBridge.swift`/`RCTNativeCordierite.mm` (iOS) contain no build-type check at all — if the module is autolinked into a variant, it's in that variant's build, full stop; whether it's autolinked into a given variant is what `CORDIERITE_ENABLED` controls.
 - **Trust** is decided by the `trust` config value: `"pin"` (only the embedded `cliPins` are trusted) or `"link"` (trust the bootstrap link's carried pin, per session — the "dev mode" flow from step 2 above). Default: `"pin"` when `cliPins` is non-empty, `"link"` otherwise. This resolution is identical in every build type; there is no `#if DEBUG`/`FLAG_DEBUGGABLE` involved anywhere in it.
 - **A `trust` value that is neither `"link"` nor `"pin"`** (a typo, or a hand-edited native config) is a **hard error** — at config/prebuild time from the plugin, and independently in the native trust-resolution logic (`resolveTrustedPins` on both platforms) — so a typo can never silently downgrade an intended `"pin"` config into permissive link TOFU.
 - **JS**: with the native module absent (excluded via autolinking, Expo Go, or a debug-tooling-free JS-only environment), every exported function on the root `@cordierite/react-native` entry degrades to the exact `./noop` entry's behavior — one warning log the first time, no throws, `getCordieriteState()` reporting `"idle"`, `connect()` always rejecting with `CordieriteDisabledError` (`code: "cordierite_disabled"`).
@@ -209,31 +209,37 @@ Whether Cordierite's native code ships in a build, and what it trusts once it do
 
 **`getCordieriteBuildConfig()`** reports the effective trust configuration a running build actually has — `{ trust, hasEmbeddedPins, allowPrivateLanOnly }` — read via `getConstants()` from the exact same native manifest/plist parse `connect()`'s `resolveTrustedPins` uses, never a second parse path, so it can never disagree with what a real connect attempt would do. `trust` reports the *effective* bucket (`"pin"` whenever embedded pins are present, since they always win; `"link"` otherwise), not the raw config string. On `./noop`, it reports the documented absent shape: `{ trust: "absent", hasEmbeddedPins: false, allowPrivateLanOnly: true }`.
 
-**Resulting matrix (`CORDIERITE_ENABLED` × `trust`, not build-type-keyed):**
+**Resulting matrix (`CORDIERITE_ENABLED` × build variant, `trust` orthogonal to both):**
 
-| `CORDIERITE_ENABLED` | `trust` | Result |
+| `CORDIERITE_ENABLED` | Debug / `debug` | Release / `release` |
 | --- | --- | --- |
-| unset (default) | `"link"` (default without `cliPins`) | Native code ships; trusts the bootstrap link's pin, per session |
-| unset (default) | `"pin"` | Native code ships; trusts only embedded `cliPins` |
-| `0` / `false` | n/a | Native code excluded from the build entirely — see below |
+| unset (default) | Native code ships | Native code excluded |
+| `1` / `true` | Native code ships | Native code ships |
+| `0` / `false` | Native code excluded | Native code excluded |
+
+`trust` (`"link"` vs `"pin"`, resolved as above) only matters in a variant where the native code ships at all.
 
 ## Compiling Cordierite out of production builds
 
-The native code above ships in every build by default, regardless of `trust` — a build with `trust: "pin"` and no matching daemon still carries the compiled Cordierite pod/module, just unable to connect to anything.
+**Debug builds carry Cordierite by default; release builds don't.** This is a real per-variant link decision — CocoaPods only links the `Cordierite` pod into configurations named `Debug`, and Gradle only adds the module via `debugImplementation` — driven by `react-native.config.js`'s `ios.configurations`/`android.buildTypes`, not a runtime check. A release-signed internal/QA build that still needs Cordierite (an agent-driven CI build, for example) opts back in explicitly:
 
-**Set `CORDIERITE_ENABLED=0` in the pipeline that builds it.** That is the whole recipe, and it needs no config in your app:
+```bash
+CORDIERITE_ENABLED=1 npx expo prebuild && CORDIERITE_ENABLED=1 npx expo run:ios --configuration Release
+```
+
+To go the other direction — strip Cordierite from a **debug** build too, or from every variant regardless of name — set `CORDIERITE_ENABLED=0`:
 
 ```bash
 CORDIERITE_ENABLED=0 npx expo prebuild && CORDIERITE_ENABLED=0 npx expo run:ios --configuration Release
 ```
 
-Accepted values are `1`/`true` and `0`/`false`, case-insensitive; unset or empty means enabled, so a build that never mentions Cordierite still gets it. Any other value is a config error, raised at prebuild.
+Accepted values are `1`/`true` and `0`/`false`, case-insensitive; unset or empty means the dev-only default described above. Any other value is a config error, raised at prebuild.
 
-Cordierite ships its own `react-native.config.js` that reads the variable and opts the package out of autolinking on both platforms, and `@cordierite/react-native/metro` reads the same variable to strip the JS. One variable, both surfaces.
+Cordierite ships its own `react-native.config.js` that reads the variable and sets the package's `ios.configurations`/`android.buildTypes` in autolinking accordingly, and `@cordierite/react-native/metro` reads the same variable to strip the JS (see "JS — swap the module at bundle time" below — Metro's own dev/release split does not thread through to this, so an explicit `CORDIERITE_ENABLED=0` is still how you strip Cordierite JS from a release bundle). One variable, both surfaces.
 
 **It must be set when autolinking resolves** — `pod install` and gradle configure — not merely when the app compiles. Flipping it and rebuilding without re-running install does nothing, silently.
 
-**Deliberately not keyed to Debug/Release.** A release-signed internal build that agents drive still needs Cordierite; a build-type check would strip it exactly where it is wanted, which is why the `debuggable`/`#if DEBUG` gate was removed in 0.4.0. The pipeline states intent explicitly instead.
+**Keyed to build type by name, not by a compiled-in check.** CocoaPods restricts linking to Xcode configurations literally named `Debug`/`Release`; Gradle restricts it to build types literally named `debug`/`release`. A custom build-type/configuration name (a `staging` flavor, say) gets neither — set `CORDIERITE_ENABLED=1` for that pipeline if it should carry Cordierite. This replaces the `debuggable`/`#if DEBUG` gate removed in 0.4.0 with a real per-variant linking decision instead of a runtime check compiled into every variant.
 
 Verify the result against the artifact rather than the build log:
 

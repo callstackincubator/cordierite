@@ -177,17 +177,21 @@ not as the mechanism that keeps a destructive tool out of reach of a hostile one
   caller (`cli`/`mcp`). This is on unconditionally; there's no flag to disable it. Check
   `daemon.status`'s `audit.failedWrites` if you need to confirm the log is actually
   landing on disk (e.g. under a read-only or full filesystem).
-- **Inclusion is an explicit app-level choice, not a build-type default.** Cordierite ships
-  in every build — debug, release, or any custom configuration — unless the app author
-  deliberately excludes it via autolinking (below). There is no `debuggable`/`#if DEBUG`
+- **Inclusion defaults to dev builds only, via real per-variant linking — not a compiled-in
+  build-type check.** `react-native.config.js` sets CocoaPods' `:configurations` and
+  Gradle's `buildTypes` so the `Debug`/`debug` variant links Cordierite and the
+  `Release`/`release` variant doesn't, by default. There is still no `debuggable`/`#if DEBUG`
   gate anywhere in `CordieritePackage.getModule` (Android) or
-  `CordieriteTurboBridge.swift`/`RCTNativeCordierite.mm` (iOS): both register/compile in
-  unconditionally whenever the module is linked. This is a stronger, not weaker, claim than
-  the old default-inert design: whether Cordierite is in your production build is something
-  you decide and can verify (`cordierite doctor`, `docs/CI.md`), not something that falls
-  out of a build-type check you have to remember exists. When the module genuinely isn't
-  present (excluded, or no native support at all — e.g. Expo Go), the JS public API
-  degrades to the exact `./noop` entry's behavior (one warning, no throws) — see
+  `CordieriteTurboBridge.swift`/`RCTNativeCordierite.mm` (iOS) — both register/compile in
+  unconditionally whenever the module is linked into a given variant; whether it's linked
+  into that variant at all is what the CocoaPods/Gradle config above decides. A release
+  pipeline that wants Cordierite anyway (an agent-driven, release-signed internal build, for
+  example) sets `CORDIERITE_ENABLED=1`; one that wants it gone even from debug sets
+  `CORDIERITE_ENABLED=0`. Either way this is something you can verify against the built
+  artifact (`cordierite doctor`, `docs/CI.md`), not something that quietly depends on a
+  custom build-type/configuration name being spelled `debug`/`Debug`. When the module
+  genuinely isn't present (excluded, or no native support at all — e.g. Expo Go), the JS
+  public API degrades to the exact `./noop` entry's behavior (one warning, no throws) — see
   `docs/ARCHITECTURE.md` §11.
 - **Compile out of a build you don't want carrying Cordierite at all.** Being present and
   trusting nothing (`trust: "pin"` with a `cliPins` set that has no matching daemon, or an
@@ -225,11 +229,10 @@ not as the mechanism that keeps a destructive tool out of reach of a hostile one
 - **App-store-review note.** An always-installed deep-link listener that can open a
   pinned socket and let an external process invoke code is a legitimate "remote control"
   surface from a reviewer's point of view, even though it can't be exercised without a
-  trusted key. Because inclusion is on by default, be ready to explain the trust model in
-  review notes for any build that goes to app-store review with Cordierite present; several
-  teams find it simpler to exclude Cordierite entirely (above) in review-track builds and
-  enable the real, `trust: "pin"`-hardened entry only in internally-distributed or
-  enterprise builds.
+  trusted key. A release build submitted to app-store review does *not* carry Cordierite by
+  default (see above); a team that overrides this with `CORDIERITE_ENABLED=1` for a review
+  build should be ready to explain the trust model in review notes, or exclude Cordierite
+  entirely (above) for that build track instead.
 
 ## The localhost/UDS trust boundary
 
