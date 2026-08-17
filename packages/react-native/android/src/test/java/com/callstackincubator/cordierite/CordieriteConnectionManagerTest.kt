@@ -9,9 +9,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import java.security.MessageDigest
-import java.security.cert.CertificateFactory
-import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -20,12 +17,12 @@ import java.util.concurrent.TimeUnit
  * Robolectric, no emulator) via `./gradlew :cordierite_react-native:testDebugUnitTest` from
  * `playground/android` (the autolinked consumer app).
  *
- * Not covered here (documented gap, same category as the iOS side): the actual socket
- * callback state machine driven through real
- * `okhttp3.WebSocketListener` callbacks, and `PinningTrustManager`/`computeSpkiPin` end-to-end
- * (both ultimately call `android.util.Base64`, which throws "not mocked" on a plain JVM unit-test
- * runtime without Robolectric or a device/emulator). The SPKI test below independently verifies
- * the same SHA-256-over-SPKI-DER math with a standard-library `Base64` encoder instead.
+ * `PinningTrustManager`/`computeSpkiPin` are covered by [CordieriteSpkiPinTest], which runs in the
+ * same task under Robolectric because both reach `android.util.Base64` (a "not mocked" stub on a
+ * plain JVM runtime).
+ *
+ * Not covered anywhere (documented gap, same category as the iOS side): the actual socket callback
+ * state machine driven through real `okhttp3.WebSocketListener` callbacks.
  */
 class CordieriteConnectionManagerTest {
     @Before
@@ -639,56 +636,7 @@ class CordieriteConnectionManagerTest {
         assertEquals(2, reparsed.getInt("protocol_version"))
     }
 
-    // MARK: - SPKI pin math parity with packages/cordierite/src/spki-pin.ts and iOS's spkiPin(for:)
-
-    /**
-     * Same fixture certificate (DER, base64) as
-     * `packages/react-native/ios/CordieriteTests/CordieriteConnectionManagerTests.swift`, generated
-     * once with:
-     *
-     *   openssl ecparam -name prime256v1 -genkey -noout -out key.pem
-     *   openssl req -new -x509 -key key.pem -days 3650 -out cert.pem -subj "/CN=cordierite-test-fixture"
-     *
-     * Inlined rather than committed as a `.pem` fixture file per this repo's rule that no key
-     * material — including throwaway test fixtures — is ever committed as a `.pem` file
-     * (`git ls-files "*.pem"` must stay empty). Only the public certificate is needed; the private
-     * key was discarded after generating the expected pin below.
-     */
-    private val fixtureCertificateDerBase64 =
-        """
-        MIIBmTCCAT+gAwIBAgIULhk1FL4F1t1m4VB8ZocEJJk6FSAwCgYIKoZIzj0EAwIw
-        IjEgMB4GA1UEAwwXY29yZGllcml0ZS10ZXN0LWZpeHR1cmUwHhcNMjYwNzE1MTI1
-        NTM1WhcNMzYwNzEyMTI1NTM1WjAiMSAwHgYDVQQDDBdjb3JkaWVyaXRlLXRlc3Qt
-        Zml4dHVyZTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCdrnHdxoZyNKqLxncue
-        /z1uh6STs1TnZI643d5kaELACPbJYhQtsDvMauVa5G6LOcAyfvfoboLEUbRhR2wM
-        e26jUzBRMB0GA1UdDgQWBBTDnPXrKTIWOcLw3w3PWtpV2fHnFjAfBgNVHSMEGDAW
-        gBTDnPXrKTIWOcLw3w3PWtpV2fHnFjAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49
-        BAMCA0gAMEUCIEHI+FcyHWubSC/hTHLSgyioRwNdiaQXOJyElnVT6fjnAiEAsNWW
-        oTlKSgWIcpT15v8orzlc8BOam0+LL6JUP15ESos=
-        """.trimIndent().replace("\n", "")
-
-    /**
-     * Independently derived (Node.js) from the same certificate's key material using
-     * `packages/cordierite/src/spki-pin.ts`'s `createSpkiPin` — must match for the same leaf
-     * certificate (and does match the iOS fixture test's `expectedPin`).
-     */
-    private val expectedPin = "sha256/nq5dKPoAJatciRzJQExHFls6q7YpSN2YP49Jmd+++Io="
-
-    @Test
-    fun `SPKI digest over the fixture certificate matches the TypeScript and iOS implementations`() {
-        val der = Base64.getDecoder().decode(fixtureCertificateDerBase64)
-        val certificate =
-            CertificateFactory
-                .getInstance("X.509")
-                .generateCertificate(der.inputStream()) as java.security.cert.X509Certificate
-
-        // Same algorithm as `computeSpkiPin`/`PinningTrustManager` (SHA-256 over
-        // `publicKey.encoded`, i.e. the SPKI DER), encoded with the JDK's standard Base64 instead
-        // of `android.util.Base64` (unavailable on a plain JVM unit-test runtime) — the two
-        // encoders produce identical output for this un-padded-newline, standard-alphabet case.
-        val digest = MessageDigest.getInstance("SHA-256").digest(certificate.publicKey.encoded)
-        val pin = "sha256/${Base64.getEncoder().encodeToString(digest)}"
-
-        assertEquals(expectedPin, pin)
-    }
+    // SPKI pin parity with packages/cordierite/src/spki-pin.ts and iOS's spkiPin(for:), plus the
+    // PinningTrustManager decision path, live in CordieriteSpkiPinTest — they call the shipped
+    // `computeSpkiPin`, which needs Robolectric's android.util.Base64.
 }

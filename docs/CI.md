@@ -19,7 +19,7 @@
   - The JavaScript test suite passes locally.
   - A cache-free, frozen-lockfile installation builds successfully.
   - Packed CLI and React Native tarballs contain an exact `@cordierite/shared` version rather than `workspace:*`.
-  - Android JVM tests pass with :cordierite_react-native:testDebugUnitTest; no emulator is required.
+  - Android JVM tests pass with :cordierite_react-native:testDebugUnitTest; no emulator is required. The TLS pinning cases (`computeSpkiPin`, `PinningTrustManager`) run under Robolectric inside that same task, since both reach `android.util.Base64`; everything else stays on the plain JVM.
   - 18 iOS XCTest cases pass through the generated Cordierite-Unit-Tests scheme.
   - Linting exists for the React Native package and playground. It passes with 10 warnings.
   - Root typecheck, including the CLI and React Native test suites, passes locally.

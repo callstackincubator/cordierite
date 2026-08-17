@@ -64,6 +64,15 @@ android {
     abortOnError false
   }
 
+  testOptions {
+    unitTests {
+      // Required by Robolectric, which backs CordieriteSpkiPinTest (the only test class that needs
+      // a real android.util.Base64 / android.jar runtime). Every other unit test runs on the plain
+      // JVM and is unaffected.
+      includeAndroidResources = true
+    }
+  }
+
   compileOptions {
     sourceCompatibility JavaVersion.VERSION_17
     targetCompatibility JavaVersion.VERSION_17
@@ -93,6 +102,10 @@ dependencies {
   // Real org.json implementation: the stub in android.jar throws "not mocked" for every method at
   // unit-test runtime (same reason expo-modules-core's own tests depend on this).
   testImplementation "org.json:json:20180813"
+  // Robolectric supplies a real android.util.Base64 (and the rest of android.jar) so
+  // CordieriteSpkiPinTest can call the shipped `computeSpkiPin`/`PinningTrustManager` instead of
+  // re-deriving the digest math. Still no emulator: it runs in the same JVM test task.
+  testImplementation "org.robolectric:robolectric:4.16"
 }
 
 tasks.register("assertNewArchitectureEnabled") {
