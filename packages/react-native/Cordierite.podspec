@@ -2,6 +2,15 @@ require 'json'
 
 package = JSON.parse(File.read(File.join(__dir__, 'package.json')))
 
+# Only evaluated when autolinking has already decided to link Cordierite, so the line appearing at
+# all is the proof. Ungated: a release build carrying Cordierite by mistake is the failure worth
+# catching, and this is grep-able in CI output. CocoaPods evaluates the podspec several times per
+# install, hence the guard.
+if defined?(Pod::UI) && !defined?($cordierite_banner_shown)
+  $cordierite_banner_shown = true
+  Pod::UI.puts "[cordierite] native module INCLUDED in this build (v#{package['version']})"
+end
+
 Pod::Spec.new do |s|
   s.name           = 'Cordierite'
   s.version        = package['version']

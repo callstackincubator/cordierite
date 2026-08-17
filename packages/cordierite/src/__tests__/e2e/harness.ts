@@ -1,5 +1,5 @@
 /**
- * Task 16: shared harness for the end-to-end suite. Consolidates the patterns already proven in
+ * Shared harness for the end-to-end suite. Consolidates the patterns already proven in
  * this package's other integration tests rather than inventing a third one:
  *
  * - the real-CLI-subprocess pattern from `cli-v2.integration.test.ts` / `exit-codes.integration.test.ts`
@@ -132,12 +132,12 @@ export type CliJsonResult<T = unknown> = {
 };
 
 /**
- * Runs the built Node CLI as a real subprocess and parses its `--json`
- * stdout — task 16 scope: "built CLI invoked as a subprocess — not imported — so argv parsing, exit
- * codes, and auto-spawn are covered for real. It uses an async process because
- * several scenarios need the daemon to round-trip through this test's own fake app WebSocket client
- * while the CLI subprocess is in flight, and a sync spawn would block this process's event loop for
- * the subprocess's entire lifetime, deadlocking that round-trip (see `cli-v2.integration.test.ts`).
+ * Runs the built CLI as a real subprocess — not imported — so argv parsing, exit codes, and
+ * auto-spawn are covered for real, and parses its `--json` stdout. It uses an async process
+ * because several scenarios need the daemon to round-trip through this test's own fake app
+ * WebSocket client while the CLI subprocess is in flight, and a sync spawn would block this
+ * process's event loop for the subprocess's entire lifetime, deadlocking that round-trip (see
+ * `cli-v2.integration.test.ts`).
  */
 export const runCliJson = async <T = unknown>(args: string[], stateDir: string): Promise<CliJsonResult<T>> => {
   const proc = spawnCliBinary([...args, "--json"], { stateDir });
@@ -189,10 +189,16 @@ export const fetchPinnedKeys = async (stateDir: string): Promise<string[]> => {
 
 export type DecodedLink = { sessionId: string; token: string; port: number };
 
-/** Extracts the deep-link payload and decodes it into a claimable link. */
+/** Extracts the deep-link payload and decodes it into a claimable link.
+ *
+ * The deep link now carries a second `pin` query param after the `cordierite` bootstrap payload
+ * (opt-in hardening dev-mode, `commands/link.ts`) -- `cordierite=<payload>&pin=<spki-pin>` -- so the
+ * payload must be cut at the next `&`, not read to the end of the string. */
 export const decodeDeepLink = (deepLink: string): DecodedLink => {
   const marker = "cordierite=";
-  const payload = deepLink.slice(deepLink.indexOf(marker) + marker.length);
+  const afterMarker = deepLink.slice(deepLink.indexOf(marker) + marker.length);
+  const ampersandIndex = afterMarker.indexOf("&");
+  const payload = ampersandIndex === -1 ? afterMarker : afterMarker.slice(0, ampersandIndex);
   const decoded = decodeBootstrap(payload);
 
   if (!decoded) {
@@ -223,7 +229,7 @@ export const mintLink = async (
 };
 
 // ---------------------------------------------------------------------------------------------
-// SPKI pin verification (task 16 scope item 1)
+// SPKI pin verification
 // ---------------------------------------------------------------------------------------------
 
 /** Mirrors `spki-pin.ts`'s pin format, computed from a leaf certificate's DER bytes instead of a

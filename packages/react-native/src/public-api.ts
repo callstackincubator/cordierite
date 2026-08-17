@@ -2,6 +2,7 @@ import type { ToolDescriptor } from "@cordierite/shared";
 import type { DependencyList } from "react";
 
 import type {
+  CordieriteBuildConfig,
   CordieriteClientState,
   CordieriteConnectInput,
   CordieriteListenerKind,
@@ -10,6 +11,7 @@ import type {
   CordieriteUnifiedListenerMap,
 } from "./Cordierite.types";
 import type { InstallCordieriteDeepLinkBootstrapOptions } from "./deep-link-install";
+import type { UseCordieriteToolOptions } from "./useCordieriteTool";
 
 export type CordieriteSubscription = { remove(): void };
 
@@ -21,17 +23,18 @@ export type CordieriteSubscription = { remove(): void };
 export type CordierePublicApi = {
   registerTool<
     TInputSchema extends CordieriteRuntimeSchema | undefined,
-    TOutputSchema extends CordieriteRuntimeSchema | undefined
+    TOutputSchema extends CordieriteRuntimeSchema | undefined,
   >(
-    registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>
+    registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>,
   ): CordieriteSubscription;
 
   useCordieriteTool<
     TInputSchema extends CordieriteRuntimeSchema | undefined,
-    TOutputSchema extends CordieriteRuntimeSchema | undefined
+    TOutputSchema extends CordieriteRuntimeSchema | undefined,
   >(
     definition: CordieriteToolRegistration<TInputSchema, TOutputSchema>,
-    deps?: DependencyList
+    deps?: DependencyList,
+    options?: UseCordieriteToolOptions,
   ): void;
 
   postEvent(name: string, payload?: unknown): Promise<void>;
@@ -39,15 +42,17 @@ export type CordierePublicApi = {
   getRegisteredTools(): ToolDescriptor[];
 
   installCordieriteDeepLinkBootstrap(
-    options?: InstallCordieriteDeepLinkBootstrapOptions
+    options?: InstallCordieriteDeepLinkBootstrapOptions,
   ): void;
 
   addCordieriteListener<Kind extends CordieriteListenerKind>(
     kind: Kind,
-    callback: CordieriteUnifiedListenerMap[Kind]
+    callback: CordieriteUnifiedListenerMap[Kind],
   ): CordieriteSubscription;
 
   getCordieriteState(): CordieriteClientState;
 
   connect(input: CordieriteConnectInput): Promise<void>;
+
+  getCordieriteBuildConfig(): CordieriteBuildConfig;
 };

@@ -40,6 +40,71 @@ production deployments should turn on. See `docs/PROTOCOL.md` for wire-level det
   whether exposing the `wss://` port to the internet is a good idea for your app; that
   decision is yours, and if you make it, policy + audit (below) are not optional.
 
+## Trust modes
+
+What a build trusts is decided by an explicit `trust` config value — `"pin"` or `"link"` —
+never by whether the build happens to be debuggable. There is no build-type signal anywhere
+in this resolution on either platform.
+
+**`trust: "pin"`** is everything described above: the app embeds a key fingerprint set
+(`cliPins`) ahead of time and refuses anything else. Requires non-empty `cliPins`; the config
+plugin rejects `trust: "pin"` with empty/missing `cliPins` at prebuild time, and the native
+trust-resolution logic (`resolveTrustedPins` on both platforms) rejects the same combination
+again if that check is ever bypassed by hand-editing native config.
+
+**`trust: "link"`** — the default whenever `cliPins` is absent, and available in **any**
+build type, not just a locally-run debug build — is a deliberately weaker flow so that a
+fresh clone of this repo (or a fresh app project) works with zero setup:
+
+- The daemon auto-generates `key.pem` the first time it starts if the file is missing, and
+  prints its `sha256/...` fingerprint.
+- `cordierite link` composes that fingerprint into the deep link as a separate `pin` query
+  param, alongside the existing binary `cordierite` bootstrap payload. The binary payload
+  format is unchanged — an app build that doesn't know about `pin` simply ignores it.
+- The native client trusts that link-carried pin, for that one link's session only, when the
+  effective trust mode is `"link"` (explicit, or the default because no `cliPins` are
+  configured) and the connect options actually carry a `linkPin`. It then logs,
+  unconditionally (not gated behind any log level):
+
+  ```
+  Cordierite: trust=link — trusting the SPKI pin carried by the bootstrap link for this session.
+  ```
+
+- The moment `cliPins` is configured, that embedded set always wins regardless of `trust`'s
+  value, and the link's `pin` is ignored outright — config can only *narrow* trust, never
+  widen it back to link TOFU.
+- **A `trust` value that is neither `"link"` nor `"pin"`** — a typo like `"PIN"` or a
+  hand-edited native config — is a hard error, both at config/prebuild time and independently
+  in the native trust-resolution logic, deliberately: it must never be treated as the
+  missing-key default, which would let a mistyped `trust` silently widen an intended `"pin"`
+  configuration into permissive link TOFU.
+
+**What changed vs. pinned trust:** the trust anchor moves from "a key you baked into the
+binary ahead of time" to "whoever handed you this link" — the same class of trust a
+`ssh <host>` on first connect or an unauthenticated `npm install <package>` extends to
+whoever controls that name at the moment you run it. It is intentionally weaker, which is
+why production and internal-distribution deployments should configure `cliPins` (which flips
+the effective trust mode to `"pin"` automatically) rather than relying on the default.
+
+**Residual risk:** an attacker already on the operator's private LAN who can get someone to
+open a malicious bootstrap link or scan a malicious QR code on a build with no embedded pins
+can stand in for a legitimate daemon for that one session — the same link-replay and
+short-lived-token protections in the main threat model still apply (a captured link is
+useless once its TTL elapses or its token is consumed), but there is no embedded key to
+check the link's claimed identity against. This is a materially smaller blast radius than no
+pinning at all (still requires LAN presence, still requires a social-engineering step, still
+bounded by the link's TTL), but it is not equivalent to pinned trust — do not leave a
+production or internal-distribution build without `cliPins` for anything beyond local
+development.
+
+**What actually contains link trust now, since there is no build-type gate:** it is opt-in
+configuration alone. Set `cliPins` (which makes `trust: "pin"` the default) on any build you
+don't want accepting a link-carried pin. Separately, if you don't want Cordierite's native
+code present in a build at all — regardless of trust mode — exclude it from autolinking (see
+"Compile out of a build you don't want carrying Cordierite at all" below); `cordierite doctor` (`docs/CI.md`) verifies that
+exclusion actually took effect in a built artifact, rather than trusting the config that was
+supposed to produce it.
+
 ## Key handling rules
 
 - **Never commit a private key.** `git ls-files "*.pem"` must stay empty in this repo and
@@ -85,6 +150,20 @@ and keeps any one key's exposure window bounded.
 Cordierite is dev-first but production-capable: the same protocol runs everywhere,
 production just turns on the pieces below rather than using a different architecture.
 
+**Policy and audit are operator ergonomics, not a production control.** Both run on the
+daemon, which lives on the operator's machine — the trust boundary this document already
+names above ("A compromised operator machine"). Anyone who can read `key.pem` or reach
+`daemon.sock` controls the daemon directly and is not subject to its own policy config or
+audited by its own audit log; policy/audit shape what a *legitimate* CLI/MCP caller talking
+to an *honest* daemon can do, they do not defend the app against the operator machine
+itself. The control that actually sits inside the app, on the app's side of the trust
+boundary, is **which tools the app registers at all** — `useCordieriteTool`'s `enabled`
+option (see the package README's "Gating a tool by build variant") lets an app conditionally
+withhold a destructive tool's registration based on its own release-pipeline-controlled
+build flag, independent of whatever the operator machine's daemon policy says. Treat policy
+and audit below as convenience for a trusted operator working across many tools/sessions,
+not as the mechanism that keeps a destructive tool out of reach of a hostile one.
+
 - **Policy.** Set `config.json`'s `policy.default` / `policy.destructive` (and per-tool
   `policy.tools["<alias>/<name>"]` overrides) to `"deny"` for anything you don't want an
   arbitrary caller invoking against a production build. Every `tools.call` — CLI and MCP
@@ -98,18 +177,59 @@ production just turns on the pieces below rather than using a different architec
   caller (`cli`/`mcp`). This is on unconditionally; there's no flag to disable it. Check
   `daemon.status`'s `audit.failedWrites` if you need to confirm the log is actually
   landing on disk (e.g. under a read-only or full filesystem).
-- **Compile out of release builds you don't want carrying Cordierite at all.** Import
-  `@cordierite/react-native/noop` (or a Metro `resolveRequest` swap) instead of the real
-  package — see the package README's "Compiling Cordierite out of production builds"
-  section. This removes the native pinning code, the deep-link listener, and the tool
-  registry entirely from that bundle, not just disables them at runtime.
+- **Inclusion is an explicit app-level choice, not a build-type default.** Cordierite ships
+  in every build — debug, release, or any custom configuration — unless the app author
+  deliberately excludes it via autolinking (below). There is no `debuggable`/`#if DEBUG`
+  gate anywhere in `CordieritePackage.getModule` (Android) or
+  `CordieriteTurboBridge.swift`/`RCTNativeCordierite.mm` (iOS): both register/compile in
+  unconditionally whenever the module is linked. This is a stronger, not weaker, claim than
+  the old default-inert design: whether Cordierite is in your production build is something
+  you decide and can verify (`cordierite doctor`, `docs/CI.md`), not something that falls
+  out of a build-type check you have to remember exists. When the module genuinely isn't
+  present (excluded, or no native support at all — e.g. Expo Go), the JS public API
+  degrades to the exact `./noop` entry's behavior (one warning, no throws) — see
+  `docs/ARCHITECTURE.md` §11.
+- **Compile out of a build you don't want carrying Cordierite at all.** Being present and
+  trusting nothing (`trust: "pin"` with a `cliPins` set that has no matching daemon, or an
+  app that simply never mints a bootstrap link for that build) still ships the native code
+  and JS bundle inside the binary. To strip it out entirely, combine two independent
+  steps — neither one alone removes native code:
+  1. **Native:** exclude `@cordierite/react-native` from autolinking. This is what
+     actually removes the compiled native pod/module from the app binary. Bare RN:
+     app-root `react-native.config.js`, `dependencies["@cordierite/react-native"].platforms
+     = { ios: null, android: null }`. Expo-managed equivalent: `expo.autolinking.ios.exclude`
+     / `expo.autolinking.android.exclude` — but this must live in **`package.json`**, not
+     `app.json` or `app.config.*`. `expo-modules-autolinking` reads this config from
+     `package.json` only; the same block anywhere else is a silent no-op that still ships
+     the native module. Note also that `expo-modules-autolinking`'s CocoaPods driver
+     resolves iOS with `--platform apple`, and an `expo.autolinking.apple` block, if
+     present, wins outright over `expo.autolinking.ios` rather than merging with it — put
+     the exclude under `apple` too if your app declares that key. Excluding on iOS also
+     stops that package's codegen from running, so an app that excludes it there but still
+     references the `Cordierite` pod by hand (a maintainer-only shape, e.g. attaching an
+     XCTest target) will fail to compile.
+  2. **JS:** swap the module at bundle time with a Metro `resolveRequest` override that
+     resolves `@cordierite/react-native` (and `/auto`) to `@cordierite/react-native/noop`
+     instead. This removes the deep-link listener and tool registry from the JS bundle.
+
+  See the package README's "Compiling Cordierite out of production builds" section for
+  the exact snippets, and `docs/CI.md` for `cordierite doctor`, which verifies the
+  exclusion actually took effect in a built artifact rather than trusting the config that
+  was supposed to produce it — this whole area was a config recipe that never worked once
+  before (see `docs/tasks/02-fix-autolinking-exclusion.md`), which is why it's now checked
+  by CI, not just documented. Either half alone still yields a working, inert-with-respect-
+  to-that-half app — the autolinking exclude alone leaves the real JS entry importable but
+  with no native module to find (so it degrades to `/noop`-equivalent behavior); the Metro
+  swap alone leaves the native pod compiled in but unused. Combine both when you want
+  neither surface present at all.
 - **App-store-review note.** An always-installed deep-link listener that can open a
   pinned socket and let an external process invoke code is a legitimate "remote control"
   surface from a reviewer's point of view, even though it can't be exercised without a
-  trusted key. If you ship the real (non-`/noop`) entry in a build that goes to app-store
-  review, be ready to explain the trust model in review notes; several teams find it
-  simpler to ship `/noop` in review-track builds and the real entry only in
-  internally-distributed or enterprise builds.
+  trusted key. Because inclusion is on by default, be ready to explain the trust model in
+  review notes for any build that goes to app-store review with Cordierite present; several
+  teams find it simpler to exclude Cordierite entirely (above) in review-track builds and
+  enable the real, `trust: "pin"`-hardened entry only in internally-distributed or
+  enterprise builds.
 
 ## The localhost/UDS trust boundary
 

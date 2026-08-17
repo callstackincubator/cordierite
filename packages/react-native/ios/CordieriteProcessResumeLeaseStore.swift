@@ -10,7 +10,7 @@ struct CordieriteResumeEndpoint: Equatable, Sendable {
   let port: Int
 }
 
-/// Immutable process-memory representation of Task 1's `ResumeLeaseV1` contract.
+/// Immutable process-memory representation of the `ResumeLeaseV1` contract.
 struct CordieriteResumeLeaseV1: Equatable, Sendable {
   let sessionId: String
   let resumeToken: String
@@ -71,7 +71,7 @@ final class CordieriteProcessResumeLeaseStore: @unchecked Sendable {
     withLock { entry?.lease }
   }
 
-  /// Internal synchronous getter reserved for Task 4's TurboModule bridge.
+  /// Internal synchronous getter reserved for the TurboModule bridge.
   func getRecord() -> [String: Any]? {
     withLock { entry?.lease.toRecord() }
   }
@@ -115,7 +115,7 @@ final class CordieriteProcessResumeLeaseStore: @unchecked Sendable {
     }
   }
 
-  /// Guarded clear reserved for connection teardown and Task 4's native wrapper.
+  /// Guarded clear reserved for connection teardown and the native wrapper.
   @discardableResult
   func clear(ownerGeneration: Int64) -> Bool {
     withLock {

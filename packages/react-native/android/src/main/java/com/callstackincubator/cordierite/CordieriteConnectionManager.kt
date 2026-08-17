@@ -26,6 +26,7 @@ import javax.net.ssl.X509TrustManager
 
 private const val ANDROID_PINS_KEY = "com.callstackincubator.cordierite.CLI_PINS"
 private const val ANDROID_PRIVATE_LAN_KEY = "com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY"
+private const val ANDROID_TRUST_KEY = "com.callstackincubator.cordierite.TRUST"
 private const val PROTOCOL_VERSION = 2
 
 /** Matches `config.json`'s `keepaliveIntervalSeconds` default (ARCHITECTURE §3). */
@@ -52,6 +53,14 @@ internal data class CordieriteConnectOptions(
     val deviceManufacturer: String?,
     val deviceModel: String?,
     val deviceOs: String?,
+    /**
+     * The bootstrap deep link's separate `pin` query param, forwarded unchanged from JS
+     * (`CordieriteConnectOptions.linkPin` in `Cordierite.types.ts`). Only ever consulted by
+     * `resolveTrustedPins` when no build-time `CLI_PINS` are configured and the explicit
+     * `TRUST` manifest value (or its missing-key default) resolves to `"link"` — see
+     * `loadConfiguration`.
+     */
+    val linkPin: String?,
 ) {
     companion object {
         fun fromReadableMap(value: com.facebook.react.bridge.ReadableMap): CordieriteConnectOptions {
@@ -85,8 +94,93 @@ internal data class CordieriteConnectOptions(
                 optionalDeviceString("deviceManufacturer"),
                 optionalDeviceString("deviceModel"),
                 optionalDeviceString("deviceOs"),
+                optionalDeviceString("linkPin"),
             )
         }
+    }
+}
+
+/** Outcome of `resolveTrustedPins` (explicit trust mode). Mirrors iOS's
+ * `CordieriteTrustedPinsResolution` one-to-one. */
+internal sealed class TrustedPinsResolution {
+    /** Embedded pins (build-time `CLI_PINS`) are configured; `linkPin` is irrelevant and never
+     * even inspected once this case applies — embedded pins always win regardless of `trust`, so
+     * config can never *widen* trust by switching to `"link"`. */
+    data class Configured(
+        val pins: Set<String>,
+    ) : TrustedPinsResolution()
+
+    /** `trust` (explicit or via the missing-key default) resolved to `"link"`, no embedded pins
+     * are configured, and `linkPin` is usable: trust that single pin for this connection only.
+     * Callers must log the unconditional trust=link notice. */
+    data class LinkPin(
+        val pin: String,
+    ) : TrustedPinsResolution()
+
+    /** `trust` resolved to `"pin"` (explicit or via the missing-key default) but no embedded pins
+     * are configured. This is a config-time error the plugin refuses to produce, so it only
+     * happens via hand-edited native config. */
+    object PinTrustRequiresEmbeddedPins : TrustedPinsResolution()
+
+    /** `trust` resolved to `"link"`, no embedded pins are configured, and the connect options
+     * carried no usable `linkPin` to trust. */
+    object LinkTrustRequiresLinkPin : TrustedPinsResolution()
+
+    /** `trust` is present but is neither `"link"` nor `"pin"` (a typo/hand-edit), and no embedded
+     * pins are configured to fall back on regardless of `trust`'s text. This must never be treated
+     * as the missing-key default — that would let a mistyped `trust` value silently fail *open*
+     * into unpinned link TOFU instead of erroring. */
+    data class InvalidTrustValue(
+        val value: String,
+    ) : TrustedPinsResolution()
+}
+
+/**
+ * Pure decision logic for explicit trust mode (`docs/tasks/05-explicit-trust-mode.md`): given the
+ * `TRUST` manifest value, the build-time `CLI_PINS` read from the manifest, and the connect
+ * options' `linkPin` (from the bootstrap deep link's separate `pin` query param, if any), decides
+ * which SPKI pin(s) this connection trusts. Factored out of `loadConfiguration` (which reads
+ * `PackageManager`/`ApplicationInfo`) so the decision matrix is unit-testable without a
+ * `Context`/manifest fixture — mirrors iOS's `resolveTrustedPins` one-to-one.
+ *
+ * | `trust` | embedded pins | behavior |
+ * | --- | --- | --- |
+ * | `"pin"` | non-empty | embedded pins only; `linkPin` ignored |
+ * | `"pin"` | empty | [PinTrustRequiresEmbeddedPins] — hard error |
+ * | `"link"` | empty | trust `linkPin`, or [LinkTrustRequiresLinkPin] if none is usable |
+ * | `"link"` | non-empty | embedded pins win, `linkPin` ignored (config can never *widen* trust) |
+ *
+ * A missing (`null`/empty-string) `trust` value defaults to `"pin"` if `embeddedPins` is
+ * non-empty, else `"link"` — matching the config plugin's own default so bare-RN and Expo apps
+ * behave identically. Embedded pins are checked first, so by the time a `null`/empty `trust` is
+ * actually consulted below, `embeddedPins` is already known empty and the default always resolves
+ * to `"link"`. A *present but unrecognized* `trust` string (anything other than `"link"`/`"pin"`)
+ * is [InvalidTrustValue] — it is never coerced into the missing-key default, which would let a
+ * typo silently widen trust into unpinned link TOFU. No build-time debuggability signal is ever
+ * consulted here.
+ */
+internal fun resolveTrustedPins(
+    trust: String?,
+    embeddedPins: Set<String>,
+    linkPin: String?,
+): TrustedPinsResolution {
+    // Embedded pins always win once present, regardless of `trust`: config can never *widen*
+    // trust by declaring `trust: "link"` (or anything else) alongside real `cliPins`.
+    if (embeddedPins.isNotEmpty()) {
+        return TrustedPinsResolution.Configured(embeddedPins)
+    }
+
+    val normalizedTrust = trust?.takeIf { it.isNotEmpty() }
+
+    return when (normalizedTrust) {
+        "pin" -> TrustedPinsResolution.PinTrustRequiresEmbeddedPins
+        "link", null ->
+            if (!linkPin.isNullOrEmpty()) {
+                TrustedPinsResolution.LinkPin(linkPin)
+            } else {
+                TrustedPinsResolution.LinkTrustRequiresLinkPin
+            }
+        else -> TrustedPinsResolution.InvalidTrustValue(normalizedTrust)
     }
 }
 
@@ -148,6 +242,94 @@ internal fun parseAllowPrivateLanOnly(
         is String -> rawValue.toBooleanStrictOrNull() ?: true
         else -> true
     }
+}
+
+/**
+ * Reads the `TRUST` manifest meta-data value (`"link"` | `"pin"`). `Bundle.get()` returns `Any?`
+ * rather than a typed accessor — following the same tolerant-of-actual-declared-type pattern as
+ * [parseAllowPrivateLanOnly] rather than assuming `getString()` — so an unexpected type (or an
+ * absent key) is treated the same as a missing value instead of throwing a `ClassCastException`.
+ * An empty string is likewise treated as absent. [resolveTrustedPins] applies the missing-key
+ * default from there.
+ */
+internal fun parseTrustMetadataValue(rawValue: Any?): String? =
+    (rawValue as? String)?.takeIf { it.isNotEmpty() }
+
+/**
+ * The raw `TRUST`/`CLI_PINS`/`ALLOW_PRIVATE_LAN_ONLY` manifest values, parsed but not yet run
+ * through [resolveTrustedPins]. The single manifest-reading path shared by [loadConfiguration]
+ * (real connect attempts) and `getBuildConfig` (JS diagnostics via `getConstants()`), so the two
+ * can never read different data out of the manifest.
+ */
+internal data class CordieriteManifestConfig(
+    val trust: String?,
+    val embeddedPins: Set<String>,
+    val allowPrivateLanOnly: Boolean,
+)
+
+/** See [CordieriteManifestConfig]. */
+@Suppress("DEPRECATION") // Bundle.get(String) is deprecated but is the only way to read the raw value's type.
+internal fun readCordieriteManifestConfig(context: Context): CordieriteManifestConfig {
+    val applicationInfo =
+        context.packageManager.getApplicationInfo(
+            context.packageName,
+            PackageManager.GET_META_DATA,
+        )
+    val metaData = applicationInfo.metaData
+    val pinsJson = metaData?.getString(ANDROID_PINS_KEY).orEmpty()
+
+    val embeddedPins =
+        if (pinsJson.isEmpty()) {
+            emptySet()
+        } else {
+            val parsedPins = JSONArray(pinsJson)
+            buildSet {
+                for (index in 0 until parsedPins.length()) {
+                    add(parsedPins.getString(index))
+                }
+            }
+        }
+
+    return CordieriteManifestConfig(
+        trust = parseTrustMetadataValue(metaData?.get(ANDROID_TRUST_KEY)),
+        embeddedPins = embeddedPins,
+        allowPrivateLanOnly =
+            parseAllowPrivateLanOnly(
+                hasKey = metaData?.containsKey(ANDROID_PRIVATE_LAN_KEY) == true,
+                rawValue = metaData?.get(ANDROID_PRIVATE_LAN_KEY),
+            ),
+    )
+}
+
+/** The small diagnostic surface exposed to JS via `getConstants()` (`docs/tasks/07-native-module-constants.md`). */
+internal data class CordieriteBuildConfig(
+    val trust: String,
+    val hasEmbeddedPins: Boolean,
+    val allowPrivateLanOnly: Boolean,
+)
+
+/**
+ * Maps a [resolveTrustedPins] outcome to [CordieriteBuildConfig]. Reusing that function's own
+ * outcome — rather than re-deriving "trust"/"hasEmbeddedPins" from the raw manifest values with
+ * separate logic — guarantees this can never disagree with what a real `connect()` attempt would
+ * use for the same manifest state. `trust` reports the *effective* bucket ("pin" whenever embedded
+ * pins win, "link" otherwise) rather than echoing the raw config string, except
+ * [TrustedPinsResolution.InvalidTrustValue], whose raw text is surfaced as-is so a hand-edited typo
+ * is visible instead of silently coerced.
+ */
+internal fun cordieriteBuildConfig(
+    resolution: TrustedPinsResolution,
+    allowPrivateLanOnly: Boolean,
+): CordieriteBuildConfig {
+    val (trust, hasEmbeddedPins) =
+        when (resolution) {
+            is TrustedPinsResolution.Configured -> "pin" to true
+            is TrustedPinsResolution.LinkPin -> "link" to false
+            TrustedPinsResolution.PinTrustRequiresEmbeddedPins -> "pin" to false
+            TrustedPinsResolution.LinkTrustRequiresLinkPin -> "link" to false
+            is TrustedPinsResolution.InvalidTrustValue -> resolution.value to false
+        }
+    return CordieriteBuildConfig(trust, hasEmbeddedPins, allowPrivateLanOnly)
 }
 
 /**
@@ -279,7 +461,7 @@ internal class CordieriteConnectionManager(
      * the per-connect client *before* the socket exists — before any ack can tell us the
      * server-negotiated interval. We seed it with the daemon's documented default and update it
      * from each ack's `keepalive_interval_s` (native parses the ack it already forwards, mirroring
-     * the iOS plumbing choice from task 09) so the *next* connect/resume uses the negotiated value.
+     * the iOS plumbing choice) so the *next* connect/resume uses the negotiated value.
      */
     private var negotiatedPingIntervalMillis = TimeUnit.SECONDS.toMillis(DEFAULT_PING_INTERVAL_SECONDS)
 
@@ -358,6 +540,37 @@ internal class CordieriteConnectionManager(
 
     fun clearResumeLease(): Boolean = CordieriteProcessResumeLeaseStore.clear(ownerGeneration)
 
+    /**
+     * Backs the TurboModule's `getConstants()`. Reads the manifest through the exact same
+     * [readCordieriteManifestConfig]/[resolveTrustedPins] path [loadConfiguration] uses for a real
+     * `connect()` — `linkPin` is `null` here since no connect attempt (and therefore no bootstrap
+     * link) is in flight when JS asks for the build config; see [cordieriteBuildConfig]'s doc
+     * comment for what that means for the reported `trust` value.
+     *
+     * Unlike [loadConfiguration] (whose caller, `performConnect`, already wraps it in a try/catch
+     * that rejects the connect promise), a thrown exception here would propagate out of the
+     * TurboModule's `getConstants()` — which RN's generated spec calls eagerly and unconditionally,
+     * unlike a normal method the app chooses to invoke. `PackageManager.getApplicationInfo`
+     * (`NameNotFoundException` for one's own installed package) and `JSONArray` (a malformed
+     * hand-edited `CLI_PINS`) are the only things that can throw here; iOS's equivalent read can
+     * never throw at all (`as?` casts default to empty/absent instead). Catching keeps this
+     * diagnostic call as non-throwing as the read genuinely allows, without adding any parsing
+     * logic beyond what [readCordieriteManifestConfig] already does.
+     */
+    fun getBuildConfig(): CordieriteBuildConfig =
+        try {
+            val manifestConfig = readCordieriteManifestConfig(context)
+            val resolution = resolveTrustedPins(manifestConfig.trust, manifestConfig.embeddedPins, linkPin = null)
+            cordieriteBuildConfig(resolution, manifestConfig.allowPrivateLanOnly)
+        } catch (e: Exception) {
+            android.util.Log.w("Cordierite", "getConstants(): could not read the manifest config.", e)
+            // Fail closed, and use a `trust` value no real resolution ever produces (never a bare
+            // "link"/"pin", and distinct from an echoed raw invalid config string, which would
+            // always be non-empty and Info.plist/manifest-authored) so this is never confused with
+            // a real trust bucket.
+            CordieriteBuildConfig(trust = "unreadable", hasEmbeddedPins = false, allowPrivateLanOnly = true)
+        }
+
     private fun performConnect(
         options: CordieriteConnectOptions,
         completion: (Throwable?) -> Unit,
@@ -368,7 +581,7 @@ internal class CordieriteConnectionManager(
         }
 
         try {
-            loadConfiguration()
+            loadConfiguration(options.linkPin)
         } catch (e: Exception) {
             completion(e)
             return
@@ -728,33 +941,39 @@ internal class CordieriteConnectionManager(
         emitMessageRaw(text)
     }
 
-    @Suppress("DEPRECATION") // Bundle.get(String) is deprecated but is the only way to read the raw value's type.
-    private fun loadConfiguration() {
-        val applicationInfo =
-            context.packageManager.getApplicationInfo(
-                context.packageName,
-                PackageManager.GET_META_DATA,
-            )
-        val metaData = applicationInfo.metaData
-        val pinsJson = metaData?.getString(ANDROID_PINS_KEY).orEmpty()
+    /** `linkPin` comes from the connect options (the bootstrap deep link's `pin` param, if any) —
+     * see `resolveTrustedPins` for the trust decision itself. */
+    private fun loadConfiguration(linkPin: String?) {
+        val manifestConfig = readCordieriteManifestConfig(context)
 
-        if (pinsJson.isEmpty()) {
-            throw IllegalStateException("Cordierite CLI pins are not configured in AndroidManifest.xml.")
-        }
-
-        val parsedPins = JSONArray(pinsJson)
         configuredPins =
-            buildSet {
-                for (index in 0 until parsedPins.length()) {
-                    add(parsedPins.getString(index))
+            when (val resolution = resolveTrustedPins(manifestConfig.trust, manifestConfig.embeddedPins, linkPin)) {
+                is TrustedPinsResolution.Configured -> resolution.pins
+                is TrustedPinsResolution.LinkPin -> {
+                    // Loud and unconditional (not gated behind any log level): this is now a
+                    // deliberate configuration choice, not a dev-mode fallback, but the developer
+                    // relying on it must still not be able to miss it.
+                    android.util.Log.w(
+                        "Cordierite",
+                        "Cordierite: trust=link — trusting the SPKI pin carried by the bootstrap link for this session.",
+                    )
+                    setOf(resolution.pin)
                 }
+                TrustedPinsResolution.PinTrustRequiresEmbeddedPins ->
+                    throw IllegalStateException(
+                        "Cordierite trust=\"pin\" requires CLI_PINS to be configured in AndroidManifest.xml.",
+                    )
+                TrustedPinsResolution.LinkTrustRequiresLinkPin ->
+                    throw IllegalStateException(
+                        "Cordierite trust=\"link\" but the bootstrap link carried no pin to trust.",
+                    )
+                is TrustedPinsResolution.InvalidTrustValue ->
+                    throw IllegalStateException(
+                        "Cordierite TRUST must be \"link\" or \"pin\", got \"${resolution.value}\".",
+                    )
             }
 
-        allowPrivateLanOnly =
-            parseAllowPrivateLanOnly(
-                hasKey = metaData?.containsKey(ANDROID_PRIVATE_LAN_KEY) == true,
-                rawValue = metaData?.get(ANDROID_PRIVATE_LAN_KEY),
-            )
+        allowPrivateLanOnly = manifestConfig.allowPrivateLanOnly
     }
 
     private fun getOrCreateSharedClient(): OkHttpClient {

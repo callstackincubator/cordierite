@@ -47,6 +47,11 @@ export const createCli = () => {
 
   cli.command("mcp", "Start a stdio MCP server that proxies connected apps' tools to MCP clients.");
 
+  cli
+    .command("doctor <artifact>", "Report (or assert) whether a built .app/.ipa/.apk/.aab contains Cordierite.")
+    .option("--assert-present", "Exit non-zero (and report) if Cordierite is not present in the artifact.")
+    .option("--assert-absent", "Exit non-zero (and report) if Cordierite is present in the artifact.");
+
   // cac only matches a command's first word against argv[0], so "run"/"start"/"stop"/"status"
   // are handled as a sub-action of the single "daemon" command rather than four cac commands.
   cli.command("daemon [action]", "Manage the Cordierite daemon: run, start, stop, or status.");

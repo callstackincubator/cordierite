@@ -2,18 +2,24 @@
 
   CI is implemented with three workflows:
 
-  - `test.yaml` runs JavaScript, Android JVM, and iOS XCTest coverage in parallel.
+  - `test.yaml` runs JavaScript, Android JVM, and iOS XCTest coverage in parallel; the `android`
+    and `ios` jobs each also run the `cordierite doctor` release gate (below) against two builds
+    of the playground, one with Cordierite included and one with it excluded.
   - `lint.yaml` runs lint and package typecheck in parallel; the playground is intentionally excluded from typecheck.
   - `deploy.yaml` gates a production release on both reusable workflows, packages the three tarballs, and publishes them
     through npm trusted publishing.
   - All third-party actions are pinned to full commit SHAs. Dependency and Turbo caches are disabled.
+  - pnpm is resolved via corepack (`corepack enable && corepack prepare --activate`) instead of a separately pinned
+    `pnpm/action-setup` version, so the pnpm version used in CI always matches the root `package.json`'s
+    `packageManager` field. `actions/setup-node` runs first to put Node/corepack on `PATH`, then corepack activates
+    pnpm before any install step.
 
   Verification found:
 
   - The JavaScript test suite passes locally.
   - A cache-free, frozen-lockfile installation builds successfully.
   - Packed CLI and React Native tarballs contain an exact `@cordierite/shared` version rather than `workspace:*`.
-  - Android JVM tests pass with :cordierite_react-native:testDebugUnitTest; no emulator is required.
+  - Android JVM tests pass with :cordierite_react-native:testDebugUnitTest; no emulator is required. The TLS pinning cases (`computeSpkiPin`, `PinningTrustManager`) run under Robolectric inside that same task, since both reach `android.util.Base64`; everything else stays on the plain JVM.
   - 18 iOS XCTest cases pass through the generated Cordierite-Unit-Tests scheme.
   - Linting exists for the React Native package and playground. It passes with 10 warnings.
   - Root typecheck, including the CLI and React Native test suites, passes locally.
@@ -22,11 +28,84 @@
   - GitHub Actions allows every action, does not require SHA pinning, and gives the default GITHUB_TOKEN write access.
   - No protected npm GitHub environment exists.
 
+## Release gate: `cordierite doctor`
+
+Opt-in hardening removes the runtime `debuggable`/`#if DEBUG` check that used to catch a
+production build that forgot to exclude Cordierite via autolinking (docs/tasks/00-overview.md,
+docs/tasks/08-cordierite-doctor.md). `cordierite doctor <artifact> [--assert-present |
+--assert-absent]` (packages/cordierite/README.md, "Release gate") is the replacement: it inspects
+a built `.app`/`.ipa`/`.apk`/`.aab` directly, rather than trusting the config that's supposed to
+have produced it, and exits non-zero when the assertion fails.
+
+  - `0`: the artifact matches the asserted expectation (or no assertion was given).
+  - `3`: inspection succeeded, but the artifact didn't match `--assert-present`/`--assert-absent`.
+  - `66`: the artifact could not be inspected at all (missing `unzip`, unreadable/corrupt
+    artifact) — always a distinct failure from `3`, and never silently treated as "absent" or "the
+    check passed".
+
+CI snippet, run against the production release build right before it's distributed:
+
+```yaml
+- name: Assert Cordierite is excluded from the production build
+  run: npx cordierite doctor ./build/app-release.apk --assert-absent
+- name: Assert Cordierite is excluded from the production build (iOS)
+  run: npx cordierite doctor ./build/MyApp.ipa --assert-absent
+```
+
+**This repo's own CI wires the gate** (`test.yaml`'s `android` job): after the existing
+`testDebugUnitTest`/`assembleDebug` step, it assembles the playground's Android **Release**
+build with Cordierite included (the default) and asserts `--assert-present` against the
+resulting APK; it then applies the documented `package.json` autolinking-exclude recipe and
+drops the `@cordierite/react-native` config plugin entry from `app.json` entirely (matching the
+README's own "skip this whole plugin entry" guidance for a build that shouldn't carry Cordierite
+at all — this also avoids the plugin writing `CLI_PINS`/`TRUST` manifest meta-data that
+`artifact-inspect.ts` would otherwise read as an inclusion signal even with the native module
+correctly excluded), re-prebuilds and reassembles Release, and asserts `--assert-absent`. This is
+the regression test for `docs/tasks/02-fix-autolinking-exclusion.md`'s original failure mode —
+the documented exclusion recipe had never worked — verified against a real built artifact each
+run, not by inspecting the config. The `package.json`/`app.json` mutation happens in the CI job
+only and is never committed.
+
+**The iOS side is wired too** (`test.yaml`'s `ios` job, `docs/tasks/13-ios-ci-doctor-gate.md`):
+after the existing `Cordierite-Native-Tests` XCTest run and the normal simulator build, it asserts
+`--assert-present` against that build's `.app`, then applies the same `package.json`
+autolinking-exclude recipe as the Android job (dropping the `@cordierite/react-native` config
+plugin entry from `app.json` too, for the same Info.plist-key reason described above), re-prebuilds
+and rebuilds for the simulator, and asserts `--assert-absent`. Excluding the package from iOS
+autolinking also disables its codegen, and the playground's `with-native-tests` Expo plugin used to
+hand-add the `Cordierite` pod unconditionally for the XCTest target — hand-adding the pod on top of
+an exclusion fails to compile, since `RCTNativeCordierite.mm` imports a `CordieriteSpec.h` header
+codegen never generates for an excluded module (verified against a real build; see "iOS codegen
+coupling" in `docs/ARCHITECTURE.md` §11 and `docs/tasks/00-overview.md`). `with-native-tests.js` now
+reads the same `package.json` autolinking-exclude signal (via
+`@cordierite/react-native/app.plugin.js`'s own `resolvePackageJsonAutolinkingExclude` helper) and
+skips adding the pod line when it sees the exclude, so the excluded rebuild compiles and produces a
+real `.app` for `doctor` to inspect instead of failing outright. The normal, non-excluded `ios` job
+still runs the `Cordierite-Native-Tests` XCTest target unchanged.
+
+CI invokes the command directly against the built artifact — `node packages/cordierite/bin.js
+doctor <path> --assert-present|--assert-absent` from the repo root, after `pnpm build` — rather
+than through a published `cordierite` binary, matching how the playground's own
+`scripts/cordierite.sh` launcher invokes the CLI from a workspace checkout.
+
 ## Release policy
 
 Publish production releases only for now. The deployment workflow must reject prerelease versions and publish every
 approved release with the `latest` dist-tag. Do not add `next` or `rc` publishing until prereleases are deliberately
 supported.
+
+Update `CHANGELOG.md` by hand as part of the commit that bumps the three package versions for a release. There's no
+changelog-generation tooling (Changesets was evaluated and rejected for this repo — three packages that always
+version in lockstep get little value from a tool built around independent per-package version graphs, and its
+standard CI publish flow doesn't compose with this repo's per-package OIDC environment gates below); a short,
+hand-written entry per release is proportionate for a single-maintainer repo.
+
+0.1.0 through 0.3.1 were published to npm (confirmed via `npm view <pkg> time`) before `deploy.yaml` existed —
+that workflow was only added on 2026-07-17, over three months after the 0.3.1 release commit (`c451163`,
+2026-04-08). Those releases were published by hand. **The current `deploy.yaml` OIDC/trusted-publishing pipeline
+has not yet been used for a real publish**; the 0.4.0 release will be its first. Treat that as an open risk to
+de-risk (e.g. a dry run or careful review of the trusted-publisher configuration) before cutting 0.4.0, not as a
+proven path.
 
  ## Implemented workflows
 

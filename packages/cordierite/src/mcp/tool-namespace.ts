@@ -1,6 +1,6 @@
 /**
  * Builds the effective MCP tool list from live daemon sessions and their tool registries
- * (ARCHITECTURE.md §9, task 08 scope item 2): exactly one live session exposes tools under their
+ * (ARCHITECTURE.md §9): exactly one live session exposes tools under their
  * own names; two or more namespace every tool as `<alias>__<name>` so names never collide across
  * devices.
  *

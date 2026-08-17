@@ -9,23 +9,20 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import java.security.MessageDigest
-import java.security.cert.CertificateFactory
-import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Pure-logic JVM tests for the Android connection layer (task 10). Runs on the plain JVM (no
+ * Pure-logic JVM tests for the Android connection layer. Runs on the plain JVM (no
  * Robolectric, no emulator) via `./gradlew :cordierite_react-native:testDebugUnitTest` from
  * `playground/android` (the autolinked consumer app).
  *
- * Not covered here (documented gap, same category as task 09's iOS commit): the actual socket
- * callback state machine driven through real
- * `okhttp3.WebSocketListener` callbacks, and `PinningTrustManager`/`computeSpkiPin` end-to-end
- * (both ultimately call `android.util.Base64`, which throws "not mocked" on a plain JVM unit-test
- * runtime without Robolectric or a device/emulator). The SPKI test below independently verifies
- * the same SHA-256-over-SPKI-DER math with a standard-library `Base64` encoder instead.
+ * `PinningTrustManager`/`computeSpkiPin` are covered by [CordieriteSpkiPinTest], which runs in the
+ * same task under Robolectric because both reach `android.util.Base64` (a "not mocked" stub on a
+ * plain JVM runtime).
+ *
+ * Not covered anywhere (documented gap, same category as the iOS side): the actual socket callback
+ * state machine driven through real `okhttp3.WebSocketListener` callbacks.
  */
 class CordieriteConnectionManagerTest {
     @Before
@@ -83,6 +80,203 @@ class CordieriteConnectionManagerTest {
         assertFalse(isLocalIpv4Address("1.2.3.4.5"))
     }
 
+    // MARK: - Explicit trust mode (resolveTrustedPins) — docs/tasks/05-explicit-trust-mode.md
+
+    private val embeddedPins = setOf("sha256/embedded-pin")
+    private val linkPinValue = "sha256/link-pin"
+
+    // Table row: trust="pin", non-empty embedded pins -> embedded pins only, linkPin ignored.
+    @Test
+    fun `trust pin with embedded pins uses embedded pins and ignores linkPin`() {
+        for (linkPin in listOf(null, "", linkPinValue)) {
+            assertEquals(
+                TrustedPinsResolution.Configured(embeddedPins),
+                resolveTrustedPins(trust = "pin", embeddedPins = embeddedPins, linkPin = linkPin),
+            )
+        }
+    }
+
+    // Table row: trust="pin", empty embedded pins -> hard error.
+    @Test
+    fun `trust pin with no embedded pins hard-errors regardless of linkPin`() {
+        for (linkPin in listOf(null, "", linkPinValue)) {
+            assertEquals(
+                TrustedPinsResolution.PinTrustRequiresEmbeddedPins,
+                resolveTrustedPins(trust = "pin", embeddedPins = emptySet(), linkPin = linkPin),
+            )
+        }
+    }
+
+    // Table row: trust="link", empty embedded pins -> trust linkPin.
+    @Test
+    fun `trust link with no embedded pins trusts the linkPin`() {
+        assertEquals(
+            TrustedPinsResolution.LinkPin(linkPinValue),
+            resolveTrustedPins(trust = "link", embeddedPins = emptySet(), linkPin = linkPinValue),
+        )
+    }
+
+    // Table row: trust="link", empty embedded pins, no usable linkPin -> error.
+    @Test
+    fun `trust link with no embedded pins and no usable linkPin errors`() {
+        for (linkPin in listOf(null, "")) {
+            assertEquals(
+                TrustedPinsResolution.LinkTrustRequiresLinkPin,
+                resolveTrustedPins(trust = "link", embeddedPins = emptySet(), linkPin = linkPin),
+            )
+        }
+    }
+
+    // Table row: trust="link", non-empty embedded pins -> embedded pins win, linkPin ignored.
+    @Test
+    fun `trust link with embedded pins uses embedded pins and ignores linkPin (config cannot widen trust)`() {
+        for (linkPin in listOf(null, "", linkPinValue)) {
+            assertEquals(
+                TrustedPinsResolution.Configured(embeddedPins),
+                resolveTrustedPins(trust = "link", embeddedPins = embeddedPins, linkPin = linkPin),
+            )
+        }
+    }
+
+    // Missing-key default: no TRUST value, embedded pins present -> behaves like trust="pin".
+    @Test
+    fun `missing trust with embedded pins defaults to pin behavior`() {
+        assertEquals(
+            TrustedPinsResolution.Configured(embeddedPins),
+            resolveTrustedPins(trust = null, embeddedPins = embeddedPins, linkPin = linkPinValue),
+        )
+    }
+
+    // Missing-key default: no TRUST value, no embedded pins -> behaves like trust="link".
+    @Test
+    fun `missing trust with no embedded pins defaults to link behavior`() {
+        assertEquals(
+            TrustedPinsResolution.LinkPin(linkPinValue),
+            resolveTrustedPins(trust = null, embeddedPins = emptySet(), linkPin = linkPinValue),
+        )
+        assertEquals(
+            TrustedPinsResolution.LinkTrustRequiresLinkPin,
+            resolveTrustedPins(trust = null, embeddedPins = emptySet(), linkPin = null),
+        )
+    }
+
+    // Empty-string TRUST must behave exactly like a missing key, not like an invalid value: an
+    // empty manifest value should read as "absent", the same way `parseTrustMetadataValue` treats
+    // it before this function is ever called from `loadConfiguration`.
+    @Test
+    fun `empty string trust behaves like a missing key`() {
+        assertEquals(
+            TrustedPinsResolution.Configured(embeddedPins),
+            resolveTrustedPins(trust = "", embeddedPins = embeddedPins, linkPin = null),
+        )
+        assertEquals(
+            TrustedPinsResolution.LinkPin(linkPinValue),
+            resolveTrustedPins(trust = "", embeddedPins = emptySet(), linkPin = linkPinValue),
+        )
+        assertEquals(
+            TrustedPinsResolution.LinkTrustRequiresLinkPin,
+            resolveTrustedPins(trust = "", embeddedPins = emptySet(), linkPin = null),
+        )
+    }
+
+    // An unrecognized (but non-empty) trust string must hard-error, never silently fail *open*
+    // into the missing-key default's link-TOFU behavior — a typo like "pinn" or "Pin" must not be
+    // treated as weaker than what the author actually wrote.
+    @Test
+    fun `unrecognized non-empty trust value is a hard error, even when embedded pins are absent`() {
+        for (badTrust in listOf("PIN", "Link", "pinn", "none", "disabled")) {
+            assertEquals(
+                TrustedPinsResolution.InvalidTrustValue(badTrust),
+                resolveTrustedPins(trust = badTrust, embeddedPins = emptySet(), linkPin = linkPinValue),
+            )
+        }
+    }
+
+    // Table rows collapse once embedded pins are present: they win regardless of what `trust`
+    // says, even a garbage value — `trust` is simply irrelevant when pins are already embedded.
+    @Test
+    fun `unrecognized trust value is irrelevant once embedded pins are present`() {
+        assertEquals(
+            TrustedPinsResolution.Configured(embeddedPins),
+            resolveTrustedPins(trust = "everything", embeddedPins = embeddedPins, linkPin = null),
+        )
+    }
+
+    // MARK: - TRUST manifest meta-data parsing (parseTrustMetadataValue)
+
+    @Test
+    fun `absent TRUST metadata parses to null`() {
+        assertNull(parseTrustMetadataValue(null))
+    }
+
+    @Test
+    fun `String TRUST metadata is honored`() {
+        assertEquals("link", parseTrustMetadataValue("link"))
+        assertEquals("pin", parseTrustMetadataValue("pin"))
+    }
+
+    @Test
+    fun `empty String TRUST metadata parses to null`() {
+        assertNull(parseTrustMetadataValue(""))
+    }
+
+    @Test
+    fun `non-String TRUST metadata parses to null instead of throwing`() {
+        assertNull(parseTrustMetadataValue(true))
+        assertNull(parseTrustMetadataValue(42))
+    }
+
+    // MARK: - getConstants()'s build config (docs/tasks/07-native-module-constants.md)
+
+    // Every table row from the resolveTrustedPins matrix above must map to a build config that
+    // agrees on `hasEmbeddedPins` with whether a real connect() would have used embedded pins, and
+    // on `trust` with the effective bucket a real connect() would have resolved to.
+    @Test
+    fun `build config reports pin and hasEmbeddedPins when embedded pins win`() {
+        assertEquals(
+            CordieriteBuildConfig(trust = "pin", hasEmbeddedPins = true, allowPrivateLanOnly = true),
+            cordieriteBuildConfig(TrustedPinsResolution.Configured(embeddedPins), allowPrivateLanOnly = true),
+        )
+    }
+
+    @Test
+    fun `build config reports link and no embedded pins when trusting the linkPin`() {
+        assertEquals(
+            CordieriteBuildConfig(trust = "link", hasEmbeddedPins = false, allowPrivateLanOnly = false),
+            cordieriteBuildConfig(TrustedPinsResolution.LinkPin(linkPinValue), allowPrivateLanOnly = false),
+        )
+    }
+
+    @Test
+    fun `build config reports pin and no embedded pins for the config-time error case`() {
+        // trust="pin" with no embedded pins: a real connect() would hard-error, but getConstants()
+        // must not throw -- it still reports the config's effective intent (trust="pin") plus the
+        // honest hasEmbeddedPins=false that explains *why* a connect() would fail.
+        assertEquals(
+            CordieriteBuildConfig(trust = "pin", hasEmbeddedPins = false, allowPrivateLanOnly = true),
+            cordieriteBuildConfig(TrustedPinsResolution.PinTrustRequiresEmbeddedPins, allowPrivateLanOnly = true),
+        )
+    }
+
+    @Test
+    fun `build config reports link and no embedded pins when no linkPin is available`() {
+        // No connect attempt is in flight when JS asks for the build config, so there is never a
+        // real linkPin to pass resolveTrustedPins -- trust="link" with no embedded pins always
+        // resolves to this case here, never LinkPin, but the reported trust bucket is unaffected.
+        assertEquals(
+            CordieriteBuildConfig(trust = "link", hasEmbeddedPins = false, allowPrivateLanOnly = true),
+            cordieriteBuildConfig(TrustedPinsResolution.LinkTrustRequiresLinkPin, allowPrivateLanOnly = true),
+        )
+    }
+
+    @Test
+    fun `build config surfaces the raw invalid trust value instead of coercing it`() {
+        assertEquals(
+            CordieriteBuildConfig(trust = "pinn", hasEmbeddedPins = false, allowPrivateLanOnly = true),
+            cordieriteBuildConfig(TrustedPinsResolution.InvalidTrustValue("pinn"), allowPrivateLanOnly = true),
+        )
+    }
+
     // MARK: - Protocol v2 first-frame shape (item 5)
 
     private fun connectOptions(
@@ -98,6 +292,7 @@ class CordieriteConnectionManagerTest {
         deviceManufacturer = null,
         deviceModel = null,
         deviceOs = null,
+        linkPin = null,
     )
 
     private val defaultDeviceFields =
@@ -441,56 +636,7 @@ class CordieriteConnectionManagerTest {
         assertEquals(2, reparsed.getInt("protocol_version"))
     }
 
-    // MARK: - SPKI pin math parity with packages/cordierite/src/spki-pin.ts and iOS's spkiPin(for:)
-
-    /**
-     * Same fixture certificate (DER, base64) as
-     * `packages/react-native/ios/CordieriteTests/CordieriteConnectionManagerTests.swift`, generated
-     * once with:
-     *
-     *   openssl ecparam -name prime256v1 -genkey -noout -out key.pem
-     *   openssl req -new -x509 -key key.pem -days 3650 -out cert.pem -subj "/CN=cordierite-test-fixture"
-     *
-     * Inlined rather than committed as a `.pem` fixture file per this repo's rule that no key
-     * material — including throwaway test fixtures — is ever committed as a `.pem` file
-     * (`git ls-files "*.pem"` must stay empty). Only the public certificate is needed; the private
-     * key was discarded after generating the expected pin below.
-     */
-    private val fixtureCertificateDerBase64 =
-        """
-        MIIBmTCCAT+gAwIBAgIULhk1FL4F1t1m4VB8ZocEJJk6FSAwCgYIKoZIzj0EAwIw
-        IjEgMB4GA1UEAwwXY29yZGllcml0ZS10ZXN0LWZpeHR1cmUwHhcNMjYwNzE1MTI1
-        NTM1WhcNMzYwNzEyMTI1NTM1WjAiMSAwHgYDVQQDDBdjb3JkaWVyaXRlLXRlc3Qt
-        Zml4dHVyZTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCdrnHdxoZyNKqLxncue
-        /z1uh6STs1TnZI643d5kaELACPbJYhQtsDvMauVa5G6LOcAyfvfoboLEUbRhR2wM
-        e26jUzBRMB0GA1UdDgQWBBTDnPXrKTIWOcLw3w3PWtpV2fHnFjAfBgNVHSMEGDAW
-        gBTDnPXrKTIWOcLw3w3PWtpV2fHnFjAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49
-        BAMCA0gAMEUCIEHI+FcyHWubSC/hTHLSgyioRwNdiaQXOJyElnVT6fjnAiEAsNWW
-        oTlKSgWIcpT15v8orzlc8BOam0+LL6JUP15ESos=
-        """.trimIndent().replace("\n", "")
-
-    /**
-     * Independently derived (Node.js) from the same certificate's key material using
-     * `packages/cordierite/src/spki-pin.ts`'s `createSpkiPin` — must match for the same leaf
-     * certificate (and does match the iOS fixture test's `expectedPin`).
-     */
-    private val expectedPin = "sha256/nq5dKPoAJatciRzJQExHFls6q7YpSN2YP49Jmd+++Io="
-
-    @Test
-    fun `SPKI digest over the fixture certificate matches the TypeScript and iOS implementations`() {
-        val der = Base64.getDecoder().decode(fixtureCertificateDerBase64)
-        val certificate =
-            CertificateFactory
-                .getInstance("X.509")
-                .generateCertificate(der.inputStream()) as java.security.cert.X509Certificate
-
-        // Same algorithm as `computeSpkiPin`/`PinningTrustManager` (SHA-256 over
-        // `publicKey.encoded`, i.e. the SPKI DER), encoded with the JDK's standard Base64 instead
-        // of `android.util.Base64` (unavailable on a plain JVM unit-test runtime) — the two
-        // encoders produce identical output for this un-padded-newline, standard-alphabet case.
-        val digest = MessageDigest.getInstance("SHA-256").digest(certificate.publicKey.encoded)
-        val pin = "sha256/${Base64.getEncoder().encodeToString(digest)}"
-
-        assertEquals(expectedPin, pin)
-    }
+    // SPKI pin parity with packages/cordierite/src/spki-pin.ts and iOS's spkiPin(for:), plus the
+    // PinningTrustManager decision path, live in CordieriteSpkiPinTest — they call the shipped
+    // `computeSpkiPin`, which needs Robolectric's android.util.Base64.
 }

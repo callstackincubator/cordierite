@@ -140,11 +140,11 @@ export type SessionManagerOptions = {
   eventBus: EventBus;
   clock?: Clock;
   timers?: TimerFns;
-  /** Routes a validated `tool_result`/`tool_error`/`tool_call_progress` frame (task 05's
-   * `calls.ts` correlates it); wired by the composition root once both modules exist. */
+  /** Routes a validated `tool_result`/`tool_error`/`tool_call_progress` frame (`calls.ts`
+   * correlates it); wired by the composition root once both modules exist. */
   onToolFrame?: (message: ToolResultMessage | ToolErrorMessage | ToolCallProgressMessage) => void;
   /** Routes a validated app-side `event` frame; the composition root forwards it to the event bus
-   * as `app_event` (ARCHITECTURE.md §7/task 05 scope item 5). */
+   * as `app_event` (ARCHITECTURE.md §7). */
   onAppEvent?: (sessionId: string, alias: string, message: EventMessage) => void;
 };
 
@@ -157,8 +157,10 @@ export type LinkCreateResult = {
 
 export type SessionManager = {
   /** `addressOverride` forces the address encoded into this one link's bootstrap payload (task
-   * 07's emulator/simulator fast path); see `links.ts`'s `PendingLinkRegistry.create`. */
-  createLink: (ttlSeconds?: number, addressOverride?: string) => LinkCreateResult;
+   * 07's emulator/simulator fast path); see `links.ts`'s `PendingLinkRegistry.create`. Omits
+   * `LinkCreateResult.pin` — the session manager has no `TlsManager` handle, so the RPC handler
+   * (`daemon.ts`) attaches the current SPKI pin itself before returning to the caller. */
+  createLink: (ttlSeconds?: number, addressOverride?: string) => Omit<LinkCreateResult, "pin">;
   /** First message on a fresh socket. Returns the claimed sessionId, or `null` after closing the socket. */
   handleClaim: (socket: WebSocket, message: SessionClaimMessage) => string | null;
   /** First message on a resume socket. Returns the resumed sessionId, or `null` after closing the socket. */
@@ -168,7 +170,7 @@ export type SessionManager = {
   list: () => SessionSummary[];
   describe: (selector?: string) => SessionSummary;
   revoke: (selector?: string) => void;
-  /** Resolves a selector for the `tools.*` RPC surface (task 05): same selector rules as
+  /** Resolves a selector for the `tools.*` RPC surface: same selector rules as
    * `describe`/`revoke` (no_session/ambiguous_session/unknown_session), but returns the pieces
    * `tools.list`/`tools.call` need directly rather than a wire-shaped summary. */
   resolveForTools: (selector?: string) => {
@@ -339,7 +341,7 @@ export const createSessionManager = (options: SessionManagerOptions): SessionMan
     }
   }, options.keepaliveIntervalSeconds * 1000);
 
-  const createLink = (ttlSeconds?: number, addressOverride?: string): LinkCreateResult => {
+  const createLink = (ttlSeconds?: number, addressOverride?: string): Omit<LinkCreateResult, "pin"> => {
     const { link, deepLinkPayload, endpoint } = pendingLinks.create(
       ttlSeconds ?? options.linkTtlSeconds,
       addressOverride,

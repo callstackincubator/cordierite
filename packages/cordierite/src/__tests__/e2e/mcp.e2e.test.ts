@@ -1,7 +1,7 @@
 /**
- * Task 16 scenario: MCP. An MCP client over stdio against a real `cordierite mcp` *subprocess*
- * (consolidating `mcp-server.integration.test.ts`'s in-process coverage at the subprocess level, as
- * the task calls for): list/call/list_changed with the fake app.
+ * E2E scenario: MCP. An MCP client over stdio against a real `cordierite mcp` *subprocess*
+ * (consolidating `mcp-server.integration.test.ts`'s in-process coverage at the subprocess level):
+ * list/call/list_changed with the fake app.
  */
 
 import { afterEach, describe, expect, test } from "vitest";

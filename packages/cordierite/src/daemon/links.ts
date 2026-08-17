@@ -41,7 +41,7 @@ export type PendingLinkRegistryOptions = {
 
 export type PendingLinkRegistry = {
   /** `addressOverride` forces the endpoint address encoded into this one link's bootstrap payload
-   * (task 07's emulator/simulator fast path: `127.0.0.1`), leaving the detected endpoint used by
+   * (the emulator/simulator fast path: `127.0.0.1`), leaving the detected endpoint used by
    * every other link unaffected. */
   create: (ttlSeconds: number, addressOverride?: string) => CreatedLink;
   /** Looks up a pending link without consuming it (used to distinguish "unknown" from "already claimed"). */

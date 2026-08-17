@@ -46,8 +46,9 @@ exports[`output rendering > link human output includes the deep link and expiry 
 "Link Created
 Link
   Session    LinkOutputTestSess1
-  Deep link  playground:///?cordierite=abc123
+  Deep link  playground:///?cordierite=abc123&pin=sha256%2Fexample
   Endpoint   wss://192.168.1.10:8443
+  Pin        sha256/example
   Expires    2026-03-17T10:00:30.000Z
 
 Meta

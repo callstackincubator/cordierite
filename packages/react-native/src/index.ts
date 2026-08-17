@@ -1,6 +1,7 @@
 import type { ToolDescriptor } from "@cordierite/shared";
 
 import type {
+  CordieriteBuildConfig,
   CordieriteClientState,
   CordieriteConnectInput,
   CordieriteListenerKind,
@@ -10,6 +11,8 @@ import type {
 import {
   cordieriteNativeModule,
   cordieriteNativeResumeLeaseStore,
+  getCordieriteNativeBuildConfig,
+  isCordieriteNativeModuleAvailable,
 } from "./CordieriteModule";
 import { parseBootstrapPayload, parseBootstrapUrl } from "./bootstrap";
 import { createCordieriteClient } from "./client";
@@ -18,6 +21,8 @@ import {
   installCordieriteDeepLinkBootstrap as installDeepLinkBootstrap,
   type InstallCordieriteDeepLinkBootstrapOptions,
 } from "./deep-link-install";
+import { logger } from "./logger";
+import * as noop from "./noop";
 import { createUseCordieriteTool } from "./useCordieriteTool";
 
 export * from "./Cordierite.types";
@@ -31,15 +36,50 @@ export {
 export { cordieriteNativeModule };
 export type { InstallCordieriteDeepLinkBootstrapOptions } from "./deep-link-install";
 export type { CordierePublicApi, CordieriteSubscription } from "./public-api";
+export type { UseCordieriteToolOptions } from "./useCordieriteTool";
 
 let cordieriteClientInstance: ReturnType<typeof createCordieriteClient> | null =
   null;
 
 /**
- * Constructing a `CordieriteClient` (task 11) subscribes native event listeners immediately —
+ * Whether Cordierite's native module exists in a build at all is decided entirely by
+ * autolinking (see `docs/tasks/00-overview.md`'s "Inclusion" contract), not by any runtime
+ * check here. When it is absent — Expo Go, a JS-only bundle, or the app excluded Cordierite
+ * from autolinking — `TurboModuleRegistry` never finds it, and every exported function below
+ * degrades to the exact `./noop` entry's behavior instead of the real client's — see
+ * `noopIfNativeUnavailable`. Logged exactly once per process, not once per call, so an app that
+ * calls these functions in a loop or on every render is not spammed.
+ */
+let warnedNativeModuleInert = false;
+const warnNativeModuleInertOnce = (): void => {
+  if (warnedNativeModuleInert) {
+    return;
+  }
+  warnedNativeModuleInert = true;
+  logger.warn(
+    "Cordierite: the native module is not available in this build (Expo Go/JS-only, or " +
+      "excluded via autolinking). The public API is inert, matching the `./noop` entry.",
+  );
+};
+
+/** Runs `whenInert()` (a `./noop` call) instead of `whenAvailable()` (the real client call) once
+ * the native module has been found unavailable, warning exactly once the first time this happens. */
+function noopIfNativeUnavailable<T>(
+  whenAvailable: () => T,
+  whenInert: () => T,
+): T {
+  if (!isCordieriteNativeModuleAvailable()) {
+    warnNativeModuleInertOnce();
+    return whenInert();
+  }
+  return whenAvailable();
+}
+
+/**
+ * Constructing a `CordieriteClient` subscribes native event listeners immediately —
  * harmless when the native module is unavailable (`CordieriteModule.ts`'s `addListener` never
  * throws) but still real work. Deferring the construction itself until first use keeps this root
- * entry genuinely side-effect-free at import time (ARCHITECTURE.md §11 / task 12), not merely
+ * entry genuinely side-effect-free at import time (ARCHITECTURE.md §11), not merely
  * non-throwing.
  */
 const getCordieriteClientInstance = (): ReturnType<
@@ -73,7 +113,7 @@ export const cordieriteClient = new Proxy(
     has(_target, property) {
       return Reflect.has(getCordieriteClientInstance(), property);
     },
-  }
+  },
 );
 
 /**
@@ -83,9 +123,12 @@ export const cordieriteClient = new Proxy(
  * `deep-link-install.ts`).
  */
 export function installCordieriteDeepLinkBootstrap(
-  options?: InstallCordieriteDeepLinkBootstrapOptions
+  options?: InstallCordieriteDeepLinkBootstrapOptions,
 ): void {
-  installDeepLinkBootstrap(cordieriteClient, options);
+  noopIfNativeUnavailable(
+    () => installDeepLinkBootstrap(cordieriteClient, options),
+    () => noop.installCordieriteDeepLinkBootstrap(options),
+  );
 }
 
 /**
@@ -96,18 +139,22 @@ export function installCordieriteDeepLinkBootstrap(
  */
 export function registerTool<
   TInputSchema extends
-    | import("@cordierite/shared").StandardSchemaV1
-    | undefined,
+    import("@cordierite/shared").StandardSchemaV1 | undefined,
   TOutputSchema extends
-    | import("@cordierite/shared").StandardSchemaV1
-    | undefined
+    import("@cordierite/shared").StandardSchemaV1 | undefined,
 >(registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>) {
-  return cordieriteClient.registerTool(registration);
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.registerTool(registration),
+    () => noop.registerTool(registration),
+  );
 }
 
 /** Emits an `event` frame on the default client while active; drops (dev warning) otherwise. */
 export function postEvent(name: string, payload?: unknown): Promise<void> {
-  return cordieriteClient.postEvent(name, payload);
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.postEvent(name, payload),
+    () => noop.postEvent(name, payload),
+  );
 }
 
 /**
@@ -116,7 +163,10 @@ export function postEvent(name: string, payload?: unknown): Promise<void> {
  * a live tool list in app UI instead of hand-maintaining a duplicate array.
  */
 export function getRegisteredTools(): ToolDescriptor[] {
-  return cordieriteClient.getRegisteredTools();
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.getRegisteredTools(),
+    () => noop.getRegisteredTools(),
+  );
 }
 
 /**
@@ -126,14 +176,20 @@ export function getRegisteredTools(): ToolDescriptor[] {
  */
 export function addCordieriteListener<Kind extends CordieriteListenerKind>(
   kind: Kind,
-  callback: CordieriteUnifiedListenerMap[Kind]
+  callback: CordieriteUnifiedListenerMap[Kind],
 ) {
-  return cordieriteClient.addCordieriteListener(kind, callback);
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.addCordieriteListener(kind, callback),
+    () => noop.addCordieriteListener(kind, callback),
+  );
 }
 
 /** Unified client state on the default client: `idle | connecting | active | reconnecting | closed`. */
 export function getCordieriteState(): CordieriteClientState {
-  return cordieriteClient.getClientState();
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.getClientState(),
+    () => noop.getCordieriteState(),
+  );
 }
 
 /**
@@ -143,11 +199,30 @@ export function getCordieriteState(): CordieriteClientState {
  * flows (custom deep-link handling, QR scanning, tests).
  */
 export function connect(input: CordieriteConnectInput): Promise<void> {
-  return cordieriteClient.connect(input);
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.connect(input),
+    () => noop.connect(input),
+  );
+}
+
+/**
+ * Effective trust/pin config this build was compiled with — read from the TurboModule's
+ * `getConstants()`, the exact same manifest/plist source `resolveTrustedPins` (task 05) uses on
+ * both platforms, never a second parse. Diagnostics only: this never enables dead-code elimination
+ * (bundling runs before native config is known) — see `docs/tasks/07-native-module-constants.md`.
+ * On the `./noop` entry this reports the documented "absent" shape instead of a real trust mode.
+ */
+export function getCordieriteBuildConfig(): CordieriteBuildConfig {
+  return noopIfNativeUnavailable(
+    () => getCordieriteNativeBuildConfig(),
+    () => noop.getCordieriteBuildConfig(),
+  );
 }
 
 /**
  * `useEffect` wrapper around `registerTool`: registers on mount and whenever `deps` changes,
  * disposing the previous registration first (identity-safe — see `registerTool`'s doc comment).
+ * `options.enabled` (default `true`) gates registration without breaking the rules of hooks —
+ * see the README's "Define tools in app startup code" section.
  */
 export const useCordieriteTool = createUseCordieriteTool(registerTool);

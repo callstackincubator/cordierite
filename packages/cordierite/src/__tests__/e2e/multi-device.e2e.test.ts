@@ -1,5 +1,5 @@
 /**
- * Task 16 scenario: multi-device.
+ * E2E scenario: multi-device.
  *
  * Two fake clients get distinct aliases; `invoke` without a selector errors `ambiguous_session`,
  * with an alias it works; `revoke` on one leaves the other untouched (ARCHITECTURE.md §1 goal 3:

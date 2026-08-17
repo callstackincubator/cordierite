@@ -94,6 +94,15 @@ export type LinkCreateResult = {
   endpoint: AgentEndpoint;
   /** Unix seconds. */
   expiresAt: number;
+  /**
+   * The daemon's SPKI pin (`sha256/<44-char-base64>`, same value as `daemon.status`'s
+   * `pinnedKeys[0]` / `cordierite keygen`'s output), composed by callers into the deep link's
+   * separate `pin` query param, alongside the existing `cordierite` bootstrap blob (see
+   * ARCHITECTURE.md §8 for that blob's binary layout, unchanged here). Old apps must keep
+   * ignoring this param. Native clients only trust it when built in debug mode with no
+   * build-time `cliPins` configured; embedded pins always win.
+   */
+  pin: string;
 };
 
 // --- sessions.list / sessions.describe / sessions.revoke ---

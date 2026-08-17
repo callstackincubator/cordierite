@@ -10,11 +10,9 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.aitwar.playground"
-    },
-    "autolinking": {
-      "ios": {
-        "exclude": ["@cordierite/react-native"]
+      "bundleIdentifier": "com.aitwar.playground",
+      "infoPlist": {
+        "CFBundleDisplayName": "Cordierite"
       }
     },
     "android": {
@@ -41,9 +39,11 @@
             "sha256/jMvNOyMBXvRaZlyrje70/867kKkSA/qTlu30xCrTk4s="
           ],
           "allowPrivateLanOnly": true,
-          "enableNativeTests": true
+          "trust": "pin"
         }
       ],
+      "./plugins/with-native-tests",
+      "./plugins/with-app-display-name",
       [
         "expo-splash-screen",
         {

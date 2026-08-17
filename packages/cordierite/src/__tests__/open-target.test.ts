@@ -1,5 +1,5 @@
 /**
- * Unit tests for `cli/open-target.ts` (task 07 acceptance matrix), all driven through the
+ * Unit tests for `cli/open-target.ts`, covering its acceptance matrix and all driven through the
  * injectable `ExecFn` seam — no real `adb`/`xcrun` process is ever spawned.
  */
 

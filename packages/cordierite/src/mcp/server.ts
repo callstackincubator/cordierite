@@ -3,7 +3,7 @@
  * surface (`rpc/client.ts`, same auto-spawning client the CLI uses) onto MCP's `tools/list`,
  * `tools/call`, `notifications/tools/list_changed`, progress notifications, and one resource
  * (`cordierite://sessions`). All logging here goes to stderr only — stdout is reserved for the MCP
- * transport's protocol frames (task 08 scope item 1).
+ * transport's protocol frames.
  *
  * One persistent daemon connection (`stream`) is used for everything except progress-correlated
  * `tools.call`s, which get their own short-lived connection (see `callProxiedTool` below) so the
@@ -73,7 +73,7 @@ const toolSuccessContent = (result: unknown): CallToolResult => {
 };
 
 /** Errors from a tool call — proxied device tool or built-in management tool alike — become MCP
- * tool-error *content*, never a thrown protocol-level error (task 08 scope item 3): the preserved
+ * tool-error *content*, never a thrown protocol-level error: the preserved
  * `type` and `message` are put in the text so an agent reading the result can branch on them. */
 const toolErrorContent = (type: string, message: string, details?: unknown): CallToolResult => {
   const suffix = details !== undefined ? ` ${JSON.stringify(details)}` : "";

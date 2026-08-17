@@ -1,5 +1,5 @@
 /**
- * Task 16 scenario: hostility — "the v1 killer scenario." While a session is ACTIVE, the daemon is
+ * E2E scenario: hostility — "the v1 killer scenario." While a session is ACTIVE, the daemon is
  * hit with a raw TLS connect/disconnect, an oversized (300 KiB) frame, a binary frame, garbage
  * JSON, and a wrong-token claim. None of it may crash the daemon (v1's exact defect: an unhandled
  * socket `'error'` took the whole process down); the ACTIVE session must keep invoking successfully

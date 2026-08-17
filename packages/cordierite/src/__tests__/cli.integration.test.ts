@@ -48,7 +48,7 @@ describe("CLI integration", () => {
       .map((line) => line.trim().split(/\s{2,}/u)[0]);
 
     // Exactly the v2 command surface (ARCHITECTURE.md §10, plus `mcp` from §9) — v1's
-    // `host`/`connect`/`session` commands (removed in task 01) must never resurface here.
+    // `host`/`connect`/`session` commands must never resurface here.
     expect(new Set(commandNames)).toEqual(
       new Set([
         "keygen",
@@ -59,6 +59,7 @@ describe("CLI integration", () => {
         "events [selector]",
         "revoke [selector]",
         "mcp",
+        "doctor <artifact>",
         "daemon [action]",
       ]),
     );
@@ -90,6 +91,10 @@ describe("CLI integration", () => {
 
     const eventsHelp = helpFor("events");
     expect(eventsHelp).toContain("--follow");
+
+    const doctorHelp = helpFor("doctor");
+    expect(doctorHelp).toContain("--assert-present");
+    expect(doctorHelp).toContain("--assert-absent");
   });
 
   test("version is available from the binary entrypoint", () => {

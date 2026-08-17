@@ -297,7 +297,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
       options.detectAddress ??
       ((): ReturnType<typeof detectAdvertisedAddress> => detectAdvertisedAddress({ override: config.advertisedIp }));
 
-    const tls = await createTlsManager({ keyPath: config.keyPath, detectAddress });
+    const tls = await createTlsManager({ keyPath: config.keyPath, detectAddress, warn: options.warn });
 
     sessionManager = createSessionManager({
       graceSeconds: config.graceSeconds,
@@ -400,7 +400,10 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
             activeListener.applyTls(nextMaterial);
           }
 
-          return activeSessionManager.createLink(ttlSeconds, addressOverride);
+          // `tls.refresh()` just ran above, so `pinnedKeys()[0]` reflects the material this link's
+          // endpoint will actually serve (opt-in hardening dev-mode: the CLI composes this into the
+          // deep link's `pin` query param — see `LinkCreateResult.pin`).
+          return { ...activeSessionManager.createLink(ttlSeconds, addressOverride), pin: tls.pinnedKeys()[0]! };
         },
         [RPC_METHODS.sessionsList]: (): SessionsListResult => {
           return activeSessionManager.list();
@@ -451,7 +454,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           const tool = resolved.registry.get(name);
 
           if (!tool) {
-            // Deliberately no frame is sent to the app for an unknown tool (task 05 scope item 3).
+            // Deliberately no frame is sent to the app for an unknown tool.
             writeAudit("error", "tool_not_found");
             throw new RpcApplicationError("tool_not_found", `Tool "${name}" is not registered.`);
           }
@@ -459,7 +462,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           const policyDecision = evaluatePolicy(tool, { alias: resolved.alias }, config.policy);
 
           if (policyDecision === "deny") {
-            // Denied → no frame reaches the app, and the call never starts (task 13 scope item 1).
+            // Denied → no frame reaches the app, and the call never starts.
             activeEventBus.emit({
               kind: "tool_call_finished",
               sessionId: resolved.sessionId,
@@ -481,7 +484,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           // `callId` is available synchronously (before the app has answered) precisely so it can
           // be exposed to the RPC caller and stamped on every event in this call's lifecycle — the
           // MCP server correlates its own in-flight `tools.call` against `tool_call_progress`
-          // notifications by this id, unambiguous under concurrent calls (task 08).
+          // notifications by this id, unambiguous under concurrent calls.
           const { callId, result: callResult } = activeCallsManager.call(session, name, args, timeoutMs);
 
           activeEventBus.emit({

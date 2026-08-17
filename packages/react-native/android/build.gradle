@@ -34,6 +34,11 @@ apply plugin: "kotlin-android"
 group = "com.callstackincubator.cordierite"
 version = "0.4.0-rc.1" // keep in sync with package.json
 
+// Only configured when autolinking has already decided to link Cordierite, so the line appearing
+// at all is the proof. Ungated: a release build carrying Cordierite by mistake is the failure
+// worth catching, and this is grep-able in CI output. iOS prints the same line from the podspec.
+logger.lifecycle("[cordierite] native module INCLUDED in this build (v${version})")
+
 android {
   namespace "com.callstackincubator.cordierite"
   compileSdk safeExtGet("compileSdkVersion", 35)
@@ -44,6 +49,11 @@ android {
     versionCode 1
     versionName "0.4.0-rc.1" // keep in sync with package.json
     buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
+    // Ships a keep rule for CordieriteNativeMarker (see consumer-rules.pro) to every consuming app's
+    // R8/ProGuard pass, so `cordierite doctor` (docs/tasks/10-android-detection-keep-rule.md) has a
+    // detection anchor that survives minification even with no config plugin and no app-authored
+    // keep rules for this package.
+    consumerProguardFiles "consumer-rules.pro"
   }
 
   buildFeatures {
@@ -52,6 +62,15 @@ android {
 
   lintOptions {
     abortOnError false
+  }
+
+  testOptions {
+    unitTests {
+      // Required by Robolectric, which backs CordieriteSpkiPinTest (the only test class that needs
+      // a real android.util.Base64 / android.jar runtime). Every other unit test runs on the plain
+      // JVM and is unaffected.
+      includeAndroidResources = true
+    }
   }
 
   compileOptions {
@@ -83,6 +102,10 @@ dependencies {
   // Real org.json implementation: the stub in android.jar throws "not mocked" for every method at
   // unit-test runtime (same reason expo-modules-core's own tests depend on this).
   testImplementation "org.json:json:20180813"
+  // Robolectric supplies a real android.util.Base64 (and the rest of android.jar) so
+  // CordieriteSpkiPinTest can call the shipped `computeSpkiPin`/`PinningTrustManager` instead of
+  // re-deriving the digest math. Still no emulator: it runs in the same JVM test task.
+  testImplementation "org.robolectric:robolectric:4.16"
 }
 
 tasks.register("assertNewArchitectureEnabled") {

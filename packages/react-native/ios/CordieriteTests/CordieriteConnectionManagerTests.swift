@@ -471,6 +471,205 @@ final class CordieriteConnectionManagerTests: XCTestCase {
     XCTAssertEqual(options.resumeToken, "resume-token-value")
   }
 
+  // MARK: - Explicit trust mode (resolveTrustedPins) — docs/tasks/05-explicit-trust-mode.md
+
+  private let embeddedPins = ["sha256/embedded-pin"]
+  private let linkPinValue = "sha256/link-pin"
+
+  // Table row: trust="pin", non-empty embedded pins -> embedded pins only, linkPin ignored.
+  func testTrustPinWithEmbeddedPinsUsesEmbeddedPinsAndIgnoresLinkPin() {
+    for linkPin in [nil, "", linkPinValue] {
+      XCTAssertEqual(
+        resolveTrustedPins(trust: "pin", embeddedPins: embeddedPins, linkPin: linkPin),
+        .configured(Set(embeddedPins)),
+        "linkPin=\(linkPin ?? "nil")"
+      )
+    }
+  }
+
+  // Table row: trust="pin", empty embedded pins -> hard error.
+  func testTrustPinWithNoEmbeddedPinsHardErrorsRegardlessOfLinkPin() {
+    for linkPin in [nil, "", linkPinValue] {
+      XCTAssertEqual(
+        resolveTrustedPins(trust: "pin", embeddedPins: [], linkPin: linkPin),
+        .pinTrustRequiresEmbeddedPins,
+        "linkPin=\(linkPin ?? "nil")"
+      )
+    }
+  }
+
+  // Table row: trust="link", empty embedded pins -> trust linkPin.
+  func testTrustLinkWithNoEmbeddedPinsTrustsTheLinkPin() {
+    XCTAssertEqual(
+      resolveTrustedPins(trust: "link", embeddedPins: [], linkPin: linkPinValue),
+      .linkPin(linkPinValue)
+    )
+  }
+
+  // Table row: trust="link", empty embedded pins, no usable linkPin -> error.
+  func testTrustLinkWithNoEmbeddedPinsAndNoUsableLinkPinErrors() {
+    for linkPin in [nil, ""] {
+      XCTAssertEqual(
+        resolveTrustedPins(trust: "link", embeddedPins: [], linkPin: linkPin),
+        .linkTrustRequiresLinkPin,
+        "linkPin=\(linkPin ?? "nil")"
+      )
+    }
+  }
+
+  // Table row: trust="link", non-empty embedded pins -> embedded pins win, linkPin ignored.
+  func testTrustLinkWithEmbeddedPinsUsesEmbeddedPinsAndIgnoresLinkPin() {
+    for linkPin in [nil, "", linkPinValue] {
+      XCTAssertEqual(
+        resolveTrustedPins(trust: "link", embeddedPins: embeddedPins, linkPin: linkPin),
+        .configured(Set(embeddedPins)),
+        "linkPin=\(linkPin ?? "nil")"
+      )
+    }
+  }
+
+  // Missing-key default: no trust value, embedded pins present -> behaves like trust="pin".
+  func testMissingTrustWithEmbeddedPinsDefaultsToPinBehavior() {
+    XCTAssertEqual(
+      resolveTrustedPins(trust: nil, embeddedPins: embeddedPins, linkPin: linkPinValue),
+      .configured(Set(embeddedPins))
+    )
+  }
+
+  // Missing-key default: no trust value, no embedded pins -> behaves like trust="link".
+  func testMissingTrustWithNoEmbeddedPinsDefaultsToLinkBehavior() {
+    XCTAssertEqual(
+      resolveTrustedPins(trust: nil, embeddedPins: [], linkPin: linkPinValue),
+      .linkPin(linkPinValue)
+    )
+    XCTAssertEqual(
+      resolveTrustedPins(trust: nil, embeddedPins: [], linkPin: nil),
+      .linkTrustRequiresLinkPin
+    )
+  }
+
+  // Empty-string trust must behave exactly like a missing key, not like an invalid value: an
+  // empty plist value should read as "absent" on iOS the same way Android's
+  // `parseTrustMetadataValue` normalizes it before `loadConfiguration` ever calls in.
+  func testEmptyStringTrustBehavesLikeAMissingKey() {
+    XCTAssertEqual(
+      resolveTrustedPins(trust: "", embeddedPins: embeddedPins, linkPin: nil),
+      .configured(Set(embeddedPins))
+    )
+    XCTAssertEqual(
+      resolveTrustedPins(trust: "", embeddedPins: [], linkPin: linkPinValue),
+      .linkPin(linkPinValue)
+    )
+    XCTAssertEqual(
+      resolveTrustedPins(trust: "", embeddedPins: [], linkPin: nil),
+      .linkTrustRequiresLinkPin
+    )
+  }
+
+  // An unrecognized (but non-empty) trust string must hard-error, never silently fail *open* into
+  // the missing-key default's link-TOFU behavior — a typo like "pinn" or "Pin" must not be
+  // treated as weaker than what the author actually wrote.
+  func testUnrecognizedNonEmptyTrustValueIsAHardErrorEvenWhenEmbeddedPinsAreAbsent() {
+    for badTrust in ["PIN", "Link", "pinn", "none", "disabled"] {
+      XCTAssertEqual(
+        resolveTrustedPins(trust: badTrust, embeddedPins: [], linkPin: linkPinValue),
+        .invalidTrustValue(badTrust),
+        "trust=\(badTrust)"
+      )
+    }
+  }
+
+  // Table rows collapse once embedded pins are present: they win regardless of what `trust` says,
+  // even a garbage value — `trust` is simply irrelevant when pins are already embedded.
+  func testUnrecognizedTrustValueIsIrrelevantOnceEmbeddedPinsArePresent() {
+    XCTAssertEqual(
+      resolveTrustedPins(trust: "everything", embeddedPins: embeddedPins, linkPin: nil),
+      .configured(Set(embeddedPins))
+    )
+  }
+
+  func testConfigureFromBundleThrowsWhenNoPinsAndNoLinkPin() async {
+    // The test host's Info.plist never sets CordieriteCliPins, so this exercises the real
+    // Bundle.main-reading path (not just the pure resolveTrustedPins matrix above) for the
+    // pre-existing "nothing configured" case, which must still hard-fail.
+    let manager = CordieriteConnectionManager()
+    do {
+      try await manager.configureFromBundle(linkPin: nil)
+      XCTFail("expected configureFromBundle to throw")
+    } catch {
+      // expected
+    }
+  }
+
+  // MARK: - getConstants()'s build config (docs/tasks/07-native-module-constants.md)
+
+  // Every table row from the resolveTrustedPins matrix above must map to a build config that
+  // agrees on `hasEmbeddedPins` with whether a real connect() would have used embedded pins, and
+  // on `trust` with the effective bucket a real connect() would have resolved to.
+  func testBuildConfigReportsPinAndHasEmbeddedPinsWhenEmbeddedPinsWin() {
+    for resolution: CordieriteTrustedPinsResolution in [
+      .configured(Set(embeddedPins)),
+    ] {
+      XCTAssertEqual(
+        cordieriteBuildConfig(resolution: resolution, allowPrivateLanOnly: true),
+        CordieriteBuildConfig(trust: "pin", hasEmbeddedPins: true, allowPrivateLanOnly: true)
+      )
+    }
+  }
+
+  func testBuildConfigReportsLinkAndNoEmbeddedPinsWhenTrustingTheLinkPin() {
+    XCTAssertEqual(
+      cordieriteBuildConfig(resolution: .linkPin(linkPinValue), allowPrivateLanOnly: false),
+      CordieriteBuildConfig(trust: "link", hasEmbeddedPins: false, allowPrivateLanOnly: false)
+    )
+  }
+
+  func testBuildConfigReportsPinAndNoEmbeddedPinsForTheConfigTimeErrorCase() {
+    // trust="pin" with no embedded pins: a real connect() would hard-error, but getConstants()
+    // must not throw — it still reports the config's effective intent (trust="pin") plus the
+    // honest hasEmbeddedPins:false that explains *why* a connect() would fail.
+    XCTAssertEqual(
+      cordieriteBuildConfig(resolution: .pinTrustRequiresEmbeddedPins, allowPrivateLanOnly: true),
+      CordieriteBuildConfig(trust: "pin", hasEmbeddedPins: false, allowPrivateLanOnly: true)
+    )
+  }
+
+  func testBuildConfigReportsLinkAndNoEmbeddedPinsWhenNoLinkPinIsAvailable() {
+    // No connect attempt is in flight when JS asks for the build config, so there is never a real
+    // linkPin to pass resolveTrustedPins — trust="link" with no embedded pins always resolves to
+    // this case here, never `.linkPin`, but the reported `trust` bucket is unaffected.
+    XCTAssertEqual(
+      cordieriteBuildConfig(resolution: .linkTrustRequiresLinkPin, allowPrivateLanOnly: true),
+      CordieriteBuildConfig(trust: "link", hasEmbeddedPins: false, allowPrivateLanOnly: true)
+    )
+  }
+
+  func testBuildConfigSurfacesTheRawInvalidTrustValueInsteadOfCoercingIt() {
+    XCTAssertEqual(
+      cordieriteBuildConfig(resolution: .invalidTrustValue("pinn"), allowPrivateLanOnly: true),
+      CordieriteBuildConfig(trust: "pinn", hasEmbeddedPins: false, allowPrivateLanOnly: true)
+    )
+  }
+
+  func testCurrentBuildConfigReadsTheSameBundleAsConfigureFromBundle() async {
+    // The test host's Info.plist never sets CordieriteCliPins/CordieriteTrust (same fixture used
+    // by testConfigureFromBundleThrowsWhenNoPinsAndNoLinkPin above): missing trust + no embedded
+    // pins defaults to "link", and with no linkPin available that's linkTrustRequiresLinkPin —
+    // exactly the config a real connect() attempt would need a linkPin to succeed with.
+    let config = currentCordieriteBuildConfig()
+    XCTAssertEqual(config, CordieriteBuildConfig(trust: "link", hasEmbeddedPins: false, allowPrivateLanOnly: true))
+
+    // Cross-check against the real connect() path: it must fail for exactly the reason the build
+    // config predicts (no embedded pins, no usable linkPin).
+    let manager = CordieriteConnectionManager()
+    do {
+      try await manager.configureFromBundle(linkPin: nil)
+      XCTFail("expected configureFromBundle to throw")
+    } catch {
+      // expected — matches config.hasEmbeddedPins == false
+    }
+  }
+
   // MARK: - SPKI pin parity with packages/cordierite/src/spki-pin.ts
 
   /// DER bytes (base64) of a fixed, throwaway self-signed EC (P-256) test certificate, generated

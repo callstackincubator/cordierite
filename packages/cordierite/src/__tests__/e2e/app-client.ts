@@ -1,5 +1,5 @@
 /**
- * Task 16 scope item 1: a scripted app client — `claim(link)`, `resume()`, `registerTools([...])`,
+ * A scripted app client — `claim(link)`, `resume()`, `registerTools([...])`,
  * `answerCalls(handler)`, `emitEvent(...)`, `dropSocket()` — that verifies the daemon's SPKI pin
  * before ever trusting the connection, the same trust decision a real app SDK makes
  * (ARCHITECTURE.md §2/§7). Every wire frame is sent verbatim (protocol v2, ARCHITECTURE.md §7); no

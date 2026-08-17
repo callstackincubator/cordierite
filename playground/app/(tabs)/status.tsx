@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   getCordieriteState,
+  getCordieriteBuildConfig,
   postEvent,
   addCordieriteListener,
   type CordieriteClientState,
@@ -43,11 +44,15 @@ export default function StatusScreen() {
   const danger = useThemeColor({}, "danger");
   const textTertiary = useThemeColor({}, "textTertiary");
   const tint = useThemeColor({}, "tint");
-  const background = useThemeColor({}, "background");
+  const tintForeground = useThemeColor({}, "tintForeground");
 
   const [connectionState, setConnectionState] = useState<CordieriteClientState>(
     getCordieriteState()
   );
+  // Native build config never changes within a process's lifetime (task 07), so a plain `useState`
+  // initializer -- read once, no listener needed -- is enough to show which trust mode this
+  // artifact was actually built with.
+  const [buildConfig] = useState(() => getCordieriteBuildConfig());
   const [alias, setAlias] = useState<string | null>(null);
   const [lastSessionEvent, setLastSessionEvent] =
     useState<CordieriteSessionChangeEvent | null>(null);
@@ -142,13 +147,25 @@ export default function StatusScreen() {
         </View>
 
         <View style={cardStyle}>
+          <ThemedText type="overline">Build config</ThemedText>
+          <ThemedText type="caption" style={styles.cardHint}>
+            trust: {buildConfig.trust} · embedded pins: {buildConfig.hasEmbeddedPins ? "yes" : "no"} ·
+            private LAN only: {buildConfig.allowPrivateLanOnly ? "yes" : "no"}
+          </ThemedText>
+          <ThemedText type="caption" style={styles.cardHint}>
+            Read from the native module&apos;s getConstants() -- the fastest way to tell, on a
+            device, which trust mode this artifact was actually built with.
+          </ThemedText>
+        </View>
+
+        <View style={cardStyle}>
           <ThemedText type="overline">Post an event</ThemedText>
           <Pressable
             onPress={handlePing}
             style={[styles.button, { backgroundColor: tint }]}>
             <ThemedText
               type="defaultSemiBold"
-              style={{ color: background }}>
+              style={{ color: tintForeground }}>
               Send playground_ping
             </ThemedText>
           </Pressable>

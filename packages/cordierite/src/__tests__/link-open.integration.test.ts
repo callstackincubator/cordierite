@@ -1,5 +1,5 @@
 /**
- * Task 07 acceptance: `cordierite link --open android|ios-sim` (ARCHITECTURE.md §8 delivery path
+ * `cordierite link --open android|ios-sim` (ARCHITECTURE.md §8 delivery path
  * 1). Two layers are tested here against a real daemon over its actual UDS control socket (no
  * mocking the RPC layer, matching the pattern in session-engine.integration.test.ts):
  *
@@ -142,7 +142,9 @@ describe("link --open: CLI wiring", () => {
     expect(result.data.delivered).toBe(true);
     expect(result.data.target).toBe("ios-sim");
 
-    const decoded = decodeBootstrap(result.data.deepLink.split("cordierite=")[1]!);
+    // The deep link now carries a separate `&pin=...` query param after the bootstrap blob
+    // (opt-in hardening dev-mode); only the `cordierite=` value up to the next `&` decodes.
+    const decoded = decodeBootstrap(result.data.deepLink.split("cordierite=")[1]!.split("&")[0]!);
     expect(decoded!.address).toBe("127.0.0.1");
 
     expect(calls[0]).toEqual({ command: "xcrun", args: ["simctl", "list", "devices", "booted", "--json"] });

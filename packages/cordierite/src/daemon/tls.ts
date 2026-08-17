@@ -1,11 +1,18 @@
 /**
  * Host key loading and leaf-certificate minting (ARCHITECTURE.md §3, §8). Reuses
- * `host-certificate.ts` (kept as-is through task 01) for the actual X.509 generation; this module
- * owns key-file hygiene (refusing missing/over-permissive key files) and re-minting the leaf when
+ * `host-certificate.ts` for the actual X.509 generation; this module
+ * owns key-file hygiene (refusing over-permissive key files) and re-minting the leaf when
  * the advertised address changes so the certificate's SAN stays valid.
  *
  * The SPKI pin is derived from the key's public key alone (`spki-pin.ts`), so it never changes
  * across re-mints — only the certificate's SAN entries do.
+ *
+ * Opt-in hardening, dev-mode zero-config bootstrap: a *missing* key file is no longer fatal.
+ * `createTlsManager` auto-generates one (same material/hygiene as `cordierite keygen`, via
+ * `key-material.ts`) so a first-time `cordierite daemon` needs no manual keygen step, and reports
+ * the new key's SPKI fingerprint through the optional `warn` callback. An existing key with bad
+ * permissions is still refused outright — auto-generation only fills the *missing* case, it never
+ * silently replaces a key that's already there.
  */
 
 import { stat, readFile } from "node:fs/promises";
@@ -13,6 +20,8 @@ import { stat, readFile } from "node:fs/promises";
 import type { AgentEndpoint } from "@cordierite/shared";
 
 import { generateHostCertificate } from "../host-certificate.js";
+import { generatePrivateKeyPem, writePrivateKeyAtomically } from "../key-material.js";
+import { getSpkiPinFromPrivateKeyPem } from "../spki-pin.js";
 import type { AdvertisedAddress } from "./address.js";
 
 export class HostKeyError extends Error {
@@ -22,21 +31,15 @@ export class HostKeyError extends Error {
   }
 }
 
-/** Refuses a missing key file (pointing at `cordierite keygen`) or one that is group/world-readable. */
+/** Reports informational (non-error) messages, e.g. the fingerprint of an auto-generated key.
+ * Deliberately the same shape as `ConfigWarnFn` (`config.ts`) so callers can pass the same
+ * function through without an adapter. */
+export type TlsWarnFn = (message: string) => void;
+
+/** Refuses a key file that is group/world-readable. Missing files are handled by the caller
+ * (`loadOrGenerateHostKeyPem`), which auto-generates instead of throwing. */
 export const loadHostKeyPem = async (keyPath: string): Promise<string> => {
-  let fileStat: Awaited<ReturnType<typeof stat>>;
-
-  try {
-    fileStat = await stat(keyPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new HostKeyError(
-        `Cordierite host key not found at "${keyPath}". Run "cordierite keygen" to create one.`,
-      );
-    }
-
-    throw error;
-  }
+  const fileStat = await stat(keyPath);
 
   if ((fileStat.mode & 0o077) !== 0) {
     throw new HostKeyError(
@@ -46,6 +49,31 @@ export const loadHostKeyPem = async (keyPath: string): Promise<string> => {
   }
 
   return readFile(keyPath, "utf8");
+};
+
+/**
+ * Loads the host key at `keyPath`, generating one in its place if none exists yet (dev-mode
+ * zero-config bootstrap). Only the ENOENT case auto-generates: any other `stat`/`readFile` failure
+ * (including bad permissions) still propagates as before, so a deliberately hardened/misconfigured
+ * key file is never silently overwritten.
+ */
+export const loadOrGenerateHostKeyPem = async (keyPath: string, warn?: TlsWarnFn): Promise<string> => {
+  try {
+    return await loadHostKeyPem(keyPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  const keyPem = generatePrivateKeyPem();
+  await writePrivateKeyAtomically(keyPath, keyPem);
+  warn?.(
+    `Cordierite: no host key found at "${keyPath}" — generated one (dev mode). ` +
+      `SPKI pin: ${getSpkiPinFromPrivateKeyPem(keyPem)}`,
+  );
+
+  return keyPem;
 };
 
 export type TlsMaterial = {
@@ -67,10 +95,12 @@ export type TlsManager = {
 export type CreateTlsManagerOptions = {
   keyPath: string;
   detectAddress: () => AdvertisedAddress;
+  /** Reports the fingerprint when a missing key is auto-generated (dev-mode bootstrap). */
+  warn?: TlsWarnFn;
 };
 
 export const createTlsManager = async (options: CreateTlsManagerOptions): Promise<TlsManager> => {
-  const keyPem = await loadHostKeyPem(options.keyPath);
+  const keyPem = await loadOrGenerateHostKeyPem(options.keyPath, options.warn);
 
   const mint = async (address: AdvertisedAddress): Promise<TlsMaterial> => {
     const { certPem, spkiPin } = await generateHostCertificate(keyPem, address.address);

@@ -1,5 +1,5 @@
 /**
- * Task 16 scenario: cold start.
+ * E2E scenario: cold start.
  *
  * `keygen --out` -> `link --json` (daemon auto-spawns) -> claim -> `ls` shows ACTIVE with alias ->
  * `tools`/`invoke` round-trip -> `revoke` -> `daemon stop` leaves no socket/pidfile.

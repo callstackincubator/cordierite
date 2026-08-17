@@ -1,5 +1,5 @@
 /**
- * Task 16 scenario: churn.
+ * E2E scenario: churn.
  *
  * claim -> `dropSocket()` -> `ls` shows SUSPENDED -> `invoke` fails `session_suspended` ->
  * `resume()` -> `invoke` succeeds -> grace expiry (short configured grace) -> EXPIRED and alias

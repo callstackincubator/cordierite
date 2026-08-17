@@ -9,6 +9,7 @@ import type {
   DaemonStartCommandData,
   DaemonStatusCommandData,
   DaemonStopCommandData,
+  DoctorCommandData,
   InvokeCommandData,
   KeygenCommandData,
   LinkCommandData,
@@ -183,6 +184,7 @@ const renderLinkData = (colors: ColorPalette, data: LinkCommandData, qr?: boolea
       ["Session", data.sessionId],
       ["Deep link", data.deepLink],
       ["Endpoint", formatAgentWebSocketUrl(data.endpoint)],
+      ["Pin", data.pin],
       ["Expires", new Date(data.expiresAt * 1000).toISOString()],
       ["Delivered", data.delivered ? `yes (${data.target})` : undefined],
     ]),
@@ -263,6 +265,20 @@ const renderDaemonStatusData = (colors: ColorPalette, data: DaemonStatusCommandD
   ];
 };
 
+const renderDoctorData = (colors: ColorPalette, data: DoctorCommandData): string[] => {
+  return [
+    data.present ? colors.green("Cordierite Present") : colors.yellow("Cordierite Absent"),
+    ...renderFields("Artifact", [
+      ["Path", data.artifact],
+      ["Platform", data.platform],
+      ["Format", data.format],
+      ["Present", data.present],
+      ["Signals", data.signals.length > 0 ? data.signals.join(", ") : "none"],
+      ["Assertion", data.assertion ? `${data.assertion.expected} (holds)` : undefined],
+    ]),
+  ];
+};
+
 const renderSuccessData = (
   colors: ColorPalette,
   command: string,
@@ -291,6 +307,8 @@ const renderSuccessData = (
       return renderDaemonStopData(colors, data as DaemonStopCommandData);
     case "daemon status":
       return renderDaemonStatusData(colors, data as DaemonStatusCommandData);
+    case "doctor":
+      return renderDoctorData(colors, data as DoctorCommandData);
     default:
       return [colors.green("Command Complete"), indentJson(data)];
   }

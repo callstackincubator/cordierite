@@ -9,16 +9,30 @@
  *
  * `addListener` returns a no-op subscription for the same reason: the package eagerly constructs
  * `cordieriteClient` at import time, which registers internal listeners.
+ *
+ * `isCordieriteNativeModuleAvailable` always returns `true` here — NOT because a native module
+ * exists on web, but so that `index.ts`'s default-inert-release-builds degrade path never
+ * kicks in on this platform: Metro resolves `./CordieriteModule` to this `.web.ts` file for web
+ * bundles, and web already has its own distinct, intentional "unsupported platform" error surface
+ * above (`connect`/`send`/`close` throwing). Reporting "unavailable" here would silently swap that
+ * actionable error for the generic inert noop behavior instead, which is the "misfire on web" the
+ * task explicitly rules out.
  */
-import type { CordieriteConnectionState } from "./Cordierite.types";
+import type {
+  CordieriteBuildConfig,
+  CordieriteConnectionState,
+} from "./Cordierite.types";
 import type { ResumeLeaseStore } from "./client/resume-lease";
 import type { CordieriteNativeModuleLike } from "./client-types";
 import { logger } from "./logger";
 
+/** Always `true` on web — see the file-level doc comment above. */
+export const isCordieriteNativeModuleAvailable = (): boolean => true;
+
 const unsupported = (what: string): never => {
   logger.warn(`Cordierite native module is not available on web (${what})`);
   throw new Error(
-    "@cordierite/react-native is only available on iOS and Android development or production builds."
+    "@cordierite/react-native is only available on iOS and Android development or production builds.",
   );
 };
 
@@ -41,6 +55,18 @@ export const cordieriteNativeModule: CordieriteNativeModuleLike = {
     };
   },
 };
+
+/**
+ * Web has no native module to read a build config from. Unlike `getState`/`addListener` (called
+ * unconditionally from internal code paths, so they degrade quietly), this mirrors `connect`/
+ * `send`/`close`: a diagnostic call an app makes deliberately, so — since
+ * `isCordieriteNativeModuleAvailable` is forced `true` on web (see the file-level doc comment) and
+ * `index.ts`'s `noopIfNativeUnavailable` therefore always takes this "available" branch on web —
+ * it throws the same actionable "unsupported platform" error rather than silently reporting a fake
+ * build config.
+ */
+export const getCordieriteNativeBuildConfig = (): CordieriteBuildConfig =>
+  unsupported("getCordieriteBuildConfig");
 
 /** @internal Unsupported platforms never have a native process-memory lease. */
 export const cordieriteNativeResumeLeaseStore: ResumeLeaseStore = {

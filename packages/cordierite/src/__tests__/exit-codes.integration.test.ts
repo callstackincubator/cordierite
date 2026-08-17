@@ -1,8 +1,7 @@
 /**
- * Task 06 scope item 4: "Recreate an `exit-codes` test suite for the v2 commands (the v1 suite was
- * deleted with the v1 commands in task 01 ... its convention of asserting exact codes per failure
- * class is worth reproducing)." Each case here is a real CLI subprocess against a real daemon,
- * asserting both the exit code and the JSON error's `type`.
+ * An `exit-codes` test suite for the v2 commands: the v1 suite's convention of asserting exact
+ * codes per failure class is worth reproducing. Each case here is a real CLI subprocess against a
+ * real daemon, asserting both the exit code and the JSON error's `type`.
  */
 
 import { createServer as createNetServer } from "node:net";
@@ -159,9 +158,16 @@ describe("exit codes: v2 command surface", () => {
     const linkResult = runCli(["link", "--scheme", "cordierite-exit-codes"], stateDir);
     expect(linkResult.exitCode).toBe(0);
 
-    const linkPayload = (linkResult.payload.data.deepLink as string).slice(
-      (linkResult.payload.data.deepLink as string).indexOf("cordierite=") + "cordierite=".length,
-    );
+    // The deep link is `<scheme>:///?cordierite=<payload>&pin=<spki-pin>` (commit 9c73849 added
+    // the trailing `&pin=...` query param); the payload ends at the next `&`, so it must be
+    // isolated the same way link-open.integration.test.ts does it. Slicing to the end of the
+    // string here used to swallow `&pin=...` verbatim into the base64url payload, which always
+    // fails to decode: `&` and `%` are outside the base64url alphabet, so `atob` throws on the
+    // appended `&pin=sha256%2F...` suffix (caught, surfaced as `decodeBootstrap` returning
+    // `null`) — deterministic, not a flake.
+    const linkPayload = (linkResult.payload.data.deepLink as string)
+      .split("cordierite=")[1]!
+      .split("&")[0]!;
     const decoded = decodeBootstrap(linkPayload);
     expect(decoded).not.toBeNull();
 

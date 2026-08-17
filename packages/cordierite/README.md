@@ -15,7 +15,9 @@ The **`cordierite`** package is the operator/agent side of Cordierite: a long-li
 
 ## Key setup
 
-Generate a daemon key with:
+For a **debug build** app, you can skip this entirely: the daemon auto-generates its own `key.pem` the first time it starts if one isn't already there (mode `0600`), and prints its `sha256/...` fingerprint on that first run. `cordierite link` (below) carries that fingerprint on the deep link itself for the app to pick up — see the app-side dev-mode flow in the root README and `docs/SECURITY.md`'s "Dev trust mode" section.
+
+For a **release build** (or any build where you want a real embedded pin instead of trusting whatever link shows up), generate a daemon key explicitly with:
 
 ```bash
 cordierite keygen
@@ -36,8 +38,11 @@ The command writes an unencrypted PEM private key (PKCS#8) to `<state-dir>/key.p
 | `cordierite revoke [selector]` | revoke a session |
 | `cordierite daemon run\|start\|stop\|status` | daemon lifecycle |
 | `cordierite mcp` | start a stdio MCP server proxying connected apps' tools to MCP clients |
+| `cordierite doctor <artifact> [--assert-present\|--assert-absent]` | **release-gate step**: report or assert whether a built `.app`/`.ipa`/`.apk`/`.aab` contains Cordierite |
 
 Every command that targets a session accepts an optional `selector` (a session id or an alias from `cordierite ls`); omit it when exactly one session is active. Global flags: `--json` (machine-readable output), `--no-color`, `--state-dir <path>` (default `~/.cordierite`). Run `cordierite <command> --help` for the exact flags of any command, or `cordierite --help` for the full list.
+
+`cordierite link`'s deep link is `<scheme>:///?cordierite=<payload>&pin=<sha256/...>`: the `cordierite` param is the existing binary v2 bootstrap payload (address, session id, token, expiry — unchanged), and `pin` is a separate, out-of-band query param carrying the daemon's current SPKI fingerprint for apps that want to pick it up. An app build with embedded `cliPins` ignores `pin` outright — embedded pins always win. A debug build with no embedded pins trusts it for that session only (see `docs/SECURITY.md`'s "Dev trust mode" section); a release build with the module enabled never accepts it, embedded pins only.
 
 ## Daemon lifecycle
 
@@ -59,6 +64,47 @@ Add `cordierite mcp` to the agent's MCP server config — no separate server pro
 ```
 
 Once configured, the connected app's tools appear as MCP tools automatically: `tools/list` mirrors the live registry (namespaced `<alias>__<name>` when more than one session is active), and `tools/call` proxies straight to the app with progress and errors preserved. Two built-in management tools let an agent bootstrap a session without shell access: `cordierite_connect` mints a link (optionally delivering it directly to a booted `android`/`ios-sim` target), and `cordierite_wait_for_session` waits for that session to be claimed.
+
+## Release gate: `cordierite doctor`
+
+Cordierite's inclusion in a build is controlled entirely by autolinking exclusion (see the root README and `docs/SECURITY.md`) — there is no runtime `debuggable` check to catch a pipeline that forgot to exclude the package. `cordierite doctor` is the replacement: an artifact-level assertion you run against the thing you're about to ship, not the config you think produced it.
+
+```bash
+cordierite doctor ./build/MyApp.ipa --assert-absent
+cordierite doctor ./build/app-release.apk --assert-absent
+```
+
+It inspects a built `.app`/`.ipa`/`.apk`/`.aab` for Cordierite's native code (the `RCTNativeCordierite` Objective-C class and the plugin-authored `Info.plist` keys on iOS; the `com.callstackincubator.cordierite` dex package and `AndroidManifest.xml` meta-data keys on Android) and reports `present`/`absent` — or, with `--assert-present`/`--assert-absent`, exits non-zero when the artifact doesn't match what you expected:
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | inspection succeeded; no assertion was given, or the assertion held |
+| `3` | inspection succeeded, but `--assert-present`/`--assert-absent` did not hold |
+| `64` | usage error (bad flags, or an artifact extension that isn't `.app`/`.ipa`/`.apk`/`.aab`) |
+| `66` | the artifact could not be inspected — a required external tool (`unzip`) was missing, or the artifact was unreadable/corrupt. **Never treated as "absent"**: a broken check must fail loudly, not rubber-stamp a release. |
+
+CI snippet, run against your production release build right before you ship it:
+
+```yaml
+- name: Assert Cordierite is excluded from the production build
+  run: npx cordierite doctor ./build/app-release.apk --assert-absent
+- name: Assert Cordierite is excluded from the production build (iOS)
+  run: npx cordierite doctor ./build/MyApp.ipa --assert-absent
+```
+
+For an internally-distributed "testing" build that an agent drives, invert the assertion (`--assert-present`) so a forgotten inclusion — not just a forgotten exclusion — fails CI too.
+
+**Android detection** has three signals, in order of reliability:
+
+1. `CordieriteNativeMarker`, kept unminified by the keep rule `@cordierite/react-native` ships via `consumerProguardFiles`. It reaches every consuming app's R8 run without the app authoring any rule, so it holds for bare-RN apps that never touch the Expo config plugin.
+2. The dex package name — survives ordinary minification but not R8 full mode's repackaging.
+3. The config plugin's `AndroidManifest.xml` meta-data keys — only present if the plugin ran.
+
+Signals 2 and 3 are retained as fallbacks for artifacts built before the marker existed.
+
+**Verified** against a real R8-minified release APK (`assembleRelease -Pandroid.enableMinifyInReleaseBuilds=true`): the R8 mapping shows sibling classes obfuscated (`CordieriteBuildConfig -> …cordierite.a`) while `CordieriteNativeMarker` keeps its fully-qualified name, and `doctor --assert-present` passes on that artifact.
+
+**Still not covered:** R8 *full mode* with `-repackageclasses` was not exercised, and no artifact was tested from a bare-RN app that uses neither Expo nor the config plugin — the configuration the marker most directly targets. The marker should hold in both (a `-keep` rule prevents renaming and removal regardless of mode), but that is reasoning, not a measurement.
 
 ## Programmatic use
 

@@ -41,11 +41,29 @@ describe("noop parity: type-level (see also public-api.ts's doc comment)", () =>
       "addCordieriteListener",
       "getCordieriteState",
       "connect",
+      "getCordieriteBuildConfig",
     ];
     for (const name of names) {
       expect(typeof realSatisfiesPublicApi[name]).toBe("function");
       expect(typeof noopSatisfiesPublicApi[name]).toBe("function");
     }
+  });
+
+  test("useCordieriteTool takes the same (definition, deps, options) arity on both entries", async () => {
+    const realModule = await import("../index");
+    const noopModule = await import("../noop");
+
+    // `CordierePublicApi` alone would not catch one entry silently dropping the third `options`
+    // parameter — TS structurally accepts a function with fewer parameters where more are
+    // expected, so `{ enabled }` support could drift without this failing at the type level.
+    // Both entries build `useCordieriteTool` from the same `createUseCordieriteTool` factory
+    // (see `useCordieriteTool.ts`), so this asserts that invariant holds rather than merely
+    // hoping it does — `.length` reflects the function's declared (non-rest, non-default)
+    // parameter count at runtime.
+    expect(realModule.useCordieriteTool.length).toBe(
+      noopModule.useCordieriteTool.length,
+    );
+    expect(realModule.useCordieriteTool.length).toBe(3);
   });
 });
 
@@ -102,6 +120,16 @@ describe("noop entry: runtime no-op behavior", () => {
     expect(getCordieriteState()).toBe("idle");
   });
 
+  test('getCordieriteBuildConfig() reports the documented "absent" shape', async () => {
+    const { getCordieriteBuildConfig } = await import("../noop");
+
+    expect(getCordieriteBuildConfig()).toEqual({
+      trust: "absent",
+      hasEmbeddedPins: false,
+      allowPrivateLanOnly: true,
+    });
+  });
+
   test("connect() rejects with a CordieriteDisabledError (code: cordierite_disabled)", async () => {
     const { connect } = await import("../noop");
 
@@ -112,7 +140,7 @@ describe("noop entry: runtime no-op behavior", () => {
         sessionId: "s",
         token: "a".repeat(43),
         expiresAt: Math.floor(Date.now() / 1000) + 60,
-      })
+      }),
     ).rejects.toThrow(CordieriteDisabledError);
 
     try {
@@ -127,7 +155,7 @@ describe("noop entry: runtime no-op behavior", () => {
     } catch (error) {
       expect(error).toBeInstanceOf(CordieriteDisabledError);
       expect((error as CordieriteDisabledError).code).toBe(
-        "cordierite_disabled"
+        "cordierite_disabled",
       );
     }
   });
