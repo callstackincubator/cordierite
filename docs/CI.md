@@ -9,6 +9,10 @@
   - `deploy.yaml` gates a production release on both reusable workflows, packages the three tarballs, and publishes them
     through npm trusted publishing.
   - All third-party actions are pinned to full commit SHAs. Dependency and Turbo caches are disabled.
+  - pnpm is resolved via corepack (`corepack enable && corepack prepare --activate`) instead of a separately pinned
+    `pnpm/action-setup` version, so the pnpm version used in CI always matches the root `package.json`'s
+    `packageManager` field. `actions/setup-node` runs first to put Node/corepack on `PATH`, then corepack activates
+    pnpm before any install step.
 
   Verification found:
 
