@@ -134,16 +134,35 @@ a release gate. It is not optional to this design.
 
 **Revisited post-implementation:** the shipped default (unset `CORDIERITE_ENABLED` = included
 in every variant) turned out to be the opposite of the intended dev-only default, and was
-reported as a bug. The fix restores a build-type split, but through the same single mechanism
-this task establishes rather than a second overlapping switch: `react-native.config.js` sets
-CocoaPods' `:configurations` / Gradle's `buildTypes` (real per-variant linking, keyed on
-`Debug`/`Release` and `debug`/`release` by name) based on `CORDIERITE_ENABLED` — unset links
-`Debug`/`debug` only, `1`/`true` links every variant, `0`/`false` excludes everywhere. This is
-narrower than the `debuggable`/`#if DEBUG` gate this task removed (no runtime check, no
-custom-flavor detection), so problem #1 above (the gate keyed on the wrong axis) still does not
-recur: a release-signed internal/QA build simply sets `CORDIERITE_ENABLED=1` for that pipeline,
-same as it would have set `CORDIERITE_ENABLED=0` to exclude. `cordierite doctor` remains the
-artifact-level check either way.
+reported as a bug. The fix restores a build-type split, driven by the same single
+`CORDIERITE_ENABLED` variable this task establishes rather than a second overlapping switch —
+but the mechanism differs by platform, discovered while fixing it:
+
+- **iOS:** `react-native.config.js` sets CocoaPods' `:configurations` (real per-variant
+  linking, keyed on `Debug`/`Release` by name) — unset links `Debug` only, `1`/`true` links
+  every configuration, `0`/`false` excludes everywhere, exactly as originally written below.
+- **Android:** the equivalent `buildTypes` field turned out not to work for a package with
+  static Java registration (`packageInstance`/`packageImportPath`). RNGP's generated
+  `PackageList.java` is a single file shared, unfiltered, by every variant; restricting
+  *linking* of the whole Gradle project by `buildTypes` left that shared file statically
+  referencing a class absent from an unlisted variant's classpath — a compile error, caught by
+  CI, not an inert build. So Android links this project into every variant unconditionally
+  (`buildTypes` stays empty/omitted in `react-native.config.js`) and the split moved into
+  `android/build.gradle` instead: `CORDIERITE_ENABLED`-driven Kotlin source-set selection for
+  the `release` build type (`debug` always compiles the real implementation; `release`
+  compiles either the same real files or a no-op `CordieritePackage` at the same
+  fully-qualified name). This also meant `cordierite doctor`'s Android detection needed
+  tightening — the no-op stub necessarily shares the real implementation's package name and
+  the config plugin writes the same manifest meta-data regardless of variant, so two of the
+  three Android signals no longer independently prove inclusion; only the
+  `CordieriteNativeMarker` keep-rule signal does now (see
+  `packages/cordierite/src/artifact-inspect.ts`'s file comment).
+
+Both mechanisms are narrower than the `debuggable`/`#if DEBUG` gate this task removed (no
+runtime check, no custom-flavor detection), so problem #1 above (the gate keyed on the wrong
+axis) still does not recur: a release-signed internal/QA build simply sets
+`CORDIERITE_ENABLED=1` for that pipeline, same as it would have set `CORDIERITE_ENABLED=0` to
+exclude. `cordierite doctor` remains the artifact-level check either way.
 
 ## Task list and ordering
 

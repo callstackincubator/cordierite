@@ -12,12 +12,23 @@ package versions for a release.
 
 - **Fix: release builds no longer carry Cordierite's native module by default.** Previously,
   leaving `CORDIERITE_ENABLED` unset shipped Cordierite in every build variant, including
-  release — the opposite of the intended dev-only default. `react-native.config.js` now sets
-  CocoaPods' `:configurations` and Gradle's `buildTypes` per `CORDIERITE_ENABLED`: unset links
-  only `Debug`/`debug`, `1`/`true` links every variant (for a release-signed internal/QA build
-  that still needs Cordierite), and `0`/`false` excludes it everywhere, unchanged. This is a
-  real per-variant linking decision (CocoaPods/Gradle), not a runtime check. See
-  `packages/react-native/README.md`'s "Compiling Cordierite out of production builds" for the
+  release — the opposite of the intended dev-only default. Unset now links only `Debug`/`debug`,
+  `1`/`true` links every variant (for a release-signed internal/QA build that still needs
+  Cordierite), and `0`/`false` excludes it everywhere, unchanged. iOS: `react-native.config.js`
+  sets CocoaPods' `:configurations`, a real per-variant linking decision. Android: RNGP's
+  generated `PackageList.java` is shared, unfiltered, across every variant, so the equivalent
+  `buildTypes` restriction breaks compilation for a package with static Java registration
+  instead — `android/build.gradle` instead swaps which Kotlin source set compiles for `release`
+  (the real implementation, or a no-op `CordieritePackage` at the same fully-qualified name),
+  keyed on the same `CORDIERITE_ENABLED`. Neither mechanism is a runtime check.
+- **Fix: `cordierite doctor`'s Android detection now requires the `CordieriteNativeMarker`
+  keep-rule signal to report `present`.** The no-op stub introduced by the fix above compiles at
+  the real implementation's exact package name, and the config plugin writes the same
+  `AndroidManifest.xml` meta-data regardless of build variant — so the two other Android
+  signals (dex package-string, manifest meta-data keys) could otherwise report a harmless
+  default-release stub as "present." They're still reported for corroboration but no longer
+  independently decide the verdict.
+  See `packages/react-native/README.md`'s "Compiling Cordierite out of production builds" for the
   updated matrix.
 
 ## Unreleased (0.4.0)

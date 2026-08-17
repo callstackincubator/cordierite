@@ -122,7 +122,8 @@ jobs:
       - name: Assemble Android release (default autolinking config)
         working-directory: playground/android
         # Same android/ directory as the debug build above, still generated from the unset
-        # CORDIERITE_ENABLED prebuild — `buildTypes: ["debug"]` means release does not link it.
+        # CORDIERITE_ENABLED prebuild — android/build.gradle's release source-set swap compiles
+        # the no-op CordieritePackage stub for this variant by default.
         run: >-
           ./gradlew assembleRelease
           --build-cache --no-configuration-cache -PreactNativeArchitectures=arm64-v8a

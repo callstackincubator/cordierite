@@ -25,12 +25,12 @@ describe("react-native.config.js resolvePlatforms", () => {
     delete process.env[ENV_VAR];
   });
 
-  test("unset env: dev-only -- debug build type / Debug configuration, no release", () => {
+  test("unset env: dev-only -- Debug configuration on iOS, no release; Android split lives in build.gradle", () => {
     delete process.env[ENV_VAR];
     expect(resolvePlatforms()).toStrictEqual(devOnly);
     expect(
-      (devOnly as { android: { buildTypes: string[] } }).android.buildTypes,
-    ).toStrictEqual(["debug"]);
+      (devOnly as { android: { buildTypes?: string[] } }).android.buildTypes,
+    ).toBeUndefined();
     expect(
       (devOnly as { ios: { configurations: string[] } }).ios.configurations,
     ).toStrictEqual(["Debug"]);
@@ -42,14 +42,10 @@ describe("react-native.config.js resolvePlatforms", () => {
   });
 
   test.each(["1", "true", "TRUE"])(
-    "%s: every build -- debug and release / Debug and Release",
+    "%s: every build -- Debug and Release on iOS; Android unaffected (build.gradle reads the env var itself)",
     (value) => {
       process.env[ENV_VAR] = value;
       expect(resolvePlatforms()).toStrictEqual(everyBuild);
-      expect(
-        (everyBuild as { android: { buildTypes: string[] } }).android
-          .buildTypes,
-      ).toStrictEqual(["debug", "release"]);
       expect(
         (everyBuild as { ios: { configurations: string[] } }).ios
           .configurations,

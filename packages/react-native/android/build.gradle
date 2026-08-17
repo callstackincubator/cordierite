@@ -39,9 +39,30 @@ version = "0.4.0-rc.1" // keep in sync with package.json
 // worth catching, and this is grep-able in CI output. iOS prints the same line from the podspec.
 logger.lifecycle("[cordierite] native module INCLUDED in this build (v${version})")
 
+/**
+ * `PackageList.java` is generated once by RNGP and shared by every build variant (it is not
+ * variant-aware -- see `docs/tasks/00-overview.md`'s "Revisited post-implementation" note), so it
+ * always references `CordieritePackage` by name regardless of variant. Restricting *linking* of
+ * this whole Gradle project per build type (`buildTypes` in `react-native.config.js`) would leave
+ * that reference unresolved for a variant this project isn't linked into -- a compile error, not
+ * an inert build. So this project is linked into every variant unconditionally (`buildTypes` is
+ * empty in `react-native.config.js`), and the split instead happens at the source-set level:
+ * `debug` always compiles the real implementation; `release` compiles the same real files only
+ * when `CORDIERITE_ENABLED` is truthy, and a no-op `CordieritePackage` (`src/release-stub/`)
+ * otherwise. The real implementation is genuinely absent from a default release build's bytecode,
+ * not merely gated behind a runtime check.
+ */
+def cordieriteEnabledForRelease = System.getenv("CORDIERITE_ENABLED")?.trim()?.toLowerCase() in ["1", "true"]
+
 android {
   namespace "com.callstackincubator.cordierite"
   compileSdk safeExtGet("compileSdkVersion", 35)
+
+  sourceSets {
+    release {
+      java.srcDirs = [cordieriteEnabledForRelease ? "src/debug/java" : "src/release-stub/java"]
+    }
+  }
 
   defaultConfig {
     minSdkVersion safeExtGet("minSdkVersion", 24)

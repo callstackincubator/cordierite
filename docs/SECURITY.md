@@ -177,18 +177,27 @@ not as the mechanism that keeps a destructive tool out of reach of a hostile one
   caller (`cli`/`mcp`). This is on unconditionally; there's no flag to disable it. Check
   `daemon.status`'s `audit.failedWrites` if you need to confirm the log is actually
   landing on disk (e.g. under a read-only or full filesystem).
-- **Inclusion defaults to dev builds only, via real per-variant linking — not a compiled-in
-  build-type check.** `react-native.config.js` sets CocoaPods' `:configurations` and
-  Gradle's `buildTypes` so the `Debug`/`debug` variant links Cordierite and the
-  `Release`/`release` variant doesn't, by default. There is still no `debuggable`/`#if DEBUG`
-  gate anywhere in `CordieritePackage.getModule` (Android) or
-  `CordieriteTurboBridge.swift`/`RCTNativeCordierite.mm` (iOS) — both register/compile in
-  unconditionally whenever the module is linked into a given variant; whether it's linked
-  into that variant at all is what the CocoaPods/Gradle config above decides. A release
-  pipeline that wants Cordierite anyway (an agent-driven, release-signed internal build, for
-  example) sets `CORDIERITE_ENABLED=1`; one that wants it gone even from debug sets
-  `CORDIERITE_ENABLED=0`. Either way this is something you can verify against the built
-  artifact (`cordierite doctor`, `docs/CI.md`), not something that quietly depends on a
+- **Inclusion defaults to dev builds only — not a compiled-in build-type check.** On iOS,
+  `react-native.config.js` sets CocoaPods' `:configurations` so the `Debug` configuration
+  links Cordierite and `Release` doesn't, by default: a real per-variant linking decision.
+  Android can't use the equivalent `buildTypes` lever for a package with static Java
+  registration (`packageInstance`) — the Gradle plugin's generated `PackageList.java` is
+  shared, unfiltered, across every variant, so restricting *linking* by variant there is a
+  compile error, not an inert build. Android instead links this project into every variant
+  unconditionally and swaps which Kotlin source set `android/build.gradle` compiles for
+  `release`: the real implementation by default for `debug`, and either the same real files
+  or a no-op `CordieritePackage` for `release`, driven by the same `CORDIERITE_ENABLED`.
+  Either way there is still no `debuggable`/`#if DEBUG` gate anywhere in
+  `CordieritePackage.getModule` (Android) or `CordieriteTurboBridge.swift`/
+  `RCTNativeCordierite.mm` (iOS) — both register/compile in unconditionally whenever the real
+  implementation is linked/compiled into a given variant; whether it is is what the
+  CocoaPods/Gradle config above decides. A release pipeline that wants Cordierite anyway (an
+  agent-driven, release-signed internal build, for example) sets `CORDIERITE_ENABLED=1`; one
+  that wants it gone even from debug sets `CORDIERITE_ENABLED=0`. Either way this is something
+  you can verify against the built artifact (`cordierite doctor`, `docs/CI.md`) — on Android,
+  `doctor` deliberately trusts only its `CordieriteNativeMarker` keep-rule signal for this
+  reason, since the release-default no-op stub shares the real implementation's package name
+  and would otherwise look present to a naive scan. Not something that quietly depends on a
   custom build-type/configuration name being spelled `debug`/`Debug`. When the module
   genuinely isn't present (excluded, or no native support at all — e.g. Expo Go), the JS
   public API degrades to the exact `./noop` entry's behavior (one warning, no throws) — see

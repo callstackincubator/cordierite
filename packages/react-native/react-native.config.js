@@ -11,17 +11,24 @@ const ANDROID_BASE = {
 };
 
 /**
- * `buildTypes`/`configurations` restrict linking to real per-variant Xcode configurations /
- * Gradle build types -- not a JS-side simulation. Zero-config default is dev-only; release needs
- * `CORDIERITE_ENABLED=1` to opt in.
+ * iOS: `configurations` restricts *linking* to real per-variant Xcode configurations -- CocoaPods
+ * never links the pod into an unlisted configuration. Android has no equivalent lever here:
+ * `buildTypes` only restricts which Gradle configuration this project is linked through
+ * (`debugImplementation` vs `implementation`), and RNGP's generated `PackageList.java` is shared,
+ * unfiltered, by every variant -- restricting linking by variant would leave that shared file
+ * referencing a class absent from the unlisted variant's classpath, a compile error. So Android
+ * always links this project (`buildTypes` omitted below) and the dev/release split happens inside
+ * `android/build.gradle` instead, via a `CORDIERITE_ENABLED`-gated source set swap -- see that
+ * file's own comment. Zero-config default is dev-only; release needs `CORDIERITE_ENABLED=1` to
+ * opt in, on both platforms, just through different mechanisms.
  */
 const devOnly = {
-  android: { ...ANDROID_BASE, buildTypes: ["debug"] },
+  android: ANDROID_BASE,
   ios: { configurations: ["Debug"] },
 };
 
 const everyBuild = {
-  android: { ...ANDROID_BASE, buildTypes: ["debug", "release"] },
+  android: ANDROID_BASE,
   ios: { configurations: ["Debug", "Release"] },
 };
 
