@@ -148,11 +148,14 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     env:
-      # Read by playground/ios/Podfile's ccache_enabled?, which makes react_native_post_install
-      # point CC/CXX at a ccache wrapper. It has to be set before `expo prebuild` runs pod install,
-      # hence job scope rather than step scope. ccache then serves the three xcodebuild runs below
-      # from one content-addressed store, and that store is carried between CI runs.
-      USE_CCACHE: "1"
+      # Deliberately NOT USE_CCACHE=1. That makes react_native_post_install override CC/CXX/LD with
+      # $(REACT_NATIVE_PATH)/scripts/xcode/ccache-clang.sh, and REACT_NATIVE_PATH does not resolve
+      # for the CocoaPods-generated test app host in this pnpm workspace — react-native is hoisted
+      # to the monorepo root, above playground/, so the setting expands to a path missing its
+      # prefix and clang fails with "unable to spawn process". Xcode's own build-setting spec also
+      # says not to do it: "Don't use the CC, CPLUSPLUS, OBJCC, or OBJCPLUSPLUS build settings to
+      # specify a compiler launcher." The supported mechanism is C_COMPILER_LAUNCHER, passed to
+      # each xcodebuild invocation below.
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       # Content hashing rather than the default timestamp check: a CI checkout re-creates every
       # source file, so mtimes are always new and a timestamp-keyed cache would never hit.
@@ -185,7 +188,11 @@ jobs:
           # fires when package.json's packageManager field names npm — this repo's names pnpm.
           cache: pnpm
       - name: Install ccache
-        run: brew list ccache > /dev/null 2>&1 || brew install ccache
+        # C_COMPILER_LAUNCHER wants a path, so resolve it once here rather than relying on the
+        # build system inheriting a PATH that can find it.
+        run: |
+          brew list ccache > /dev/null 2>&1 || brew install ccache
+          echo "CCACHE_BIN=$(command -v ccache)" >> "$GITHUB_ENV"
       - name: Cache ccache
         # Keyed on the run id so every run writes a fresh entry (cache entries are immutable) and
         # restore-keys falls back to the most recent previous one.
@@ -228,6 +235,8 @@ jobs:
           xcodebuild test -workspace playground.xcworkspace -scheme Cordierite-Native-Tests \
             -destination 'platform=iOS Simulator,name=iPhone 16' \
             -derivedDataPath build-included \
+            C_COMPILER_LAUNCHER="$CCACHE_BIN" \
+            CLANG_ENABLE_EXPLICIT_MODULES_WITH_COMPILER_LAUNCHER=YES \
             CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO
       - name: Build playground for iOS Simulator
         working-directory: playground/ios
@@ -238,6 +247,7 @@ jobs:
           xcodebuild build -workspace playground.xcworkspace -scheme playground -configuration Debug
           -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
           -derivedDataPath build-included ARCHS=arm64 ONLY_ACTIVE_ARCH=NO
+          C_COMPILER_LAUNCHER="$CCACHE_BIN" CLANG_ENABLE_EXPLICIT_MODULES_WITH_COMPILER_LAUNCHER=YES
           CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO
       - name: cordierite doctor — assert present (default autolinking config)
         run: >-
@@ -260,6 +270,7 @@ jobs:
           xcodebuild build -workspace playground.xcworkspace -scheme playground -configuration Debug
           -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
           -derivedDataPath build-excluded ARCHS=arm64 ONLY_ACTIVE_ARCH=NO
+          C_COMPILER_LAUNCHER="$CCACHE_BIN" CLANG_ENABLE_EXPLICIT_MODULES_WITH_COMPILER_LAUNCHER=YES
           CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO
       - name: cordierite doctor — assert absent (excluded via CORDIERITE_ENABLED)
         run: >-
