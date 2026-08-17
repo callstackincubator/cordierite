@@ -8,7 +8,7 @@ This file is maintained by hand. There is no automated changelog tooling (see
 `docs/CI.md#release-policy` for why) — update this file as part of the commit that bumps the
 package versions for a release.
 
-## Unreleased
+## 0.5.1 (2026-08-17)
 
 - **Fix: release builds no longer carry Cordierite's native module by default.** Previously,
   leaving `CORDIERITE_ENABLED` unset shipped Cordierite in every build variant, including

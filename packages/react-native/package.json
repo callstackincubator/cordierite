@@ -1,6 +1,6 @@
 {
   "name": "@cordierite/react-native",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Expo native client for Cordierite sessions",
   "main": "build/index.js",
   "module": "build/index.js",

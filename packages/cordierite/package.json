@@ -1,6 +1,6 @@
 {
   "name": "cordierite",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Driving React Native tools without in-app debug UI.",
   "type": "module",
   "main": "./dist/index.js",
