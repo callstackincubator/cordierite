@@ -22,15 +22,26 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Set up pnpm via corepack
+        # Ahead of setup-node on purpose: `cache: pnpm` below resolves the store by running
+        # `pnpm store path --silent` inside setup-node's own step, so pnpm has to be on PATH by
+        # then. The shims land in their own directory rather than beside the runner's preinstalled
+        # node, so this cannot clobber the image's yarn; they are symlinks into that node's corepack
+        # behind a `#!/usr/bin/env node` shebang, so they keep working once setup-node puts its own
+        # Node 24 at the front of PATH.
+        run: |
+          mkdir -p "$RUNNER_TEMP/corepack"
+          corepack enable --install-directory "$RUNNER_TEMP/corepack" pnpm
+          echo "$RUNNER_TEMP/corepack" >> "$GITHUB_PATH"
+          corepack prepare --activate
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          package-manager-cache: false
-      - name: Set up pnpm via corepack
-        run: |
-          corepack enable
-          corepack prepare --activate
+          # Caches the pnpm store, keyed on pnpm-lock.yaml. Supersedes package-manager-cache: false,
+          # which was a no-op here: that input only gates auto-detection, and auto-detection only
+          # fires when package.json's packageManager field names npm — this repo's names pnpm.
+          cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Build workspace
@@ -46,15 +57,26 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Set up pnpm via corepack
+        # Ahead of setup-node on purpose: `cache: pnpm` below resolves the store by running
+        # `pnpm store path --silent` inside setup-node's own step, so pnpm has to be on PATH by
+        # then. The shims land in their own directory rather than beside the runner's preinstalled
+        # node, so this cannot clobber the image's yarn; they are symlinks into that node's corepack
+        # behind a `#!/usr/bin/env node` shebang, so they keep working once setup-node puts its own
+        # Node 24 at the front of PATH.
+        run: |
+          mkdir -p "$RUNNER_TEMP/corepack"
+          corepack enable --install-directory "$RUNNER_TEMP/corepack" pnpm
+          echo "$RUNNER_TEMP/corepack" >> "$GITHUB_PATH"
+          corepack prepare --activate
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          package-manager-cache: false
-      - name: Set up pnpm via corepack
-        run: |
-          corepack enable
-          corepack prepare --activate
+          # Caches the pnpm store, keyed on pnpm-lock.yaml. Supersedes package-manager-cache: false,
+          # which was a no-op here: that input only gates auto-detection, and auto-detection only
+          # fires when package.json's packageManager field names npm — this repo's names pnpm.
+          cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Build workspace

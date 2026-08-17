@@ -27,15 +27,19 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Set up pnpm via corepack
+        run: |
+          mkdir -p "$RUNNER_TEMP/corepack"
+          corepack enable --install-directory "$RUNNER_TEMP/corepack" pnpm
+          echo "$RUNNER_TEMP/corepack" >> "$GITHUB_PATH"
+          corepack prepare --activate
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          package-manager-cache: false
-      - name: Set up pnpm via corepack
-        run: |
-          corepack enable
-          corepack prepare --activate
+          # No cache: pnpm here, deliberately. This job builds and publishes release tarballs, so
+          # restoring a pnpm store from a prior run's cache would let a poisoned cache entry slip
+          # dependencies into a published package. Every run resolves and installs cleanly.
       - name: Validate production release version
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
