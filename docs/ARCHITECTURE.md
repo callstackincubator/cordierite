@@ -27,8 +27,9 @@ Deliberately out of scope, so the boundaries of the design are explicit:
 - Arbitrary code execution inside the app — only pre-registered, named tools.
 - Anonymous or unauthenticated remote access.
 - Treating deep links as proof of authority.
-- Interactive consent prompting for individual tool calls (the policy enum reserves a
-  future `"prompt"` value; §12).
+- A general-purpose interactive consent UI. `policy: "prompt"` (§12) exists, but its only
+  implemented gate is an MCP client that enforces `_meta["anthropic/requiresUserInteraction"]`
+  — every other caller fails closed rather than getting a prompt of its own.
 - Remote relay to hosts outside the operator machine.
 - Pinning an offline anchor CA that signs short-lived leaf certs. The current model pins
   the same key used for the TLS leaf; overlapping pin sets are the supported rotation
@@ -140,8 +141,8 @@ Methods:
 | `sessions.list` | — | `SessionSummary[]` |
 | `sessions.describe` | `{ selector? }` | full session detail incl. device metadata, state timestamps, tool count |
 | `sessions.revoke` | `{ selector? }` | `{ ok: true }` — closes socket (code 1000), frees alias |
-| `tools.list` | `{ selector? }` | `ToolDescriptor[]` (full schemas + annotations) |
-| `tools.call` | `{ selector?, name, args, timeoutMs? }` | `{ result, callId }` on success — `callId` lets a caller with several in-flight calls match `tool_call_progress`/`tool_call_finished` events back to this call; JSON-RPC error with `data.type` preserving the wire error type on failure |
+| `tools.list` | `{ selector? }` | `ToolsListEntry[]` — `ToolDescriptor` (full schema + annotations) plus the tool's effective `policy: "allow" \| "deny" \| "prompt"` (§12), resolved daemon-side |
+| `tools.call` | `{ selector?, name, args, timeoutMs?, caller?: "cli" \| "mcp", consent?: "client" }` | `{ result, callId }` on success — `callId` lets a caller with several in-flight calls match `tool_call_progress`/`tool_call_finished` events back to this call; JSON-RPC error with `data.type` preserving the wire error type on failure. `caller` attributes the audit record (§12); `consent` is the MCP server's evidence of a `"prompt"`-policy human gate (§12) — absent for the CLI. |
 | `tools.cancel` | `{ selector?, callId, reason? }` | `{ cancelled: boolean }` — sends `tool_cancel` (§7) to the app for a still-pending call; `false` for an unknown/already-finished `callId` or no active socket (a no-op, not an error) |
 | `events.subscribe` | `{ sessionSelector?, kinds? }` | `{ ok: true }`, then `event` notifications on this connection |
 | `events.since` | `{ selector?, since?, kinds?, limit? }` | `{ events: EventNotification[], cursor }` — pull counterpart to `events.subscribe`, draining the per-session retention buffer described below |
@@ -257,12 +258,17 @@ proxies daemon RPC (auto-spawning the daemon like any client):
   several → namespaced `<alias>__<name>`. Registry and session changes emit
   `notifications/tools/list_changed`, so an agent's tool list tracks the device.
 - Tool calls, progress frames, errors (with their `type` preserved), and descriptor
-  annotations all map through verbatim — the MCP surface adds no semantics of its own.
-- An MCP client's `notifications/cancelled` maps to `tools.cancel` (§5) — only for a call
-  that requested progress (the SDK only assigns a `progressToken`, and only the
-  progress-tracked path opens the dedicated connection that learns `callId` while the
-  call is still in flight; a non-progress call has no `callId` to cancel by until it has
-  already resolved, at which point cancelling it is moot).
+  annotations all map through verbatim. Two semantics the MCP surface does add:
+  `"prompt"`-policy consent (§12) — `tools/list` emits
+  `_meta["anthropic/requiresUserInteraction"]` for a tool whose effective policy is
+  `"prompt"`, gated on the connected client's `initialize` `clientInfo`, and `tools/call`
+  echoes that gate back to the daemon as `consent: "client"`, only for a tool this same
+  connection's most recent listing actually flagged — and cancellation: an MCP client's
+  `notifications/cancelled` maps to `tools.cancel` (§5), only for a call that requested
+  progress (the SDK only assigns a `progressToken`, and only the progress-tracked path
+  opens the dedicated connection that learns `callId` while the call is still in flight;
+  a non-progress call has no `callId` to cancel by until it has already resolved, at
+  which point cancelling it is moot).
 - Two built-in management tools, `cordierite_connect` and `cordierite_wait_for_session`,
   let an agent mint a bootstrap link, deliver it to an emulator/simulator, and wait for the
   claim — without shell access. This is what makes the agent path self-service.
@@ -389,14 +395,43 @@ it.
 ## 12. Policy & audit
 
 - Policy applies at the daemon on every `tools.call` (CLI and MCP alike), keyed on the
-  descriptor's `annotations`: `policy.default` (`allow`/`deny`) for tools without
-  `destructiveHint`, `policy.destructive` (`allow`/`deny`) for tools with it, plus
-  per-tool overrides `policy.tools["<alias>/<name>"]`. Denied calls return
-  `policy_denied` and are audited. Interactive prompting is not implemented; the
-  policy configuration leaves room for a future `prompt` value.
+  descriptor's `annotations`: `policy.default`/`policy.destructive`/per-tool overrides
+  `policy.tools["<alias>/<name>"]`, each `"allow" | "deny" | "prompt"`. `allow`/`deny`
+  behave as before; denied calls return `policy_denied` and are audited.
+- `"prompt"` means "a human gate is required; if one cannot be guaranteed, deny" — it
+  fails closed rather than silently behaving like `allow`. The only implemented gate
+  today is MCP: `tools/list` emits `_meta["anthropic/requiresUserInteraction"] = true`
+  for a `"prompt"` tool, per connection, only when the connected client's `initialize`
+  `clientInfo` is known to enforce it (Claude Code ≥ v2.1.199 — every other client
+  ignores the flag). `tools/call` then sets `consent: "client"` only for a tool this
+  same connection's most recent `tools/list` actually flagged that way — not merely a
+  tool whose live policy happens to be `"prompt"` on a client that happens to qualify —
+  so a call can't ride on a stale or hypothetical listing. Every other caller (CLI, an
+  older or non-compliant MCP client) is denied with `policy_denied`, reason
+  `no_consent_channel`.
+  - This is evidence the flag was *emitted*, not that a human answered a prompt: the
+    daemon never observes the client's own permission-prompt UI or its answer, only
+    that the call arrived carrying the marker. `clientInfo` is self-reported, and
+    `consent` is an ordinary RPC param on `daemon.sock` — any local process that can
+    reach the socket (the CLI, or an agent with shell access, which is the typical
+    Claude Code setup this feature targets) can set it directly, same as it could send
+    any other RPC call. `"prompt"` guards against a compliant client silently
+    auto-approving on the caller's behalf; it is not a defense against a hostile
+    process on the operator's own machine — see `docs/SECURITY.md`'s threat model,
+    which already treats socket access as full daemon control.
+  - Two client-observable behaviors worth documenting rather than filing as bugs:
+    non-interactive Claude Code (`--permission-prompt-tool`) converts an `allow` result
+    for a flagged tool into a denial (`MCP tool requires user interaction; not
+    supported via --permission-prompt-tool`) — that conversion is the client's, not
+    the daemon's. And `"prompt"` denies unconditionally in any unattended pipeline
+    (CI has no consent channel at all); pipelines that need a tool to run
+    unattended must set `allow`/`deny` explicitly for it rather than `"prompt"`.
 - Audit: every `tools.call` appends one JSONL record to `audit/<date>.jsonl`:
   `{ ts, sessionId, alias, tool, argsSha256, outcome: "ok"|"error"|"denied"|"cancelled",
-  errorType?, durationMs, caller: "cli"|"mcp" }`. Raw args are never logged.
+  errorType?, durationMs, caller: "cli"|"mcp", consent?: "client" }`. `consent` is set
+  only when a `"prompt"` call proceeded on the MCP client-gate channel above — kept
+  distinct from a plain `"ok"` since the daemon never observes the consent decision
+  itself, only that the call arrived carrying this marker. Raw args are never logged.
 
 ## 13. Package layout
 

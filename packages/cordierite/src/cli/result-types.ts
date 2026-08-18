@@ -4,7 +4,13 @@
  * the thin-client shapes for the v2 command table.
  */
 
-import type { AgentEndpoint, EventNotification, SessionSummary, ToolDescriptor } from "@cordierite/shared";
+import type {
+  AgentEndpoint,
+  EffectivePolicyDecision,
+  EventNotification,
+  SessionSummary,
+  ToolDescriptor,
+} from "@cordierite/shared";
 
 /**
  * CLI-domain error classes, used only to pick a sysexits-style exit code (see `errors.ts`).
@@ -146,9 +152,9 @@ export type DaemonStatusCommandData = {
   };
   /** Effective policy + audit surfacing (ARCHITECTURE.md §12). */
   policy: {
-    default: "allow" | "deny";
-    destructive: "allow" | "deny";
-    tools?: Record<string, "allow" | "deny">;
+    default: EffectivePolicyDecision;
+    destructive: EffectivePolicyDecision;
+    tools?: Record<string, EffectivePolicyDecision>;
   };
   audit: {
     path: string;

@@ -8,14 +8,16 @@ import { readFile } from "node:fs/promises";
 
 import type { StateDirPaths } from "./state-dir.js";
 
-export type PolicyDecision = "allow" | "deny";
+export type PolicyDecision = "allow" | "deny" | "prompt";
 
 /**
  * `config.json`'s `policy` shape (ARCHITECTURE.md §12): `default` applies to tools whose
  * descriptor has no `annotations.destructiveHint`; `destructive` applies when it is `true`;
  * `tools["<alias>/<name>"]` overrides both for one specific tool on one specific session alias.
- * Values are `"allow" | "deny"` only — the enum deliberately leaves room for a future `"prompt"`
- * value, which is rejected at load time with a message that says so (see `requirePolicyDecision`).
+ * `"prompt"` means "a human gate is required; if one cannot be guaranteed, deny" — today the only
+ * such gate is an MCP client that honors `_meta["anthropic/requiresUserInteraction"]`
+ * (ARCHITECTURE.md §9/§12); every other caller (CLI, a non-compliant MCP client) gets
+ * `policy_denied` with reason `no_consent_channel`.
  */
 export type CordieritePolicyConfig = {
   default: PolicyDecision;
@@ -59,7 +61,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
 
 const KNOWN_POLICY_KEYS = new Set<string>(["default", "destructive", "tools"]);
 
-const POLICY_DECISIONS = new Set<string>(["allow", "deny"]);
+const POLICY_DECISIONS = new Set<string>(["allow", "deny", "prompt"]);
 
 export class CordieriteConfigError extends Error {
   constructor(
@@ -93,10 +95,7 @@ const requireNonEmptyString = (value: unknown, key: string): string => {
 
 const requirePolicyDecision = (value: unknown, key: string): PolicyDecision => {
   if (typeof value !== "string" || !POLICY_DECISIONS.has(value)) {
-    throw configError(
-      key,
-      'must be "allow" or "deny" ("prompt" is reserved for a future release and is not yet supported).',
-    );
+    throw configError(key, 'must be "allow", "deny", or "prompt".');
   }
 
   return value as PolicyDecision;

@@ -169,12 +169,19 @@ const asToolsCallParams = (params: unknown): ToolsCallParams => {
     throw new RpcApplicationError("invalid_request", '"caller" must be "cli" or "mcp".');
   }
 
+  const consent = record.consent;
+
+  if (consent !== undefined && consent !== "client") {
+    throw new RpcApplicationError("invalid_request", '"consent" must be "client".');
+  }
+
   return {
     selector: selector as string | undefined,
     name: record.name,
     args: args as Record<string, unknown>,
     timeoutMs: timeoutMs as number | undefined,
     caller: caller as "cli" | "mcp" | undefined,
+    consent: consent as "client" | undefined,
   };
 };
 
@@ -478,18 +485,31 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           const { selector } = asSelectorParams(params);
           // ARCHITECTURE.md §5: tools.list works for ACTIVE and SUSPENDED sessions alike (the
           // retained registry survives suspend); only tools.call requires ACTIVE.
-          return activeSessionManager.resolveForTools(selector).registry.list();
+          const resolved = activeSessionManager.resolveForTools(selector);
+
+          // Each entry carries its effective policy decision (ARCHITECTURE.md §12) so the MCP
+          // server can emit `_meta["anthropic/requiresUserInteraction"]` for "prompt" tools
+          // without a second round trip (issue #14).
+          return resolved.registry.list().map((descriptor) => ({
+            ...descriptor,
+            policy: evaluatePolicy(descriptor, { alias: resolved.alias }, config.policy),
+          }));
         },
         // This handler is the single seam every `tools.call` passes through: policy (ARCHITECTURE.md
         // §12) is evaluated once the target tool descriptor is known, and one audit record is
         // written for every attempt that reaches a resolved session, across ok/error/denied.
         [RPC_METHODS.toolsCall]: async (params, context): Promise<ToolsCallResult> => {
-          const { selector, name, args, timeoutMs, caller } = asToolsCallParams(params);
+          const { selector, name, args, timeoutMs, caller, consent } = asToolsCallParams(params);
           const effectiveCaller = caller ?? "cli";
           const resolved = activeSessionManager.resolveForTools(selector);
           const auditStartedAt = clock.now().getTime();
 
-          const writeAudit = (outcome: "ok" | "error" | "denied" | "cancelled", errorType?: ErrorType): void => {
+          const writeAudit = (
+            outcome: "ok" | "error" | "denied" | "cancelled",
+            errorType?: ErrorType,
+            grantedConsent?: "client",
+            deniedReason?: "policy" | "no_consent_channel",
+          ): void => {
             auditLogger.record({
               sessionId: resolved.sessionId,
               alias: resolved.alias,
@@ -497,8 +517,10 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               argsSha256: argsSha256(args),
               outcome,
               errorType,
+              deniedReason,
               durationMs: clock.now().getTime() - auditStartedAt,
               caller: effectiveCaller,
+              consent: grantedConsent,
             });
           };
 
@@ -517,8 +539,24 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           }
 
           const policyDecision = evaluatePolicy(tool, { alias: resolved.alias }, config.policy);
+          // "prompt" fails closed (ARCHITECTURE.md §12 / issue #14): it proceeds only when the
+          // caller carried `consent: "client"`. This is trusted verbatim once present — the daemon
+          // does not and cannot re-derive whether an MCP client's `_meta` was actually honored, the
+          // same way it doesn't re-verify any other RPC param. `consent` is only ever justified
+          // when set by this codebase's own MCP server (mcp/server.ts), which sets it solely after
+          // confirming both that it emitted `_meta["anthropic/requiresUserInteraction"]` for this
+          // exact tool on this connection's most recent listing, and that the connected client is
+          // known to enforce it. Any other local process with access to `daemon.sock` — including
+          // the CLI, or an agent with shell access, which is the typical setup this feature targets
+          // — could send `consent: "client"` directly; that is not a bypass of this feature so much
+          // as a restatement of this codebase's existing trust boundary (docs/SECURITY.md: anything
+          // that can reach the socket already has full daemon control). "prompt" guards against a
+          // compliant MCP client silently auto-approving on the caller's behalf, not against a
+          // hostile process on the operator's own machine.
+          const grantedConsent: "client" | undefined =
+            policyDecision === "prompt" && consent === "client" ? "client" : undefined;
 
-          if (policyDecision === "deny") {
+          if (policyDecision === "deny" || (policyDecision === "prompt" && grantedConsent === undefined)) {
             // Denied → no frame reaches the app, and the call never starts.
             activeEventBus.emit({
               kind: "tool_call_finished",
@@ -526,7 +564,22 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               alias: resolved.alias,
               data: { name, outcome: "denied" },
             });
-            writeAudit("denied");
+
+            if (policyDecision === "prompt") {
+              writeAudit("denied", undefined, undefined, "no_consent_channel");
+
+              throw new RpcApplicationError(
+                "policy_denied",
+                `Policy requires prompt consent to call "${name}" on session "${resolved.alias}", but no consent channel confirmed it.`,
+                -32000,
+                {
+                  reason: "no_consent_channel",
+                  hint: `This caller did not confirm human consent for "${name}". Claude Code ≥ v2.1.199 confirms it automatically over MCP; every other caller (including the CLI) is denied by design until another consent channel is implemented. To change this tool's policy, edit "policy.tools[\"${resolved.alias}/${name}\"]" (or policy.default/policy.destructive) in ${paths.configPath}.`,
+                },
+              );
+            }
+
+            writeAudit("denied", undefined, undefined, "policy");
 
             throw new RpcApplicationError(
               "policy_denied",
@@ -569,7 +622,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               alias: resolved.alias,
               data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome: "ok" },
             });
-            writeAudit("ok");
+            writeAudit("ok", undefined, grantedConsent);
 
             return { result, callId };
           } catch (error) {
@@ -582,7 +635,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               alias: resolved.alias,
               data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome, errorType },
             });
-            writeAudit(outcome, errorType);
+            writeAudit(outcome, errorType, grantedConsent);
 
             throw error;
           } finally {
