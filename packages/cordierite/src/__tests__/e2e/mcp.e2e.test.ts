@@ -25,7 +25,12 @@ import {
 
 afterEach(cleanupAfterEach);
 
-const BUILTIN_TOOL_NAMES = new Set(["cordierite_connect", "cordierite_wait_for_session"]);
+const BUILTIN_TOOL_NAMES = new Set([
+  "cordierite_connect",
+  "cordierite_wait_for_session",
+  "cordierite_events",
+  "cordierite_wait_for_event",
+]);
 
 const withoutBuiltinTools = <T extends { name: string }>(tools: T[]): T[] => {
   return tools.filter((tool) => !BUILTIN_TOOL_NAMES.has(tool.name));

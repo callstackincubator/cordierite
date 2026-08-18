@@ -14,6 +14,7 @@ export const RPC_METHODS = {
   toolsCall: "tools.call",
   toolsCancel: "tools.cancel",
   eventsSubscribe: "events.subscribe",
+  eventsSince: "events.since",
 } as const;
 
 export type RpcMethod = (typeof RPC_METHODS)[keyof typeof RPC_METHODS];
@@ -154,20 +155,27 @@ export type ToolsCancelResult = {
 
 // --- events.subscribe ---
 
-export type EventKind =
-  | "daemon_started"
-  | "link_created"
-  | "link_expired"
-  | "session_claimed"
-  | "session_suspended"
-  | "session_resumed"
-  | "session_revoked"
-  | "session_expired"
-  | "tools_changed"
-  | "app_event"
-  | "tool_call_started"
-  | "tool_call_progress"
-  | "tool_call_finished";
+/** The single source of truth for the `EventKind` union below — a `const` array (not just a type)
+ * so runtime validators (the daemon's `events.subscribe`/`events.since` param parsing, the MCP
+ * `cordierite_events`/`cordierite_wait_for_event` tool schemas) can derive their allow-list from it
+ * instead of hand-maintaining a second copy that can silently drift from this type. */
+export const EVENT_KINDS = [
+  "daemon_started",
+  "link_created",
+  "link_expired",
+  "session_claimed",
+  "session_suspended",
+  "session_resumed",
+  "session_revoked",
+  "session_expired",
+  "tools_changed",
+  "app_event",
+  "tool_call_started",
+  "tool_call_progress",
+  "tool_call_finished",
+] as const;
+
+export type EventKind = (typeof EVENT_KINDS)[number];
 
 export type EventsSubscribeParams = {
   sessionSelector?: string;
@@ -184,6 +192,40 @@ export type EventNotification = {
   /** Unix ms. */
   ts: number;
   data: unknown;
+  /**
+   * Monotonically increasing per-session cursor (ARCHITECTURE.md §5), assigned by the daemon-side
+   * retention buffer at emit time. Only meaningful for session-scoped events (`sessionId` set) —
+   * daemon-wide events (e.g. `daemon_started`) are never buffered and carry `seq: 0`. Pass the
+   * highest `seq` seen back into `events.since`'s `since` to resume after it.
+   */
+  seq: number;
+};
+
+// --- events.since ---
+
+/** Pulls events retained in the daemon's per-session ring buffer (ARCHITECTURE.md §5) — the
+ * request/response counterpart to `events.subscribe`'s push model, for callers (MCP tools, a
+ * scripted `cordierite events --since`) that ask "what happened?" after the fact instead of
+ * listening live. */
+export type EventsSinceParams = {
+  /** Session id or alias; omitted selects the sole active/suspended session (same default as
+   * `SessionSelectorParams`). */
+  selector?: string;
+  /** Exclusive lower bound on `EventNotification.seq`; omitted returns the whole retained buffer
+   * (oldest first, subject to `limit`). */
+  since?: number;
+  kinds?: EventKind[];
+  /** Caps the number of events returned (newest-first truncation); omitted returns everything
+   * matching `since`/`kinds` up to the buffer's own retention limit. */
+  limit?: number;
+};
+
+export type EventsSinceResult = {
+  events: EventNotification[];
+  /** The highest `seq` currently retained for this session (not just among the returned events),
+   * so a caller can pass it straight back into the next `since` even when `limit` truncated the
+   * response or nothing new had happened. */
+  cursor: number;
 };
 
 // --- JSON-RPC 2.0 error shape ---

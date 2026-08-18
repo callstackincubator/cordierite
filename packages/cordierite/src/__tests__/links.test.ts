@@ -62,8 +62,10 @@ describe("PendingLinkRegistry: TTL expiry and eventual free", () => {
       clock: { now: () => new Date("2026-01-01T00:00:00.000Z") },
       timers,
       eventBus: {
-        emit: (event) => events.push({ ...event, ts: event.ts ?? 0 }),
+        emit: (event) => events.push({ ...event, ts: event.ts ?? 0, seq: 0 }),
         subscribe: () => () => {},
+        since: () => ({ events: [], cursor: 0 }),
+        drop: () => {},
       },
     });
 
@@ -98,7 +100,12 @@ describe("PendingLinkRegistry: TTL expiry and eventual free", () => {
       getEndpoint: () => ({ family: 4, address: "127.0.0.1", port: 8443 }),
       clock: { now: () => new Date("2026-01-01T00:00:00.000Z") },
       timers,
-      eventBus: { emit: () => {}, subscribe: () => () => {} },
+      eventBus: {
+        emit: () => {},
+        subscribe: () => () => {},
+        since: () => ({ events: [], cursor: 0 }),
+        drop: () => {},
+      },
     });
 
     const { link } = registry.create(30);

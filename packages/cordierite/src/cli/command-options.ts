@@ -22,6 +22,23 @@ export const parsePositiveIntegerOption = (value: unknown, flagName: string): nu
   return parsed;
 };
 
+/** Parses a `cac`-provided option value into a non-negative integer (0 allowed, unlike
+ * {@link parsePositiveIntegerOption}), or throws a clear `usage_error`. Used by `events --since`,
+ * whose cursor `0` is a meaningful "everything retained" value, not an omission. */
+export const parseNonNegativeIntegerOption = (value: unknown, flagName: string): number | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 0) {
+    throw usageError(`"${flagName}" must be a non-negative integer.`);
+  }
+
+  return parsed;
+};
+
 /**
  * Splits the positional args of a command shaped `<command> [selector] <target>` (e.g. `invoke
  * [selector] <tool>`, `tools [selector] <name>`): the last positional is always the required

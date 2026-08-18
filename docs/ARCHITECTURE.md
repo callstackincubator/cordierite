@@ -86,6 +86,7 @@ The daemon refuses to load a key file that is group/world-readable.
   "graceSeconds": 600,
   "linkTtlSeconds": 300,
   "keepaliveIntervalSeconds": 15,
+  "eventBufferSize": 256,
   "policy": { "default": "allow", "destructive": "allow" },
   "advertisedIp": null,
   "scheme": null
@@ -95,6 +96,7 @@ The daemon refuses to load a key file that is group/world-readable.
 `advertisedIp` overrides auto-detection of the address advertised in minted bootstrap
 payloads. `scheme` is the deep-link URI scheme composed into `cordierite link`'s output
 when `--scheme` is not passed (§10) — set it once here instead of on every invocation.
+`eventBufferSize` caps the per-session `events.since` retention buffer (§5).
 
 ## 4. Daemon lifecycle
 
@@ -142,6 +144,7 @@ Methods:
 | `tools.call` | `{ selector?, name, args, timeoutMs? }` | `{ result, callId }` on success — `callId` lets a caller with several in-flight calls match `tool_call_progress`/`tool_call_finished` events back to this call; JSON-RPC error with `data.type` preserving the wire error type on failure |
 | `tools.cancel` | `{ selector?, callId, reason? }` | `{ cancelled: boolean }` — sends `tool_cancel` (§7) to the app for a still-pending call; `false` for an unknown/already-finished `callId` or no active socket (a no-op, not an error) |
 | `events.subscribe` | `{ sessionSelector?, kinds? }` | `{ ok: true }`, then `event` notifications on this connection |
+| `events.since` | `{ selector?, since?, kinds?, limit? }` | `{ events: EventNotification[], cursor }` — pull counterpart to `events.subscribe`, draining the per-session retention buffer described below |
 
 `SessionSummary`: `{ sessionId, alias, state, device: { manufacturer?, model?, os? },
 createdAt, claimedAt?, suspendedAt?, toolCount }`.
@@ -149,11 +152,33 @@ createdAt, claimedAt?, suspendedAt?, toolCount }`.
 `daemon.status`'s result also reports the effective policy config and audit surfacing:
 `{ ..., policy: { default, destructive, tools? }, audit: { path, failedWrites } }` (§12).
 
-Event notification payload: `{ kind, sessionId?, alias?, ts, data }` where `kind` is one
+Event notification payload: `{ kind, sessionId?, alias?, ts, data, seq }` where `kind` is one
 of `daemon_started`, `link_created`, `link_expired`, `session_claimed`,
 `session_suspended`, `session_resumed`, `session_revoked`, `session_expired`,
 `tools_changed`, `app_event`, `tool_call_started`, `tool_call_progress`,
-`tool_call_finished`.
+`tool_call_finished`. `seq` is a per-session cursor (§ below); daemon-wide events (no
+`sessionId`) carry `seq: 0` and are never retained.
+
+**Event retention (issue #6):** alongside the live `events.subscribe` fan-out, the daemon
+keeps a per-session ring buffer of the last `eventBufferSize` events (`config.json`,
+default 256; `tool_call_progress` is excluded — a single chatty call can emit far more of
+these than the buffer holds, which would otherwise evict every retained `app_event`),
+each stamped with a `seq` that increases monotonically per session. `events.since` drains
+it — `since` is an exclusive lower bound on `seq`, `kinds` filters by event kind, `limit`
+caps the response to the **oldest** N so paging forward with the returned `cursor` never
+skips anything; the result's `cursor` is the `seq` of the last event actually **returned**
+(so `since: cursor` on the next call resumes right after it), falling back to the session's
+true high-water mark only when nothing was returned (an empty buffer, or every retained
+event was filtered out by `kinds`) so an empty page still lets a caller skip past events it
+explicitly excluded rather than re-scanning them forever. `selector` defaults the same way
+as every other selector-taking method (§ above). A session's buffer is discarded the
+instant it hits a terminal event (`session_expired`/`session_revoked`) — matching "terminal
+states free the alias" (§6) — the terminal event itself is still delivered live, just never
+retained; an unclaimed pending link's buffer is discarded the same way when it's
+discarded for any reason (TTL, revoke, attempt-limit exceeded), even the paths with no
+event kind of their own. This exists because MCP is strictly request/response (§9): without
+it, an agent that calls a tool and then asks "what happened?" has already missed the
+answer, since it was never subscribed at the moment the app pushed it.
 
 **Error codes** (JSON-RPC `error.data.type`): `no_session`, `ambiguous_session`,
 `unknown_session`, `session_not_active`, `tool_not_found`,
@@ -241,6 +266,17 @@ proxies daemon RPC (auto-spawning the daemon like any client):
 - Two built-in management tools, `cordierite_connect` and `cordierite_wait_for_session`,
   let an agent mint a bootstrap link, deliver it to an emulator/simulator, and wait for the
   claim — without shell access. This is what makes the agent path self-service.
+- Two more built-in tools, `cordierite_events` and `cordierite_wait_for_event` (issue #6),
+  give an agent a pull surface over `postEvent()`-pushed `app_event`s: `cordierite_events`
+  is a thin proxy over `events.since`; `cordierite_wait_for_event` blocks for a matching
+  event, draining the retained buffer for an already-arrived match before falling back to
+  a live wait — closing the same race `cordierite_wait_for_session` doesn't have to worry
+  about (a session is either claimed or not, but an event can fire between "the agent
+  decides to wait" and "the wait subscription lands"). `timeoutMs` is capped server-side
+  well under the 30-minute idle window a stdio MCP tool call gets before Claude Code aborts
+  it for sending neither a response nor a progress notification; a call still running after
+  about two minutes moves to a Claude Code background task, so its result may arrive well
+  after the call returns.
 
 ## 10. CLI surface
 
