@@ -166,15 +166,15 @@ not as the mechanism that keeps a destructive tool out of reach of a hostile one
 
 - **Policy.** Set `config.json`'s `policy.default` / `policy.destructive` (and per-tool
   `policy.tools["<alias>/<name>"]` overrides) to `"deny"` for anything you don't want an
-  arbitrary caller invoking against a production build. Every `tools.call` — CLI and MCP
-  alike — is evaluated against this before it ever reaches the app; a denial returns
-  `policy_denied` and never sends a `tool_call` frame. Interactive consent prompting is
-  not implemented (the policy configuration reserves a future `"prompt"` value);
+  arbitrary caller invoking against a production build. Every `tools.call` — CLI, MCP, and
+  `cordierite/client` alike — is evaluated against this before it ever reaches the app;
+  a denial returns `policy_denied` and never sends a `tool_call` frame. Interactive consent
+  prompting is not implemented (the policy configuration reserves a future `"prompt"` value);
   until then, `"deny"` is the only way to gate a tool that needs human sign-off.
 - **Audit.** Every `tools.call` attempt — regardless of outcome — appends one line to
   `audit/<YYYY-MM-DD>.jsonl`: timestamp, session, alias, tool name, a sha256 of the
   canonicalized args (never the raw args), outcome, error type if any, duration, and
-  caller (`cli`/`mcp`). This is on unconditionally; there's no flag to disable it. Check
+  caller (`cli`/`mcp`/`client`). This is on unconditionally; there's no flag to disable it. Check
   `daemon.status`'s `audit.failedWrites` if you need to confirm the log is actually
   landing on disk (e.g. under a read-only or full filesystem).
 - **Inclusion defaults to dev builds only — not a compiled-in build-type check.** On iOS,

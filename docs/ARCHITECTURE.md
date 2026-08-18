@@ -336,7 +336,7 @@ it.
   policy configuration leaves room for a future `prompt` value.
 - Audit: every `tools.call` appends one JSONL record to `audit/<date>.jsonl`:
   `{ ts, sessionId, alias, tool, argsSha256, outcome: "ok"|"error"|"denied",
-  errorType?, durationMs, caller: "cli"|"mcp" }`. Raw args are never logged.
+  errorType?, durationMs, caller: "cli"|"mcp"|"client" }`. Raw args are never logged.
 
 ## 13. Package layout
 

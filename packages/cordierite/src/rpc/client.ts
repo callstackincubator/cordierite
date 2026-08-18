@@ -302,8 +302,11 @@ export const callDaemon = async <TResult>(
 };
 
 export type DaemonStream = {
-  /** Sends a request over the persistent connection and awaits its response. */
-  call: <TResult>(method: string, params?: unknown) => Promise<TResult>;
+  /** Sends a request over the persistent connection and awaits its response. `timeoutMs`
+   * overrides this stream's default transport timeout for this call only — needed when a
+   * request's own server-side deadline (e.g. `tools.call`'s `timeoutMs` param) can exceed the
+   * stream's default, so the transport timeout never fires before the server-side one does. */
+  call: <TResult>(method: string, params?: unknown, timeoutMs?: number) => Promise<TResult>;
   /** Subscribes to server→client `"event"` notifications; returns an unsubscribe function. */
   onNotification: (callback: (payload: unknown) => void) => () => void;
   /** Fires once when the underlying socket closes (daemon gone, stop(), etc.); returns an
@@ -403,7 +406,13 @@ export const openDaemonStream = async (
 
       if (message.method === "event") {
         for (const listener of notificationListeners) {
-          listener(message.params);
+          try {
+            listener(message.params);
+          } catch {
+            // A misbehaving subscriber (e.g. a throwing `waitForEvent` match predicate) must never
+            // crash this loop — it would drop every other listener's notification, and any RPC
+            // response batched in the same chunk, for the rest of this connection's lifetime.
+          }
         }
         continue;
       }
@@ -439,7 +448,7 @@ export const openDaemonStream = async (
   });
 
   return {
-    call: <TResult>(method: string, params?: unknown) => {
+    call: <TResult>(method: string, params?: unknown, timeoutMs?: number) => {
       return new Promise<TResult>((resolve, reject) => {
         const id = nextRequestId;
         nextRequestId += 1;
@@ -447,7 +456,7 @@ export const openDaemonStream = async (
         const timeout = setTimeout(() => {
           pendingCalls.delete(id);
           reject(new DaemonUnavailableError(`Timed out waiting for a response to "${method}".`));
-        }, requestTimeoutMs);
+        }, timeoutMs ?? requestTimeoutMs);
 
         pendingCalls.set(id, {
           resolve: resolve as (value: unknown) => void,

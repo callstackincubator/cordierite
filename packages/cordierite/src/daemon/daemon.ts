@@ -175,8 +175,8 @@ const asToolsCallParams = (params: unknown): ToolsCallParams => {
 
   const caller = record.caller;
 
-  if (caller !== undefined && caller !== "cli" && caller !== "mcp") {
-    throw new RpcApplicationError("invalid_request", '"caller" must be "cli" or "mcp".');
+  if (caller !== undefined && caller !== "cli" && caller !== "mcp" && caller !== "client") {
+    throw new RpcApplicationError("invalid_request", '"caller" must be "cli", "mcp", or "client".');
   }
 
   return {
@@ -184,7 +184,7 @@ const asToolsCallParams = (params: unknown): ToolsCallParams => {
     name: record.name,
     args: args as Record<string, unknown>,
     timeoutMs: timeoutMs as number | undefined,
-    caller: caller as "cli" | "mcp" | undefined,
+    caller: caller as "cli" | "mcp" | "client" | undefined,
   };
 };
 

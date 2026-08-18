@@ -125,8 +125,9 @@ export type ToolsCallParams = SessionSelectorParams & {
   args: Record<string, unknown>;
   timeoutMs?: number;
   /** Attribution for the audit log (ARCHITECTURE.md §12): who issued this call. The MCP server
-   * always sets `"mcp"`; omitted (the CLI's case) defaults to `"cli"` at the daemon. */
-  caller?: "cli" | "mcp";
+   * always sets `"mcp"`, the `cordierite/client` package always sets `"client"`; omitted (the
+   * CLI's case) defaults to `"cli"` at the daemon. */
+  caller?: "cli" | "mcp" | "client";
 };
 
 export type ToolsCallResult = {

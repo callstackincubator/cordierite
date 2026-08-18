@@ -20,7 +20,7 @@ import type { ErrorType } from "@cordierite/shared";
 import type { Clock } from "../cli/types.js";
 
 export type AuditOutcome = "ok" | "error" | "denied";
-export type AuditCaller = "cli" | "mcp";
+export type AuditCaller = "cli" | "mcp" | "client";
 
 export type AuditRecord = {
   /** ISO 8601. */
