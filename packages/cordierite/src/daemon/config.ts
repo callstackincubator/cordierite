@@ -31,6 +31,9 @@ export type CordieriteConfig = {
   graceSeconds: number;
   linkTtlSeconds: number;
   keepaliveIntervalSeconds: number;
+  /** Max retained `app_event`/etc. events per session (ARCHITECTURE.md §5's `events.since`
+   * retention buffer); default 256. */
+  eventBufferSize: number;
   policy: CordieritePolicyConfig;
   /** Operator override for advertised-address detection (daemon/address.ts); undefined = auto-detect. */
   advertisedIp?: string;
@@ -50,6 +53,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
   "graceSeconds",
   "linkTtlSeconds",
   "keepaliveIntervalSeconds",
+  "eventBufferSize",
   "policy",
   "advertisedIp",
   "scheme",
@@ -104,6 +108,7 @@ export const defaultConfig = (paths: StateDirPaths): CordieriteConfig => {
     graceSeconds: 600,
     linkTtlSeconds: 300,
     keepaliveIntervalSeconds: 15,
+    eventBufferSize: 256,
     policy: {
       default: "allow",
       destructive: "allow",
@@ -174,6 +179,10 @@ export const loadConfig = async (
       parsed.keepaliveIntervalSeconds,
       "keepaliveIntervalSeconds",
     );
+  }
+
+  if (parsed.eventBufferSize !== undefined) {
+    config.eventBufferSize = requirePositiveInteger(parsed.eventBufferSize, "eventBufferSize");
   }
 
   if (parsed.policy !== undefined) {

@@ -34,7 +34,7 @@ The command writes an unencrypted PEM private key (PKCS#8) to `<state-dir>/key.p
 | `cordierite ls` | list sessions: alias, state, device, tool count |
 | `cordierite tools [selector] [name] [--full]` | list a session's tools, or show one tool's full schema |
 | `cordierite invoke [selector] <tool> --input '<json>' [--timeout <ms>]` | call a tool |
-| `cordierite events [selector] [--follow]` | stream session/tool events; `--json` emits NDJSON |
+| `cordierite events [selector] [--follow] [--since <cursor>]` | stream session/tool events (default), or one-shot pull everything retained since `<cursor>` (`--since`); `--json` emits NDJSON |
 | `cordierite revoke [selector]` | revoke a session |
 | `cordierite daemon run\|start\|stop\|status` | daemon lifecycle |
 | `cordierite mcp` | start a stdio MCP server proxying connected apps' tools to MCP clients |
@@ -63,7 +63,7 @@ Add `cordierite mcp` to the agent's MCP server config — no separate server pro
 }
 ```
 
-Once configured, the connected app's tools appear as MCP tools automatically: `tools/list` mirrors the live registry (namespaced `<alias>__<name>` when more than one session is active), and `tools/call` proxies straight to the app with progress and errors preserved. Two built-in management tools let an agent bootstrap a session without shell access: `cordierite_connect` mints a link (optionally delivering it directly to a booted `android`/`ios-sim` target), and `cordierite_wait_for_session` waits for that session to be claimed.
+Once configured, the connected app's tools appear as MCP tools automatically: `tools/list` mirrors the live registry (namespaced `<alias>__<name>` when more than one session is active), and `tools/call` proxies straight to the app with progress and errors preserved. Two built-in management tools let an agent bootstrap a session without shell access: `cordierite_connect` mints a link (optionally delivering it directly to a booted `android`/`ios-sim` target), and `cordierite_wait_for_session` waits for that session to be claimed. Two more built-in tools give an agent a pull surface over `postEvent()`-pushed app events: `cordierite_events` drains everything retained since a cursor, and `cordierite_wait_for_event` blocks for a matching event (checking what's already retained before waiting live), rejecting with `tool_timeout` if none arrives in time.
 
 ## Release gate: `cordierite doctor`
 

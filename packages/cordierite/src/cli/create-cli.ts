@@ -41,7 +41,8 @@ export const createCli = () => {
 
   cli
     .command("events [selector]", "Stream session/tool events until interrupted.")
-    .option("--follow", "Accepted for script readability; the default behavior already follows.");
+    .option("--follow", "Accepted for script readability; the default behavior already follows.")
+    .option("--since <cursor>", "One-shot: print events retained since this cursor instead of streaming live.");
 
   cli.command("revoke [selector]", "Revoke a session.");
 
