@@ -86,6 +86,13 @@ export const createPendingLinkRegistry = (options: PendingLinkRegistryOptions): 
 
     options.timers.clearTimeout(record.timer);
     records.delete(sessionId);
+    // Covers every discard path uniformly, including the ones with no dedicated event kind
+    // (attempt-limit exceeded, the TTL free-timer) — `link_expired`/`session_revoked` also reach
+    // here for the paths that do emit one, so this is a harmless no-op in those cases (the
+    // corresponding event already dropped the buffer, if `event-bus.ts` treats that kind as
+    // terminal) or the only thing that does (issue #6: an unclaimed link must not retain events
+    // forever).
+    options.eventBus.drop(sessionId);
   };
 
   return {

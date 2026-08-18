@@ -141,20 +141,27 @@ export type ToolsCallResult = {
 
 // --- events.subscribe ---
 
-export type EventKind =
-  | "daemon_started"
-  | "link_created"
-  | "link_expired"
-  | "session_claimed"
-  | "session_suspended"
-  | "session_resumed"
-  | "session_revoked"
-  | "session_expired"
-  | "tools_changed"
-  | "app_event"
-  | "tool_call_started"
-  | "tool_call_progress"
-  | "tool_call_finished";
+/** The single source of truth for the `EventKind` union below — a `const` array (not just a type)
+ * so runtime validators (the daemon's `events.subscribe`/`events.since` param parsing, the MCP
+ * `cordierite_events`/`cordierite_wait_for_event` tool schemas) can derive their allow-list from it
+ * instead of hand-maintaining a second copy that can silently drift from this type. */
+export const EVENT_KINDS = [
+  "daemon_started",
+  "link_created",
+  "link_expired",
+  "session_claimed",
+  "session_suspended",
+  "session_resumed",
+  "session_revoked",
+  "session_expired",
+  "tools_changed",
+  "app_event",
+  "tool_call_started",
+  "tool_call_progress",
+  "tool_call_finished",
+] as const;
+
+export type EventKind = (typeof EVENT_KINDS)[number];
 
 export type EventsSubscribeParams = {
   sessionSelector?: string;

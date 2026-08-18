@@ -160,17 +160,24 @@ of `daemon_started`, `link_created`, `link_expired`, `session_claimed`,
 
 **Event retention (issue #6):** alongside the live `events.subscribe` fan-out, the daemon
 keeps a per-session ring buffer of the last `eventBufferSize` events (`config.json`,
-default 256), each stamped with a `seq` that increases monotonically per session. `events.since`
-drains it — `since` is an exclusive lower bound on `seq`, `kinds` filters by event kind, `limit`
-caps the response to the newest N; the result's `cursor` is the session's true highest `seq`
-(not just among the returned events), so a caller passes it straight back into the next
-`since` even when `limit` truncated the response or nothing new had happened. `selector`
-defaults the same way as every other selector-taking method (§ above). A session's buffer is
-discarded the instant it hits a terminal event (`session_expired`/`session_revoked`) — matching
-"terminal states free the alias" (§6) — the terminal event itself is still delivered live, just
-never retained. This exists because MCP is strictly request/response (§9): without it, an agent
-that calls a tool and then asks "what happened?" has already missed the answer, since it was
-never subscribed at the moment the app pushed it.
+default 256; `tool_call_progress` is excluded — a single chatty call can emit far more of
+these than the buffer holds, which would otherwise evict every retained `app_event`),
+each stamped with a `seq` that increases monotonically per session. `events.since` drains
+it — `since` is an exclusive lower bound on `seq`, `kinds` filters by event kind, `limit`
+caps the response to the **oldest** N so paging forward with the returned `cursor` never
+skips anything; the result's `cursor` is the `seq` of the last event actually **returned**
+(so `since: cursor` on the next call resumes right after it), falling back to the session's
+true high-water mark only when nothing was returned (an empty buffer, or every retained
+event was filtered out by `kinds`) so an empty page still lets a caller skip past events it
+explicitly excluded rather than re-scanning them forever. `selector` defaults the same way
+as every other selector-taking method (§ above). A session's buffer is discarded the
+instant it hits a terminal event (`session_expired`/`session_revoked`) — matching "terminal
+states free the alias" (§6) — the terminal event itself is still delivered live, just never
+retained; an unclaimed pending link's buffer is discarded the same way when it's
+discarded for any reason (TTL, revoke, attempt-limit exceeded), even the paths with no
+event kind of their own. This exists because MCP is strictly request/response (§9): without
+it, an agent that calls a tool and then asks "what happened?" has already missed the
+answer, since it was never subscribed at the moment the app pushed it.
 
 **Error codes** (JSON-RPC `error.data.type`): `no_session`, `ambiguous_session`,
 `unknown_session`, `session_not_active`, `tool_not_found`,

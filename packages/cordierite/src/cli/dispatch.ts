@@ -17,7 +17,7 @@ import { handleRevokeCommand } from "../commands/revoke.js";
 import { handleToolsCommand } from "../commands/tools.js";
 import { resolveStateDir } from "../daemon/state-dir.js";
 import { usageError } from "../errors.js";
-import { renderEventLine } from "../output.js";
+import { renderEventLine, renderEventsCursorLine } from "../output.js";
 import {
   parseJsonInputOption,
   parseNonNegativeIntegerOption,
@@ -184,19 +184,31 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
     case "events": {
       const { selector } = splitOptionalSelector(parsedArgs, "events [selector]");
       const since = parseNonNegativeIntegerOption(parsedOptions.since, "--since");
+      const follow = Boolean(parsedOptions.follow);
 
       return executeHostedCommand(
         "events",
-        () =>
-          handleEventsCommand(
+        () => {
+          // Deferred into the wrapped handler (rather than thrown directly in this case body,
+          // matching the codebase's existing lax convention for that) so `executeHostedCommand`'s
+          // own try/catch renders it as a normal usage_error instead of an uncaught rejection.
+          if (since !== undefined && follow) {
+            throw usageError('"--since" is a one-shot pull and cannot be combined with "--follow".');
+          }
+
+          return handleEventsCommand(
             { selector, since },
             {
               stateDir,
               onEvent: (event: EventNotification) => {
                 writers.stdout.write(`${renderEventLine(event, { json, color })}\n`);
               },
+              onCursor: (cursor) => {
+                writers.stdout.write(`${renderEventsCursorLine(cursor, { json, color })}\n`);
+              },
             },
-          ),
+          );
+        },
         {
           ...io,
           reporter: {

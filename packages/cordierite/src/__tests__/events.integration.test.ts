@@ -217,25 +217,33 @@ describe("cordierite events --json", () => {
     expect(await waitForExit(sinceProcess)).toBe(0);
 
     const lines = stdout.split("\n").filter((line) => line.length > 0);
-    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.length).toBeGreaterThan(1); // at least one event line plus the trailing cursor line
 
-    let cursor = 0;
-    for (const line of lines) {
+    // The last line is the trailing `{"cursor":N}` marker (issue #6: a scripted caller shouldn't
+    // have to reconstruct the resume point by maxing `seq` over the event lines, which is
+    // impossible when the response is empty); everything before it is an event.
+    const cursorLine = JSON.parse(lines[lines.length - 1]!) as { cursor: number };
+    const eventLines = lines.slice(0, -1);
+
+    for (const line of eventLines) {
       const parsed = JSON.parse(line);
       expect(parsed).toHaveProperty("kind");
       expect(parsed).toHaveProperty("seq");
-      cursor = Math.max(cursor, parsed.seq);
     }
 
-    expect(lines.some((line) => JSON.parse(line).kind === "app_event")).toBe(true);
+    expect(eventLines.some((line) => JSON.parse(line).kind === "app_event")).toBe(true);
 
-    const drainedProcess = spawnCliBinary(["events", alias, "--since", String(cursor), "--json"], { stateDir });
+    const drainedProcess = spawnCliBinary(["events", alias, "--since", String(cursorLine.cursor), "--json"], { stateDir });
     let drainedStdout = "";
     drainedProcess.stdout.on("data", (chunk: Buffer) => {
       drainedStdout += chunk.toString("utf8");
     });
     expect(await waitForExit(drainedProcess)).toBe(0);
-    expect(drainedStdout.trim()).toBe("");
+
+    // Nothing new since the cursor: only the trailing cursor line itself, no event lines.
+    const drainedLines = drainedStdout.split("\n").filter((line) => line.length > 0);
+    expect(drainedLines).toHaveLength(1);
+    expect(JSON.parse(drainedLines[0]!)).toEqual({ cursor: cursorLine.cursor });
 
     socket.close();
     const stopResult = runCliJson(["daemon", "stop"], stateDir);

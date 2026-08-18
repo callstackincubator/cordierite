@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   RPC_METHODS,
+  EVENT_KINDS,
   type EventKind,
   type ErrorType,
   type DaemonShutdownResult,
@@ -49,23 +50,8 @@ import { createSessionManager, type SessionManager } from "./sessions.js";
 import { ensureStateDir, getSocketPath, getStateDirPaths, type StateDirPaths } from "./state-dir.js";
 import { createTlsManager, toAgentEndpoint, type TlsManager } from "./tls.js";
 
-/** Runtime mirror of the shared `EventKind` union (ARCHITECTURE.md §5), used to validate
- * `events.subscribe`'s `kinds` filter — the shared package only exports the type. */
-const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set<EventKind>([
-  "daemon_started",
-  "link_created",
-  "link_expired",
-  "session_claimed",
-  "session_suspended",
-  "session_resumed",
-  "session_revoked",
-  "session_expired",
-  "tools_changed",
-  "app_event",
-  "tool_call_started",
-  "tool_call_progress",
-  "tool_call_finished",
-]);
+/** Used to validate `events.subscribe`/`events.since`'s `kinds` filter. */
+const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set<EventKind>(EVENT_KINDS);
 
 /** Per-connection `events.subscribe` state, stashed in `RpcConnection.state`. */
 type EventSubscription = {

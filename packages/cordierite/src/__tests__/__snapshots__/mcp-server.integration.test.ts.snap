@@ -31,20 +31,35 @@ exports[`mcp: tools/list and tools/call > the generated MCP tool list (built-ins
       "properties": {
         "kinds": {
           "items": {
+            "enum": [
+              "daemon_started",
+              "link_created",
+              "link_expired",
+              "session_claimed",
+              "session_suspended",
+              "session_resumed",
+              "session_revoked",
+              "session_expired",
+              "tools_changed",
+              "app_event",
+              "tool_call_started",
+              "tool_call_progress",
+              "tool_call_finished",
+            ],
             "type": "string",
           },
           "type": "array",
         },
         "limit": {
           "exclusiveMinimum": 0,
-          "type": "number",
+          "type": "integer",
         },
         "selector": {
           "type": "string",
         },
         "since": {
           "minimum": 0,
-          "type": "number",
+          "type": "integer",
         },
       },
       "type": "object",
@@ -58,6 +73,14 @@ exports[`mcp: tools/list and tools/call > the generated MCP tool list (built-ins
       "additionalProperties": false,
       "properties": {
         "match": {
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null",
+            ],
+          },
           "type": "object",
         },
         "name": {
@@ -65,6 +88,10 @@ exports[`mcp: tools/list and tools/call > the generated MCP tool list (built-ins
         },
         "selector": {
           "type": "string",
+        },
+        "since": {
+          "minimum": 0,
+          "type": "integer",
         },
         "timeoutMs": {
           "exclusiveMinimum": 0,

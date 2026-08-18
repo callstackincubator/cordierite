@@ -7,21 +7,26 @@
  * `cordierite_wait_for_event` drains the retained buffer for an already-arrived match before
  * falling back to a live wait, exactly to avoid the race `cordierite_wait_for_session` doesn't
  * have to worry about (a session is either claimed or it isn't, but an `app_event` can easily fire
- * between "the agent decides to wait" and "the wait subscription lands"). The buffer read and the
- * live subscription overlap by design (both start from the same resolved session and the same
- * `app_event` filter) — events already accounted for by the buffer read are deduped by `seq` so a
- * late-arriving one over the live channel is never reported twice.
+ * between "the agent decides to wait" and "the wait subscription lands"). The live notification
+ * listener is registered *before* the `events.since` drain call is even sent — not merely before
+ * it resolves — because the daemon's response to that call and a subsequent `notify()` for a new
+ * event can arrive in the same socket chunk; `rpc/client.ts` fans a chunk's notification lines out
+ * to whatever listeners exist at the moment it's processed, so a listener added only after `await
+ * stream.call(eventsSince, …)` returns can miss an event that was already in that same chunk.
+ * Arrivals before the drain has been merged into the backlog are buffered, then merged in
+ * (deduped by `seq`) before falling through to the live phase — see `handleWaitForEventTool` below.
  */
 
 import {
   RPC_METHODS,
+  EVENT_KINDS,
   type EventKind,
   type EventNotification,
   type EventsSinceResult,
   type SessionsDescribeResult,
 } from "@cordierite/shared";
 
-import { DaemonRpcError, openDaemonStream, type SpawnFn } from "../rpc/client.js";
+import { openDaemonStream, type SpawnFn } from "../rpc/client.js";
 import type { DaemonCall } from "./daemon-tools.js";
 import { McpBuiltinToolError } from "./connect-tool.js";
 
@@ -38,37 +43,32 @@ const MAX_WAIT_FOR_EVENT_TIMEOUT_MS = 25 * 60 * 1000;
  * within the idle window), but it gives a caller watching progress something to show. */
 const WAIT_FOR_EVENT_PROGRESS_INTERVAL_MS = 60_000;
 
-const KNOWN_EVENT_KINDS = new Set<string>([
-  "daemon_started",
-  "link_created",
-  "link_expired",
-  "session_claimed",
-  "session_suspended",
-  "session_resumed",
-  "session_revoked",
-  "session_expired",
-  "tools_changed",
-  "app_event",
-  "tool_call_started",
-  "tool_call_progress",
-  "tool_call_finished",
-]);
+const KNOWN_EVENT_KINDS = new Set<string>(EVENT_KINDS);
+
+/** Server-side cap on `timeoutMs` (issue #6's "Cap timeoutMs server-side below the idle window
+ * rather than trusting the caller") — a pure function so the cap's boundary behavior is
+ * unit-testable without spinning up a daemon or actually waiting out either bound. */
+export const clampWaitForEventTimeoutMs = (requestedMs: number | undefined): number => {
+  return Math.min(requestedMs ?? DEFAULT_WAIT_FOR_EVENT_TIMEOUT_MS, MAX_WAIT_FOR_EVENT_TIMEOUT_MS);
+};
 
 export const EVENTS_TOOL_DESCRIPTOR = {
   name: EVENTS_TOOL_NAME,
   description:
-    "Drain events retained in the daemon's per-session ring buffer (ARCHITECTURE.md §5) since a " +
-    "cursor — the pull counterpart to a live subscription, for checking what happened after " +
-    "calling a tool or triggering app behavior. With no selector, targets the sole active/" +
-    "suspended session. Returns { events, cursor }; pass cursor back as since on the next call to " +
-    "avoid re-reading events you've already seen.",
+    "Drain events retained in the daemon's per-session ring buffer since a cursor — the pull " +
+    "counterpart to a live subscription, for checking what happened after calling a tool or " +
+    "triggering app behavior. With no selector, targets the sole active/suspended session. " +
+    "Returns { events, cursor }; pass cursor back as since on the next call to avoid re-reading " +
+    "events you've already seen. limit (if given) keeps the OLDEST events in the window and " +
+    "advances cursor only past what was actually returned, so repeated calls page forward through " +
+    "everything retained rather than skipping ahead.",
   inputSchema: {
     type: "object",
     properties: {
       selector: { type: "string" },
-      since: { type: "number", minimum: 0 },
-      kinds: { type: "array", items: { type: "string" } },
-      limit: { type: "number", exclusiveMinimum: 0 },
+      since: { type: "integer", minimum: 0 },
+      kinds: { type: "array", items: { type: "string", enum: EVENT_KINDS } },
+      limit: { type: "integer", exclusiveMinimum: 0 },
     },
     additionalProperties: false,
   },
@@ -78,18 +78,23 @@ export const WAIT_FOR_EVENT_TOOL_DESCRIPTOR = {
   name: WAIT_FOR_EVENT_TOOL_NAME,
   description:
     "Wait for the connected app to push an event via postEvent(name, payload) matching name (and, " +
-    "if match is given, every one of its keys shallow-equal in the event's payload). Checks " +
-    "already-retained events first, so an event that already fired before this call still resolves " +
-    "immediately. Resolves with { sessionId, alias, name, payload, ts, seq }, or rejects with " +
-    "tool_timeout after timeoutMs (default 120000ms, capped server-side at 1500000ms). A call " +
-    "still running after about two minutes moves to a Claude Code background task, so the result " +
-    "may arrive well after this call returns.",
+    "if match is given, every one of its keys strictly-equal — primitives only, not objects/arrays " +
+    "— in the event's payload). Checks already-retained events first, so an event that already " +
+    "fired before this call still resolves immediately; pass since (a cursor from a previous " +
+    "cordierite_events/cordierite_wait_for_event call) to skip events you've already handled and " +
+    "wait only for a new one — omitting it can return an old match instantly on every call. " +
+    "Requires a claimed session to already exist (use cordierite_wait_for_session first if not). " +
+    "Resolves with { sessionId, alias, name, payload, ts, seq }, or rejects with tool_timeout after " +
+    "timeoutMs (default 120000ms, capped server-side at 1500000ms). A call still running after " +
+    "about two minutes moves to a Claude Code background task, so the result may arrive well after " +
+    "this call returns.",
   inputSchema: {
     type: "object",
     properties: {
       selector: { type: "string" },
       name: { type: "string" },
-      match: { type: "object" },
+      match: { type: "object", additionalProperties: { type: ["string", "number", "boolean", "null"] } },
+      since: { type: "integer", minimum: 0 },
       timeoutMs: { type: "number", exclusiveMinimum: 0 },
     },
     required: ["name"],
@@ -121,18 +126,35 @@ const asOptionalString = (value: unknown, field: string): string | undefined => 
   return value;
 };
 
-const asOptionalNonNegativeNumber = (value: unknown, field: string): number | undefined => {
+/** `since`/`limit` mirror the daemon's own `asEventsSinceParams` (`daemon/daemon.ts`), which
+ * requires integers — accepting e.g. `1.5` here would just round-trip to a `DaemonRpcError`
+ * instead of this tool's own clearer `invalid_request`. */
+const asOptionalNonNegativeInteger = (value: unknown, field: string): number | undefined => {
   if (value === undefined) {
     return undefined;
   }
 
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new McpBuiltinToolError("invalid_request", `"${field}" must be a non-negative number.`);
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new McpBuiltinToolError("invalid_request", `"${field}" must be a non-negative integer.`);
   }
 
   return value;
 };
 
+const asOptionalPositiveInteger = (value: unknown, field: string): number | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new McpBuiltinToolError("invalid_request", `"${field}" must be a positive integer.`);
+  }
+
+  return value;
+};
+
+/** `timeoutMs` is not required to be an integer (unlike the daemon's `since`/`limit`) — it's never
+ * forwarded to the daemon verbatim, only used as this process's own `setTimeout` duration. */
 const asOptionalPositiveNumber = (value: unknown, field: string): number | undefined => {
   if (value === undefined) {
     return undefined;
@@ -157,7 +179,15 @@ const asOptionalEventKinds = (value: unknown): EventKind[] | undefined => {
   return value as EventKind[];
 };
 
-const asOptionalMatch = (value: unknown): Record<string, unknown> | undefined => {
+type MatchPrimitive = string | number | boolean | null;
+
+const isMatchPrimitive = (value: unknown): value is MatchPrimitive => {
+  return value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+};
+
+/** `payloadShallowMatches` compares with `===`, so an object/array value here could never equal
+ * anything and would just make the wait time out with no explanation — reject it up front instead. */
+const asOptionalMatch = (value: unknown): Record<string, MatchPrimitive> | undefined => {
   if (value === undefined) {
     return undefined;
   }
@@ -166,7 +196,18 @@ const asOptionalMatch = (value: unknown): Record<string, unknown> | undefined =>
     throw new McpBuiltinToolError("invalid_request", '"match" must be a JSON object.');
   }
 
-  return value as Record<string, unknown>;
+  const record = value as Record<string, unknown>;
+
+  for (const [key, entry] of Object.entries(record)) {
+    if (!isMatchPrimitive(entry)) {
+      throw new McpBuiltinToolError(
+        "invalid_request",
+        `"match.${key}" must be a string, number, boolean, or null (objects/arrays can never match).`,
+      );
+    }
+  }
+
+  return record as Record<string, MatchPrimitive>;
 };
 
 export const handleEventsTool = async (rawArgs: unknown, deps: EventsToolDeps): Promise<EventsSinceResult> => {
@@ -174,9 +215,9 @@ export const handleEventsTool = async (rawArgs: unknown, deps: EventsToolDeps): 
 
   return deps.call<EventsSinceResult>(RPC_METHODS.eventsSince, {
     selector: asOptionalString(args.selector, "selector"),
-    since: asOptionalNonNegativeNumber(args.since, "since"),
+    since: asOptionalNonNegativeInteger(args.since, "since"),
     kinds: asOptionalEventKinds(args.kinds),
-    limit: asOptionalPositiveNumber(args.limit, "limit"),
+    limit: asOptionalPositiveInteger(args.limit, "limit"),
   });
 };
 
@@ -201,7 +242,7 @@ export type WaitForEventToolResult = {
   seq: number;
 };
 
-const payloadShallowMatches = (payload: unknown, match: Record<string, unknown>): boolean => {
+const payloadShallowMatches = (payload: unknown, match: Record<string, MatchPrimitive>): boolean => {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
     return false;
   }
@@ -225,8 +266,8 @@ export const handleWaitForEventTool = async (
   }
 
   const match = asOptionalMatch(args.match);
-  const requestedTimeoutMs = asOptionalPositiveNumber(args.timeoutMs, "timeoutMs") ?? DEFAULT_WAIT_FOR_EVENT_TIMEOUT_MS;
-  const timeoutMs = Math.min(requestedTimeoutMs, MAX_WAIT_FOR_EVENT_TIMEOUT_MS);
+  const since = asOptionalNonNegativeInteger(args.since, "since");
+  const timeoutMs = clampWaitForEventTimeoutMs(asOptionalPositiveNumber(args.timeoutMs, "timeoutMs"));
 
   const stream = await openDaemonStream({ stateDir: deps.stateDir, spawn: deps.spawn });
 
@@ -235,21 +276,14 @@ export const handleWaitForEventTool = async (
     // `handleWaitForSessionTool`) so the buffer drain below and the live subscription target the
     // exact same session — `events.subscribe`'s own `sessionSelector` has no "sole session" default,
     // so leaving it unresolved here would silently widen the live half of the wait to every session.
-    let sessionId: string;
-    let alias: string | undefined;
-
-    try {
-      const described = await stream.call<SessionsDescribeResult>(RPC_METHODS.sessionsDescribe, { selector });
-      sessionId = described.sessionId;
-      alias = described.alias;
-    } catch (error) {
-      throw error instanceof DaemonRpcError
-        ? new McpBuiltinToolError("invalid_request", error.message)
-        : error;
-    }
+    // A `DaemonRpcError` (no_session/ambiguous_session/unknown_session) propagates unchanged —
+    // `toolErrorContentFromError` (mcp/server.ts) already maps it to its precise `data.type`.
+    const described = await stream.call<SessionsDescribeResult>(RPC_METHODS.sessionsDescribe, { selector });
+    const sessionId = described.sessionId;
+    const alias = described.alias;
 
     const toResult = (event: EventNotification): WaitForEventToolResult | undefined => {
-      if (event.kind !== "app_event") {
+      if (event.kind !== "app_event" || event.sessionId !== sessionId) {
         return undefined;
       }
 
@@ -266,106 +300,147 @@ export const handleWaitForEventTool = async (
       return { sessionId, alias, name, payload: data.payload, ts: event.ts, seq: event.seq };
     };
 
-    // Subscribe before draining the buffer: an `app_event` emitted in the gap between the two calls
-    // below is then guaranteed to appear in the `since` snapshot (it landed on this connection's
-    // socket before the `events.since` request was even sent), never only on the live channel.
-    await stream.call(RPC_METHODS.eventsSubscribe, { sessionSelector: sessionId, kinds: ["app_event"] });
+    // The notification listener is registered *before* `events.subscribe` is even sent, and starts
+    // buffering into `earlyEvents` rather than resolving anything (`liveHandler` is still null) —
+    // see the module doc comment for why: the `events.since` response and a `notify()` for a
+    // brand-new event can arrive in the same socket chunk, and a listener added only after `await`ing
+    // that response has already missed a notification line from that same chunk.
+    let liveHandler: ((event: EventNotification) => void) | null = null;
+    const earlyEvents: EventNotification[] = [];
 
-    const since = await stream.call<EventsSinceResult>(RPC_METHODS.eventsSince, {
-      selector: sessionId,
-      kinds: ["app_event"],
+    const unsubscribeNotification = stream.onNotification((payload) => {
+      const event = payload as EventNotification;
+
+      if (liveHandler) {
+        liveHandler(event);
+      } else {
+        earlyEvents.push(event);
+      }
     });
 
-    let highestDrainedSeq = 0;
+    let unsubscribeClose = (): void => {};
 
-    for (const event of since.events) {
-      highestDrainedSeq = Math.max(highestDrainedSeq, event.seq);
-      const result = toResult(event);
+    try {
+      await stream.call(RPC_METHODS.eventsSubscribe, { sessionSelector: sessionId, kinds: ["app_event"] });
 
-      if (result) {
-        return result;
-      }
-    }
-
-    return await new Promise<WaitForEventToolResult>((resolve, reject) => {
-      let settled = false;
-
-      const settle = (fn: () => void): void => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        clearTimeout(timer);
-
-        if (progressTimer) {
-          clearInterval(progressTimer);
-        }
-
-        unsubscribeNotification();
-        unsubscribeClose();
-        fn();
-      };
-
-      const timer = setTimeout(() => {
-        settle(() =>
-          reject(
-            new McpBuiltinToolError(
-              "tool_timeout",
-              `Timed out after ${timeoutMs}ms waiting for event "${name}".`,
-            ),
-          ),
-        );
-      }, timeoutMs);
-
-      const startedAt = Date.now();
-      const progressTimer = deps.progress
-        ? setInterval(() => {
-            deps.progress!.sendNotification({
-              method: "notifications/progress",
-              params: {
-                progressToken: deps.progress!.token,
-                progress: Date.now() - startedAt,
-                total: timeoutMs,
-                message: `Still waiting for event "${name}"...`,
-              },
-            }).catch(() => {
-              // A failed progress notification must never abort the wait itself.
-            });
-          }, WAIT_FOR_EVENT_PROGRESS_INTERVAL_MS)
-        : undefined;
-
-      const unsubscribeClose = stream.onClose(() => {
-        settle(() =>
-          reject(
-            new McpBuiltinToolError(
-              "tool_execution_error",
-              `The connection to the Cordierite daemon closed while waiting for event "${name}".`,
-            ),
-          ),
-        );
+      const sinceResult = await stream.call<EventsSinceResult>(RPC_METHODS.eventsSince, {
+        selector: sessionId,
+        since,
+        kinds: ["app_event"],
       });
 
-      const unsubscribeNotification = stream.onNotification((payload) => {
-        if (settled) {
-          return;
+      // Merge the retained backlog with whatever arrived on the live channel while the two calls
+      // above were in flight, deduped by `seq` (the same event can legitimately show up in both:
+      // the daemon buffers before it fans out, so a late-drained event and an in-flight live one can
+      // be the same notification). Everything from here to `liveHandler = …` below is synchronous —
+      // no `await` — so nothing can arrive on the socket and be missed in the gap.
+      const seenSeqs = new Set<number>();
+      const backlog: EventNotification[] = [];
+
+      for (const event of [...sinceResult.events, ...earlyEvents]) {
+        if (event.sessionId === sessionId && !seenSeqs.has(event.seq)) {
+          seenSeqs.add(event.seq);
+          backlog.push(event);
         }
+      }
 
-        const event = payload as EventNotification;
+      backlog.sort((a, b) => a.seq - b.seq);
 
-        // Already accounted for by the buffer drain above — the live channel re-delivers it too
-        // (subscription started before the drain), so skip anything not strictly newer.
-        if (event.sessionId === sessionId && event.seq <= highestDrainedSeq) {
-          return;
-        }
-
+      for (const event of backlog) {
         const result = toResult(event);
 
         if (result) {
-          settle(() => resolve(result));
+          return result;
         }
+      }
+
+      // Nothing matched yet: the cursor to resume live from is the last event actually considered
+      // (backlog's own scan already covers everything since.events + earlyEvents jointly saw), or —
+      // if nothing was retained/arrived at all — `events.since`'s own cursor, which (per
+      // `event-bus.ts`'s `since()`) already reflects the session's true high-water mark even when
+      // the `kinds` filter matched nothing.
+      const highestConsideredSeq = backlog.length > 0 ? backlog[backlog.length - 1]!.seq : sinceResult.cursor;
+
+      return await new Promise<WaitForEventToolResult>((resolve, reject) => {
+        let settled = false;
+
+        const settle = (fn: () => void): void => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+          clearTimeout(timer);
+
+          if (progressTimer) {
+            clearInterval(progressTimer);
+          }
+
+          liveHandler = null;
+          fn();
+        };
+
+        const timer = setTimeout(() => {
+          settle(() =>
+            reject(
+              new McpBuiltinToolError(
+                "tool_timeout",
+                `Timed out after ${timeoutMs}ms waiting for event "${name}".`,
+              ),
+            ),
+          );
+        }, timeoutMs);
+
+        const startedAt = Date.now();
+        const progressTimer = deps.progress
+          ? setInterval(() => {
+              deps.progress!.sendNotification({
+                method: "notifications/progress",
+                params: {
+                  progressToken: deps.progress!.token,
+                  progress: Date.now() - startedAt,
+                  total: timeoutMs,
+                  message: `Still waiting for event "${name}"...`,
+                },
+              }).catch(() => {
+                // A failed progress notification must never abort the wait itself.
+              });
+            }, WAIT_FOR_EVENT_PROGRESS_INTERVAL_MS)
+          : undefined;
+
+        unsubscribeClose = stream.onClose(() => {
+          settle(() =>
+            reject(
+              new McpBuiltinToolError(
+                "tool_execution_error",
+                `The connection to the Cordierite daemon closed while waiting for event "${name}".`,
+              ),
+            ),
+          );
+        });
+
+        // From here on, every notification goes straight to this handler instead of `earlyEvents` —
+        // assigned synchronously (no `await` since the backlog scan above), so nothing is missed.
+        liveHandler = (event) => {
+          if (settled) {
+            return;
+          }
+
+          if (event.sessionId === sessionId && event.seq <= highestConsideredSeq) {
+            return;
+          }
+
+          const result = toResult(event);
+
+          if (result) {
+            settle(() => resolve(result));
+          }
+        };
       });
-    });
+    } finally {
+      unsubscribeNotification();
+      unsubscribeClose();
+    }
   } finally {
     stream.close();
   }

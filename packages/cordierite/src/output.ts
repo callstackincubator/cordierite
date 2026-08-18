@@ -380,3 +380,15 @@ export const renderEventLine = (
 
   return `${colors.dim(timestamp)} ${colors.green(event.kind)}${target ? ` ${target}` : ""}${dataSuffix}`;
 };
+
+/** Renders the trailing cursor line for `cordierite events --since` (issue #6): NDJSON under
+ * `--json` so a scripted caller can parse the resume point without maxing `seq` over the printed
+ * events (impossible when the response is empty), a human note otherwise. */
+export const renderEventsCursorLine = (cursor: number, options: { json: boolean; color: boolean }): string => {
+  if (options.json) {
+    return JSON.stringify({ cursor });
+  }
+
+  const colors = pc.createColors(options.color);
+  return colors.dim(`cursor: ${cursor} (pass --since ${cursor} to resume from here)`);
+};

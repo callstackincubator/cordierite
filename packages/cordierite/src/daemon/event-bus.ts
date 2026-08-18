@@ -4,12 +4,14 @@
  * per-session retention ring buffer, and must never let a throwing subscriber take down the daemon
  * or another subscriber.
  *
- * Retention (issue #6): every session-scoped event (`sessionId` set) is appended to a per-session
- * ring buffer with a monotonically increasing `seq`, capped at `bufferSize` entries (oldest
- * dropped first). A session's buffer is discarded the moment it emits a terminal event
- * (`session_expired` / `session_revoked`) — "terminal states free the alias" (sessions.ts) applies
- * to retained events too, matching "no persisted history" (ARCHITECTURE.md §3/§13). Daemon-wide
- * events (no `sessionId`, e.g. `daemon_started`) are fanned out but never buffered.
+ * Retention (issue #6): every session-scoped event (`sessionId` set), except the high-frequency
+ * kinds in `EXCLUDED_FROM_RETENTION`, is appended to a per-session ring buffer with a
+ * monotonically increasing `seq`, capped at `bufferSize` entries (oldest dropped first). A
+ * session's buffer is discarded the moment it emits a terminal event (`session_expired` /
+ * `session_revoked`) — "terminal states free the alias" (sessions.ts) applies to retained events
+ * too, matching "no persisted history" (ARCHITECTURE.md §3/§13) — or via an explicit `drop()` for
+ * the pending-link discard paths that never reach one of those event kinds. Daemon-wide events (no
+ * `sessionId`, e.g. `daemon_started`) are fanned out but never buffered.
  */
 
 import type { EventKind, EventNotification } from "@cordierite/shared";
@@ -22,6 +24,13 @@ export type EventBusListener = (event: EventNotification) => void;
 
 /** Terminal event kinds whose arrival for a session discards that session's retained buffer. */
 const TERMINAL_EVENT_KINDS: ReadonlySet<EventKind> = new Set<EventKind>(["session_expired", "session_revoked"]);
+
+/** Fanned out live like any other event, but never appended to the retention buffer: a single
+ * chatty `tools.call` can emit far more of these than `bufferSize` allows, which would otherwise
+ * evict every retained `app_event` for the session — defeating the reason the buffer exists.
+ * `tool_call_started`/`tool_call_finished` (one pair per call, not per progress tick) are still
+ * retained. */
+const EXCLUDED_FROM_RETENTION: ReadonlySet<EventKind> = new Set<EventKind>(["tool_call_progress"]);
 
 export type EventsSinceQuery = {
   since?: number;
@@ -40,6 +49,10 @@ export type EventBus = {
   /** Drains the retained buffer for `sessionId`. Returns an empty result (`cursor: 0`) for a
    * session with no retained events (nothing emitted yet, or its buffer already discarded). */
   since: (sessionId: string, query?: EventsSinceQuery) => EventsSinceQueryResult;
+  /** Discards `sessionId`'s retained buffer outright, with no event required. Covers the pending-
+   * link discard paths that never reach a terminal event kind (attempt-limit exceeded, the TTL
+   * free-timer) — `TERMINAL_EVENT_KINDS` only catches the ones that *do* emit one. Idempotent. */
+  drop: (sessionId: string) => void;
 };
 
 export type CreateEventBusOptions = {
@@ -89,7 +102,7 @@ export const createEventBus = (options: CreateEventBusOptions = {}): EventBus =>
           // the session is gone.
           buffers.delete(sessionId);
           cursors.delete(sessionId);
-        } else {
+        } else if (!EXCLUDED_FROM_RETENTION.has(notification.kind)) {
           appendToBuffer(sessionId, notification);
         }
       }
@@ -111,9 +124,12 @@ export const createEventBus = (options: CreateEventBusOptions = {}): EventBus =>
     },
     since: (sessionId, query = {}) => {
       const buffer = buffers.get(sessionId) ?? [];
-      const cursor = cursors.get(sessionId) ?? 0;
+      const sessionCursor = cursors.get(sessionId) ?? 0;
 
-      let events = buffer;
+      // Never hand back the live buffer array itself — `emit()` keeps pushing into it after this
+      // call returns, and a caller that gets `events` by reference (the common case: no filter
+      // narrows it below) would see it mutate underneath it.
+      let events = buffer.slice();
 
       if (query.since !== undefined) {
         events = events.filter((event) => event.seq > query.since!);
@@ -125,10 +141,25 @@ export const createEventBus = (options: CreateEventBusOptions = {}): EventBus =>
       }
 
       if (query.limit !== undefined && events.length > query.limit) {
-        events = events.slice(events.length - query.limit);
+        // Keep the OLDEST N, not the newest: `limit` exists to bound one response, not to skip
+        // ahead — a caller pages forward by re-calling with `since` set to the response's own
+        // `cursor`. Keeping the newest N instead would make that same re-call return the same
+        // window forever, silently and unrecoverably losing whatever `limit` cut off.
+        events = events.slice(0, query.limit);
       }
 
+      // The cursor a caller should resume from: the last event actually returned, so paging
+      // through a `limit`-truncated response with `since: cursor` always advances. Only when
+      // nothing was returned (empty buffer, or every retained event was filtered out) does it fall
+      // back to the session's true high-water mark, so an empty page still lets a caller skip past
+      // events it explicitly filtered out (by `kinds`) rather than re-fetching them forever.
+      const cursor = events.length > 0 ? events[events.length - 1]!.seq : sessionCursor;
+
       return { events, cursor };
+    },
+    drop: (sessionId) => {
+      buffers.delete(sessionId);
+      cursors.delete(sessionId);
     },
   };
 };

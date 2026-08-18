@@ -95,6 +95,14 @@ describe("exit codes: v2 command surface", () => {
     expect(payload.error.type).toBe("usage_error");
   });
 
+  test("usage_error (64): events --since combined with --follow", async () => {
+    const stateDir = await makeTempStateDir();
+    const { exitCode, payload } = runCli(["events", "--since", "0", "--follow"], stateDir);
+
+    expect(exitCode).toBe(64);
+    expect(payload.error.type).toBe("usage_error");
+  });
+
   test("usage_error (64): keygen refuses to overwrite without --force", async () => {
     const stateDir = await makeTempStateDir();
     const keyPath = path.join(stateDir, "existing.pem");

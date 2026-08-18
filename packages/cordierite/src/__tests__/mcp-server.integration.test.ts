@@ -671,6 +671,128 @@ describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
 
     app.socket.close();
   }, 10_000);
+
+  test("cordierite_wait_for_event's match filters by shallow payload equality", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const waitPromise = client.request(
+      {
+        method: "tools/call",
+        params: { name: "cordierite_wait_for_event", arguments: { name: "screen_changed", match: { screen: "Checkout" }, timeoutMs: 5000 } },
+      },
+      CallToolResultSchema,
+    );
+
+    const nonMatching = waitForEvent(daemon, "app_event");
+    app.socket.send(
+      JSON.stringify({ type: "event", session_id: app.sessionId, name: "screen_changed", payload: { screen: "Home" }, ts: Date.now() }),
+    );
+    await nonMatching;
+
+    const matching = waitForEvent(daemon, "app_event");
+    app.socket.send(
+      JSON.stringify({ type: "event", session_id: app.sessionId, name: "screen_changed", payload: { screen: "Checkout", total: 42 }, ts: Date.now() }),
+    );
+    await matching;
+
+    const result = await waitPromise;
+    expect(result.isError).not.toBe(true);
+    const data = result.structuredContent as { payload: { screen: string; total: number } };
+    expect(data.payload).toEqual({ screen: "Checkout", total: 42 });
+
+    app.socket.close();
+  }, 10_000);
+
+  test("cordierite_wait_for_event rejects match values that could never match (objects/arrays)", async () => {
+    const { stateDir, port, daemon } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      {
+        method: "tools/call",
+        params: { name: "cordierite_wait_for_event", arguments: { name: "x", match: { nested: { a: 1 } } } },
+      },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("invalid_request");
+
+    app.socket.close();
+  });
+
+  test("cordierite_wait_for_event's since skips an already-retained match and waits for a fresh one", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const first = waitForEvent(daemon, "app_event");
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "ping", payload: { n: 1 }, ts: Date.now() }));
+    await first;
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const drained = await client.request(
+      { method: "tools/call", params: { name: "cordierite_events", arguments: { selector: app.alias } } },
+      CallToolResultSchema,
+    );
+    const cursor = (drained.structuredContent as { cursor: number }).cursor;
+
+    const waitPromise = client.request(
+      {
+        method: "tools/call",
+        params: { name: "cordierite_wait_for_event", arguments: { name: "ping", since: cursor, timeoutMs: 5000 } },
+      },
+      CallToolResultSchema,
+    );
+
+    // Give the tool a beat to have drained the (empty, since-filtered) backlog and be listening
+    // live before the second `ping` — the earlier one, already covered by `since`, must not resolve it.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const second = waitForEvent(daemon, "app_event");
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "ping", payload: { n: 2 }, ts: Date.now() }));
+    await second;
+
+    const result = await waitPromise;
+    expect(result.isError).not.toBe(true);
+    const data = result.structuredContent as { payload: { n: number } };
+    expect(data.payload).toEqual({ n: 2 });
+
+    app.socket.close();
+  }, 10_000);
+
+  test("cordierite_events rejects a non-integer since/limit and an unknown kind", async () => {
+    const { stateDir } = await startTestDaemon();
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const nonIntegerSince = await client.request(
+      { method: "tools/call", params: { name: "cordierite_events", arguments: { since: 1.5 } } },
+      CallToolResultSchema,
+    );
+    expect(nonIntegerSince.isError).toBe(true);
+    expect((nonIntegerSince.content as Array<{ text: string }>)[0]!.text).toContain("invalid_request");
+
+    const zeroLimit = await client.request(
+      { method: "tools/call", params: { name: "cordierite_events", arguments: { limit: 0 } } },
+      CallToolResultSchema,
+    );
+    expect(zeroLimit.isError).toBe(true);
+
+    const unknownKind = await client.request(
+      { method: "tools/call", params: { name: "cordierite_events", arguments: { kinds: ["not_a_real_kind"] } } },
+      CallToolResultSchema,
+    );
+    expect(unknownKind.isError).toBe(true);
+  });
 });
 
 describe("mcp: cordierite://sessions resource", () => {

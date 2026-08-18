@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { renderEventLine, renderResult } from "../output.js";
+import { renderEventLine, renderEventsCursorLine, renderResult } from "../output.js";
 import { FIXED_NOW } from "./fixtures.js";
 
 describe("output rendering", () => {
@@ -292,5 +292,18 @@ describe("renderEventLine", () => {
 
     expect(line).toContain("tools_changed");
     expect(line).toContain("pixel-8");
+  });
+});
+
+describe("renderEventsCursorLine", () => {
+  test("NDJSON mode emits a parseable { cursor } object", () => {
+    const line = renderEventsCursorLine(42, { json: true, color: false });
+    expect(JSON.parse(line)).toEqual({ cursor: 42 });
+  });
+
+  test("human mode includes the cursor value and the resume flag", () => {
+    const line = renderEventsCursorLine(42, { json: false, color: false });
+    expect(line).toContain("42");
+    expect(line).toContain("--since 42");
   });
 });

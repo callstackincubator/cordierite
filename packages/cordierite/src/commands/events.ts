@@ -27,6 +27,10 @@ export type EventsCommandContext = {
   stateDir: string;
   spawn?: SpawnFn;
   onEvent: (event: EventNotification) => void;
+  /** `--since` mode only: called once with the pull's resulting cursor, so a scripted caller
+   * doesn't have to reconstruct it by maxing `seq` over the printed lines (impossible when the
+   * response is empty — the whole point of a cursor is knowing where to resume from either way). */
+  onCursor?: (cursor: number) => void;
 };
 
 export type EventsHostedResult = {
@@ -52,6 +56,8 @@ const handleEventsSinceCommand = async (
     for (const event of since.events) {
       context.onEvent(event);
     }
+
+    context.onCursor?.(since.cursor);
   } finally {
     stream.close();
   }
@@ -108,7 +114,7 @@ export const handleEventsCommand = async (
   return {
     // Never rendered: the reporter passed to `executeHostedCommand` suppresses the bootstrap
     // render for this command (see the doc comment above).
-    result: { ok: true, data: undefined as never },
+    result: NEVER_RESULT,
     completion,
     stop,
   };

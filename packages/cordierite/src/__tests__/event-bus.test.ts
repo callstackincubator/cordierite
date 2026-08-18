@@ -71,16 +71,40 @@ describe("event-bus: retention buffer", () => {
     expect(cursor).toBe(3);
   });
 
-  test("limit truncates to the newest N, cursor still reflects everything retained", () => {
+  test("limit truncates to the oldest N so paging with the returned cursor never skips events", () => {
     const bus = createEventBus({ clock });
 
     for (let i = 0; i < 5; i++) {
       bus.emit({ kind: "app_event", sessionId: "s1", data: { i } });
     }
 
-    const { events, cursor } = bus.since("s1", { limit: 2 });
-    expect(events.map((event) => event.seq)).toEqual([4, 5]);
-    expect(cursor).toBe(5);
+    const first = bus.since("s1", { limit: 2 });
+    expect(first.events.map((event) => event.seq)).toEqual([1, 2]);
+    // cursor is the last *returned* event, not the session's true high-water mark — that's what
+    // makes re-calling with `since: cursor` page forward instead of returning the same window.
+    expect(first.cursor).toBe(2);
+
+    const second = bus.since("s1", { since: first.cursor, limit: 2 });
+    expect(second.events.map((event) => event.seq)).toEqual([3, 4]);
+    expect(second.cursor).toBe(4);
+
+    const third = bus.since("s1", { since: second.cursor, limit: 2 });
+    expect(third.events.map((event) => event.seq)).toEqual([5]);
+    // Fewer than `limit` left: cursor still tracks the last event actually returned.
+    expect(third.cursor).toBe(5);
+  });
+
+  test("an empty page with a kinds filter still advances the cursor to the session's high-water mark", () => {
+    const bus = createEventBus({ clock });
+
+    bus.emit({ kind: "tools_changed", sessionId: "s1", data: {} });
+    bus.emit({ kind: "tools_changed", sessionId: "s1", data: {} });
+
+    // Nothing matches "app_event" — without the high-water-mark fallback this would return
+    // cursor: 0 forever, forcing the caller to re-scan the same (empty) result on every call.
+    const { events, cursor } = bus.since("s1", { kinds: ["app_event"] });
+    expect(events).toEqual([]);
+    expect(cursor).toBe(2);
   });
 
   test("the ring buffer caps retention at bufferSize, dropping the oldest first", () => {
@@ -124,6 +148,51 @@ describe("event-bus: retention buffer", () => {
     bus.emit({ kind: "session_revoked", sessionId: "s1", data: {} });
 
     expect(bus.since("s1")).toEqual({ events: [], cursor: 0 });
+  });
+
+  test("since returns a snapshot, not the live buffer — a later emit doesn't mutate an already-returned result", () => {
+    const bus = createEventBus({ clock });
+
+    bus.emit({ kind: "app_event", sessionId: "s1", data: {} });
+    const { events } = bus.since("s1");
+    expect(events).toHaveLength(1);
+
+    bus.emit({ kind: "app_event", sessionId: "s1", data: {} });
+    // The array returned by the first `since` call must still have length 1 — it must not be the
+    // same array `emit` just pushed into.
+    expect(events).toHaveLength(1);
+  });
+
+  test("tool_call_progress is fanned out live but never retained, so it can't evict app_events", () => {
+    const bus = createEventBus({ clock, bufferSize: 2 });
+    const seen: string[] = [];
+    bus.subscribe((event) => seen.push(event.kind));
+
+    bus.emit({ kind: "app_event", sessionId: "s1", data: {} });
+
+    for (let i = 0; i < 10; i++) {
+      bus.emit({ kind: "tool_call_progress", sessionId: "s1", data: { progress: i } });
+    }
+
+    expect(seen.filter((kind) => kind === "tool_call_progress")).toHaveLength(10);
+    // A `bufferSize` of 2 would otherwise have evicted the app_event many times over.
+    expect(bus.since("s1").events.map((event) => event.kind)).toEqual(["app_event"]);
+  });
+
+  test("drop() discards a session's buffer outright, with no event required", () => {
+    const bus = createEventBus({ clock });
+
+    bus.emit({ kind: "link_created", sessionId: "s1", data: {} });
+    expect(bus.since("s1").events).toHaveLength(1);
+
+    bus.drop("s1");
+
+    expect(bus.since("s1")).toEqual({ events: [], cursor: 0 });
+  });
+
+  test("drop() on a session with nothing retained is a harmless no-op", () => {
+    const bus = createEventBus({ clock });
+    expect(() => bus.drop("never-emitted")).not.toThrow();
   });
 
   test("a throwing subscriber never breaks buffering or another subscriber", () => {
