@@ -67,9 +67,17 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> => {
  * "don't ask again" option. Older Claude Code and every other client ignore the flag silently. */
 const REQUIRES_USER_INTERACTION_MIN_VERSION = [2, 1, 199] as const;
 
+/** Strict `\d+` per dot-separated part — rejects a pre-release/build suffix (`"2.1.199-beta.1"`,
+ * `"2.1.199rc"`) rather than letting `Number.parseInt`'s leading-digits-only parsing treat it as
+ * `2.1.199` and wrongly report a pre-release as version-compliant. */
 const parseVersionParts = (version: string): number[] | undefined => {
-  const parts = version.split(".").map((part) => Number.parseInt(part, 10));
-  return parts.length > 0 && parts.every((part) => Number.isInteger(part) && part >= 0) ? parts : undefined;
+  const rawParts = version.split(".");
+
+  if (!rawParts.every((part) => /^\d+$/u.test(part))) {
+    return undefined;
+  }
+
+  return rawParts.map((part) => Number.parseInt(part, 10));
 };
 
 const isVersionAtLeast = (version: string, min: readonly number[]): boolean => {
@@ -167,6 +175,15 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
     { capabilities: { tools: { listChanged: true }, resources: {} } },
   );
 
+  // The `mcpName`s this connection's *most recent* `tools/list` response actually emitted
+  // `_meta["anthropic/requiresUserInteraction"]` for — repopulated on every `tools/list` request,
+  // never on the internal `list_changed` refresh below (which doesn't answer a client request, so
+  // nothing was shown to a human). `callProxiedTool` requires membership here in addition to
+  // recomputing the tool's live policy and the client check, so `consent: "client"` reflects an
+  // MCP `Tool` the client actually listed with the flag set on *this* connection, not merely a
+  // client that happens to qualify version-wise (ARCHITECTURE.md §12 / issue #14).
+  const emittedRequiresUserInteraction = new Set<string>();
+
   const callProxiedTool = async (
     tool: NamespacedTool,
     args: Record<string, unknown>,
@@ -177,7 +194,11 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
     // can't be replayed to manufacture consent (ARCHITECTURE.md §12 / issue #14): this is the
     // daemon's sole evidence a human gate exists for a "prompt"-policy tool.
     const consent: "client" | undefined =
-      tool.policy === "prompt" && clientHonorsRequiresUserInteraction(server) ? "client" : undefined;
+      tool.policy === "prompt" &&
+      clientHonorsRequiresUserInteraction(server) &&
+      emittedRequiresUserInteraction.has(tool.mcpName)
+        ? "client"
+        : undefined;
 
     if (progressToken === undefined) {
       const result = await stream.call<ToolsCallResult>(RPC_METHODS.toolsCall, {
@@ -253,6 +274,13 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools = await fetchEffectiveTools(stream.call);
     const clientHonors = clientHonorsRequiresUserInteraction(server);
+
+    emittedRequiresUserInteraction.clear();
+    for (const tool of tools) {
+      if (tool.policy === "prompt" && clientHonors) {
+        emittedRequiresUserInteraction.add(tool.mcpName);
+      }
+    }
 
     return {
       tools: [

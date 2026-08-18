@@ -140,14 +140,17 @@ export type ToolsCallParams = SessionSelectorParams & {
    * always sets `"mcp"`; omitted (the CLI's case) defaults to `"cli"` at the daemon. */
   caller?: "cli" | "mcp";
   /**
-   * Set by the MCP server only, and only when all of: (a) this tool's effective policy is
-   * `"prompt"`, (b) the server emitted `_meta["anthropic/requiresUserInteraction"]` for it at
-   * `tools/list` time, and (c) the connected client's `initialize` `clientInfo` is one known to
-   * enforce that flag (`name === "claude-code"`, version ≥ 2.1.199). The daemon treats this as
-   * the sole evidence a human gate exists for a `"prompt"`-policy call — anything else (CLI, a
-   * non-compliant MCP client, a forged param from an untrusted caller) is denied
-   * (`policy_denied`, reason `no_consent_channel`). `"prompt"` fails closed by design: see issue
-   * #14 / ARCHITECTURE.md §12.
+   * Set by this codebase's own MCP server, and only when all of: (a) this tool's effective policy
+   * is `"prompt"`, (b) the server emitted `_meta["anthropic/requiresUserInteraction"]` for it in
+   * this connection's most recent `tools/list` response, and (c) the connected client's
+   * `initialize` `clientInfo` is one known to enforce that flag (`name === "claude-code"`, version
+   * ≥ 2.1.199). The daemon trusts this param verbatim once present — it is the sole evidence a
+   * human gate exists for a `"prompt"`-policy call, and everything else (CLI, a non-compliant MCP
+   * client) is denied (`policy_denied`, reason `no_consent_channel`). The daemon cannot itself
+   * re-verify an MCP client's behavior, so this is not a defense against another local process
+   * (one with access to the same `daemon.sock`) sending this param directly — see
+   * `docs/SECURITY.md`'s threat model, which already treats socket access as full daemon control.
+   * `"prompt"` fails closed by design: see issue #14 / ARCHITECTURE.md §12.
    */
   consent?: "client";
 };

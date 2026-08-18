@@ -39,12 +39,23 @@ export const buildNamespacedTools = (
   const tools: NamespacedTool[] = [];
 
   for (const session of sessions) {
-    for (const { policy, ...descriptor } of toolsByAlias.get(session.alias) ?? []) {
+    for (const entry of toolsByAlias.get(session.alias) ?? []) {
+      // Explicit pick (not a `{ policy, ...descriptor }` rest-spread) so a future non-descriptor
+      // field added to `ToolsListEntry` can't silently leak into `descriptor` and from there into
+      // the MCP tool surface and the snapshot key below.
+      const descriptor: ToolDescriptor = {
+        name: entry.name,
+        description: entry.description,
+        input_schema: entry.input_schema,
+        output_schema: entry.output_schema,
+        annotations: entry.annotations,
+      };
+
       tools.push({
         mcpName: namespaced ? `${session.alias}${TOOL_NAMESPACE_SEPARATOR}${descriptor.name}` : descriptor.name,
         selector: session.alias,
         descriptor,
-        policy,
+        policy: entry.policy,
       });
     }
   }

@@ -451,6 +451,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
             outcome: "ok" | "error" | "denied",
             errorType?: ErrorType,
             grantedConsent?: "client",
+            deniedReason?: "policy" | "no_consent_channel",
           ): void => {
             auditLogger.record({
               sessionId: resolved.sessionId,
@@ -459,6 +460,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               argsSha256: argsSha256(args),
               outcome,
               errorType,
+              deniedReason,
               durationMs: clock.now().getTime() - auditStartedAt,
               caller: effectiveCaller,
               consent: grantedConsent,
@@ -481,10 +483,19 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
 
           const policyDecision = evaluatePolicy(tool, { alias: resolved.alias }, config.policy);
           // "prompt" fails closed (ARCHITECTURE.md §12 / issue #14): it proceeds only when the
-          // caller carried `consent: "client"`, which the MCP server sets only after confirming
-          // both that it emitted `_meta["anthropic/requiresUserInteraction"]` for this tool and
-          // that the connected client is known to enforce it. Every other caller — CLI, a
-          // non-compliant MCP client, a forged param — is denied.
+          // caller carried `consent: "client"`. This is trusted verbatim once present — the daemon
+          // does not and cannot re-derive whether an MCP client's `_meta` was actually honored, the
+          // same way it doesn't re-verify any other RPC param. `consent` is only ever justified
+          // when set by this codebase's own MCP server (mcp/server.ts), which sets it solely after
+          // confirming both that it emitted `_meta["anthropic/requiresUserInteraction"]` for this
+          // exact tool on this connection's most recent listing, and that the connected client is
+          // known to enforce it. Any other local process with access to `daemon.sock` — including
+          // the CLI, or an agent with shell access, which is the typical setup this feature targets
+          // — could send `consent: "client"` directly; that is not a bypass of this feature so much
+          // as a restatement of this codebase's existing trust boundary (docs/SECURITY.md: anything
+          // that can reach the socket already has full daemon control). "prompt" guards against a
+          // compliant MCP client silently auto-approving on the caller's behalf, not against a
+          // hostile process on the operator's own machine.
           const grantedConsent: "client" | undefined =
             policyDecision === "prompt" && consent === "client" ? "client" : undefined;
 
@@ -496,19 +507,22 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               alias: resolved.alias,
               data: { name, outcome: "denied" },
             });
-            writeAudit("denied");
 
             if (policyDecision === "prompt") {
+              writeAudit("denied", undefined, undefined, "no_consent_channel");
+
               throw new RpcApplicationError(
                 "policy_denied",
                 `Policy requires prompt consent to call "${name}" on session "${resolved.alias}", but no consent channel confirmed it.`,
                 -32000,
                 {
                   reason: "no_consent_channel",
-                  hint: `This caller did not confirm human consent for "${name}" (ARCHITECTURE.md §12). Claude Code ≥ v2.1.199 confirms it automatically over MCP; every other caller (including the CLI) is denied by design until another consent channel is implemented.`,
+                  hint: `This caller did not confirm human consent for "${name}". Claude Code ≥ v2.1.199 confirms it automatically over MCP; every other caller (including the CLI) is denied by design until another consent channel is implemented. To change this tool's policy, edit "policy.tools[\"${resolved.alias}/${name}\"]" (or policy.default/policy.destructive) in ${paths.configPath}.`,
                 },
               );
             }
+
+            writeAudit("denied", undefined, undefined, "policy");
 
             throw new RpcApplicationError(
               "policy_denied",

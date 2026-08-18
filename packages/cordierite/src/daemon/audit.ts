@@ -32,6 +32,14 @@ export type AuditRecord = {
   argsSha256: string;
   outcome: AuditOutcome;
   errorType?: ErrorType;
+  /**
+   * Set only when `outcome === "denied"`: `"policy"` for an ordinary `policy.*: "deny"` denial,
+   * `"no_consent_channel"` for a `"prompt"`-policy call that had no confirmed human gate
+   * (ARCHITECTURE.md §12). Without this an operator reading `audit/*.jsonl` can't tell a
+   * misconfigured `"deny"` from a `"prompt"` tool nobody has gated yet — both otherwise look like
+   * an identical `{ outcome: "denied" }` line.
+   */
+  deniedReason?: "policy" | "no_consent_channel";
   durationMs: number;
   caller: AuditCaller;
   /**

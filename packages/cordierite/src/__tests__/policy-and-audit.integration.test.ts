@@ -233,6 +233,7 @@ type AuditRecord = {
   argsSha256: string;
   outcome: "ok" | "error" | "denied";
   errorType?: string;
+  deniedReason?: "policy" | "no_consent_channel";
   durationMs: number;
   caller: "cli" | "mcp";
   consent?: "client";
@@ -431,6 +432,15 @@ describe("policy: prompt via MCP requiresUserInteraction", () => {
     mcpHandles.push(mcpHandle);
     const client = await connectCompliantClient(mcpHandle);
 
+    // `consent: "client"` requires this connection to have actually listed the tool with
+    // `_meta["anthropic/requiresUserInteraction"]` set first — a call is never gated purely on the
+    // tool's live policy plus a qualifying `clientInfo` (see `server.ts`'s
+    // `emittedRequiresUserInteraction`).
+    const listed = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
+    expect(listed.tools.find((tool) => tool.name === "echo")?._meta).toEqual({
+      "anthropic/requiresUserInteraction": true,
+    });
+
     const result = await client.request(
       { method: "tools/call", params: { name: "echo", arguments: {} } },
       CallToolResultSchema,
@@ -481,7 +491,7 @@ describe("policy: prompt via MCP requiresUserInteraction", () => {
   });
 
   test('a "prompt" tool call from the CLI (no consent channel) is denied with reason no_consent_channel', async () => {
-    const { daemon, port } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+    const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
     const app = await claimApp(daemon, port, "Pixel 8");
     await snapshotTools(daemon, app, [{ name: "echo" }]);
 
@@ -489,7 +499,189 @@ describe("policy: prompt via MCP requiresUserInteraction", () => {
       rpcCall(daemon.paths.socketPath, "tools.call", { selector: app.alias, name: "echo", args: {} }),
     ).rejects.toMatchObject({ data: { type: "policy_denied", details: { reason: "no_consent_channel" } } });
 
+    await shutdownNow(daemon);
+    const records = await readAuditRecords(stateDir);
+    const record = records.find((r) => r.tool === "echo" && r.caller === "cli");
+    expect(record?.outcome).toBe("denied");
+    expect(record?.deniedReason).toBe("no_consent_channel");
+    expect(record?.consent).toBeUndefined();
+
     app.socket.close();
+  });
+
+  test('a client one patch version below the minimum ("2.1.198") is treated as non-compliant', async () => {
+    const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "echo" }]);
+
+    const mcpHandle = await createMcpServer({
+      stateDir,
+      spawn: () => {
+        throw new Error("must not auto-spawn");
+      },
+    });
+    mcpHandles.push(mcpHandle);
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await mcpHandle.connect(serverTransport);
+    const client = new Client({ name: "claude-code", version: "2.1.198" });
+    await client.connect(clientTransport);
+
+    const listed = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
+    expect(listed.tools.find((tool) => tool.name === "echo")?._meta).toBeUndefined();
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "echo", arguments: {} } },
+      CallToolResultSchema,
+    );
+    expect(result.isError).toBe(true);
+
+    app.socket.close();
+  });
+
+  test("a compliant client that never called tools/list on this connection is still denied (no fabricated consent)", async () => {
+    const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "echo" }]);
+
+    const mcpHandle = await createMcpServer({
+      stateDir,
+      spawn: () => {
+        throw new Error("must not auto-spawn");
+      },
+    });
+    mcpHandles.push(mcpHandle);
+    const client = await connectCompliantClient(mcpHandle);
+
+    // Deliberately no `tools/list` call before `tools/call` — a real compliant client would never
+    // have been shown the `_meta` flag for "echo" on this connection, so no consent can exist yet.
+    const result = await client.request(
+      { method: "tools/call", params: { name: "echo", arguments: {} } },
+      CallToolResultSchema,
+    );
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("no_consent_channel");
+
+    app.socket.close();
+    await shutdownNow(daemon);
+    const records = await readAuditRecords(stateDir);
+    const record = records.find((r) => r.tool === "echo" && r.caller === "mcp");
+    expect(record?.outcome).toBe("denied");
+    expect(record?.consent).toBeUndefined();
+  });
+
+  test('policy "deny" is still denied for a compliant client, and no _meta is emitted for a "deny" tool', async () => {
+    const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "deny" } } });
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "echo" }]);
+
+    const mcpHandle = await createMcpServer({
+      stateDir,
+      spawn: () => {
+        throw new Error("must not auto-spawn");
+      },
+    });
+    mcpHandles.push(mcpHandle);
+    const client = await connectCompliantClient(mcpHandle);
+
+    const listed = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
+    expect(listed.tools.find((tool) => tool.name === "echo")?._meta).toBeUndefined();
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "echo", arguments: {} } },
+      CallToolResultSchema,
+    );
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("policy_denied");
+    expect(text).not.toContain("no_consent_channel");
+
+    app.socket.close();
+    await shutdownNow(daemon);
+    const records = await readAuditRecords(stateDir);
+    const record = records.find((r) => r.tool === "echo" && r.caller === "mcp");
+    expect(record?.deniedReason).toBe("policy");
+  });
+
+  test('policy "allow" for a compliant client never fabricates consent in the audit record', async () => {
+    const { daemon, port, stateDir } = await startTestDaemon();
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "echo" }]);
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+      if (msg.type === "tool_call") {
+        app.socket.send(JSON.stringify({ type: "tool_result", session_id: app.sessionId, id: msg.id, result: "ok" }));
+      }
+    });
+
+    const mcpHandle = await createMcpServer({
+      stateDir,
+      spawn: () => {
+        throw new Error("must not auto-spawn");
+      },
+    });
+    mcpHandles.push(mcpHandle);
+    const client = await connectCompliantClient(mcpHandle);
+
+    const listed = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
+    expect(listed.tools.find((tool) => tool.name === "echo")?._meta).toBeUndefined();
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "echo", arguments: {} } },
+      CallToolResultSchema,
+    );
+    expect(result.isError).not.toBe(true);
+
+    app.socket.close();
+    await shutdownNow(daemon);
+    const records = await readAuditRecords(stateDir);
+    const record = records.find((r) => r.tool === "echo" && r.caller === "mcp");
+    expect(record?.outcome).toBe("ok");
+    expect(record?.consent).toBeUndefined();
+  });
+
+  test('a "prompt" call from a compliant, gated client that errors still records consent: "client"', async () => {
+    const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/boom": "prompt" } } });
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "boom" }]);
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+      if (msg.type === "tool_call") {
+        app.socket.send(
+          JSON.stringify({
+            type: "tool_error",
+            session_id: app.sessionId,
+            id: msg.id,
+            error: { type: "tool_execution_error", message: "boom" },
+          }),
+        );
+      }
+    });
+
+    const mcpHandle = await createMcpServer({
+      stateDir,
+      spawn: () => {
+        throw new Error("must not auto-spawn");
+      },
+    });
+    mcpHandles.push(mcpHandle);
+    const client = await connectCompliantClient(mcpHandle);
+    await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "boom", arguments: {} } },
+      CallToolResultSchema,
+    );
+    expect(result.isError).toBe(true);
+
+    app.socket.close();
+    await shutdownNow(daemon);
+    const records = await readAuditRecords(stateDir);
+    const record = records.find((r) => r.tool === "boom" && r.caller === "mcp");
+    expect(record?.outcome).toBe("error");
+    expect(record?.consent).toBe("client");
   });
 });
 
