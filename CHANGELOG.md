@@ -8,6 +8,36 @@ This file is maintained by hand. There is no automated changelog tooling (see
 `docs/CI.md#release-policy` for why) — update this file as part of the commit that bumps the
 package versions for a release.
 
+## 0.6.0 (2026-08-18)
+
+- **New: tool call cancellation.** A new `tools.cancel` RPC and `tool_cancel` wire frame let a
+  caller cancel a still-pending `tools.call` instead of waiting it out. The RN SDK's
+  `tool.handler(args, context)` now receives an `AbortSignal` on `context.signal`, aborted on a
+  `tool_cancel` frame or when the session's transport is lost; a handler that ignores it keeps
+  running as before, one that observes it and throws gets `tool_cancelled` reported (distinct from
+  `tool_timeout`). `cordierite invoke` cancels the in-flight call on SIGINT rather than leaving the
+  app-side handler running for a caller that already exited. An MCP client's
+  `notifications/cancelled` maps to `tools.cancel` automatically.
+- **New: daemon-side event retention and a pull surface (`events.since`).** The daemon now keeps a
+  per-session ring buffer (`eventBufferSize`, default 256) of recent events, including
+  `app_event`s posted from the app. `events.since` drains it by sequence cursor, so a caller that
+  wasn't subscribed at the moment an event fired can still retrieve it. Two new MCP tools expose
+  this to agents: `cordierite_events` (pull) and `cordierite_wait_for_event` (block for a matching
+  event, checking the retained buffer before falling back to a live wait).
+- **New: minimal `"prompt"` policy value.** `policy.default`/`policy.destructive`/per-tool
+  overrides now accept `"prompt"` in addition to `"allow"`/`"deny"`. The only implemented gate
+  today is MCP: a compliant client (Claude Code ≥ v2.1.199) gets
+  `_meta["anthropic/requiresUserInteraction"]` on `tools/list` for a `"prompt"` tool and echoes
+  consent back on `tools/call`; every other caller (CLI, an older/non-compliant MCP client, CI) is
+  denied with `policy_denied` — `"prompt"` fails closed rather than behaving like `allow`. See
+  `docs/SECURITY.md` for what this does and doesn't guarantee.
+- **New: `cordierite/client` programmatic API for test runners.** A typed wrapper over the same
+  daemon RPC the CLI and MCP server use, for a Jest/Vitest/Detox spec that wants to drive a
+  running app without shelling out to `cordierite invoke --json`: `connect()`, `link()` +
+  `waitForSession()`, `app.call()`, `app.tools()`, `app.events()`/`app.waitForEvent()`. Errors
+  surface as a `CordieriteError` whose `type` preserves the daemon's wire error type, so tests can
+  assert on it directly. See `packages/cordierite/README.md`'s "Programmatic use" section.
+
 ## 0.5.1 (2026-08-17)
 
 - **Fix: release builds no longer carry Cordierite's native module by default.** Previously,
@@ -31,10 +61,11 @@ package versions for a release.
   See `packages/react-native/README.md`'s "Compiling Cordierite out of production builds" for the
   updated matrix.
 
-## Unreleased (0.4.0)
+## 0.5.0 (2026-08-17)
 
-0.4.0 is a rewrite of the CLI/daemon/protocol layer and is expected to contain breaking changes
-for anyone on 0.3.x. Highlights since 0.3.1:
+A rewrite of the CLI/daemon/protocol layer, shipped as 0.5.0 rather than the originally planned
+0.4.0 (see `docs/CI.md#release-policy`). Contains breaking changes for anyone on 0.3.x. Highlights
+since 0.3.1:
 
 - **Breaking: daemon-based architecture ("protocol v2").** The CLI is now a thin RPC client to a
   background daemon process instead of talking to devices directly; the wire protocol, session
