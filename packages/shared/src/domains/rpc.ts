@@ -12,6 +12,7 @@ export const RPC_METHODS = {
   sessionsRevoke: "sessions.revoke",
   toolsList: "tools.list",
   toolsCall: "tools.call",
+  toolsCancel: "tools.cancel",
   eventsSubscribe: "events.subscribe",
 } as const;
 
@@ -162,6 +163,19 @@ export type ToolsCallResult = {
    * server proxying concurrent `tools/call` requests) can match its own call to the progress events
    * it sees on `events.subscribe` without guessing from data shape. */
   callId: string;
+};
+
+// --- tools.cancel ---
+
+export type ToolsCancelParams = SessionSelectorParams & {
+  /** The `callId` returned by the `tools.call` this cancels. */
+  callId: string;
+  reason?: string;
+};
+
+export type ToolsCancelResult = {
+  /** `false` when `callId` was unknown or already finished — a no-op, not an error. */
+  cancelled: boolean;
 };
 
 // --- events.subscribe ---

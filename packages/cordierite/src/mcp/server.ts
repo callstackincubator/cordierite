@@ -189,6 +189,11 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
     args: Record<string, unknown>,
     progressToken: string | number | undefined,
     sendNotification: (notification: unknown) => Promise<void>,
+    // The MCP SDK aborts this automatically on an inbound `notifications/cancelled` for this
+    // request (ARCHITECTURE.md §9). Only honored on the progress-tracked path below, which is the
+    // only one that learns `callId` while the call is still in flight — a non-progress call has no
+    // `callId` to cancel by until it has already resolved.
+    signal: AbortSignal,
   ): Promise<unknown> => {
     // Recomputed at call time (never cached from the `tools/list` snapshot) so a stale `_meta`
     // can't be replayed to manufacture consent (ARCHITECTURE.md §12 / issue #14): this is the
@@ -225,6 +230,26 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
       });
 
       let callId: string | undefined;
+      let cancelRequested = signal.aborted;
+
+      const maybeCancel = (): void => {
+        if (callId === undefined || !cancelRequested) {
+          return;
+        }
+
+        progressStream
+          .call(RPC_METHODS.toolsCancel, { selector: tool.selector, callId, reason: "mcp_client_cancelled" })
+          .catch((error: unknown) => {
+            console.error("cordierite mcp: failed to cancel a proxied tool call:", error);
+          });
+      };
+
+      const onAbort = (): void => {
+        cancelRequested = true;
+        maybeCancel();
+      };
+
+      signal.addEventListener("abort", onAbort);
 
       const unsubscribe = progressStream.onNotification((payload) => {
         const event = payload as EventNotification;
@@ -234,6 +259,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
 
           if (data.name === tool.descriptor.name) {
             callId = data.callId;
+            maybeCancel();
           }
 
           return;
@@ -265,6 +291,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
         return result.result;
       } finally {
         unsubscribe();
+        signal.removeEventListener("abort", onAbort);
       }
     } finally {
       progressStream.close();
@@ -322,6 +349,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
           args,
           progressToken,
           extra.sendNotification as (notification: unknown) => Promise<void>,
+          extra.signal,
         ),
       );
     } catch (error) {

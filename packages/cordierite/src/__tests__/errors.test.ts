@@ -35,6 +35,7 @@ const EXPECTED_RPC_ERROR_CLASS: Record<ErrorType, number> = {
   tool_execution_error: 72,
   tool_serialization_error: 72,
   tool_timeout: 72,
+  tool_cancelled: 72,
   policy_denied: 77,
   invalid_request: 65,
 };

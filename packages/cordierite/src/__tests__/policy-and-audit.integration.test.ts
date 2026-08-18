@@ -231,7 +231,7 @@ type AuditRecord = {
   alias: string;
   tool: string;
   argsSha256: string;
-  outcome: "ok" | "error" | "denied";
+  outcome: "ok" | "error" | "denied" | "cancelled";
   errorType?: string;
   deniedReason?: "policy" | "no_consent_channel";
   durationMs: number;
@@ -783,6 +783,46 @@ describe("audit: one line per tools.call attempt", () => {
     const mcpRecord = records.find((record) => record.tool === "echo" && record.caller === "mcp");
     expect(mcpRecord).toBeDefined();
     expect(mcpRecord?.outcome).toBe("ok");
+  });
+});
+
+describe("audit: cancelled outcome", () => {
+  test("tools.cancel followed by the app's tool_cancelled reply audits as cancelled", async () => {
+    const { daemon, port, stateDir } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    await snapshotTools(daemon, app, [{ name: "slow" }]);
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+
+      if (msg.type === "tool_cancel") {
+        app.socket.send(
+          JSON.stringify({
+            type: "tool_error",
+            session_id: app.sessionId,
+            id: msg.id,
+            error: { type: "tool_cancelled", message: "cancelled" },
+          }),
+        );
+      }
+    });
+
+    const started = waitForEvent(daemon, "tool_call_started");
+    const callPromise = rpcCall(daemon.paths.socketPath, "tools.call", { selector: app.alias, name: "slow", args: {} });
+    const startedEvent = await started;
+    const callId = (startedEvent.data as { callId: string }).callId;
+
+    await rpcCall(daemon.paths.socketPath, "tools.cancel", { selector: app.alias, callId });
+
+    await expect(callPromise).rejects.toMatchObject({ data: { type: "tool_cancelled" } });
+
+    app.socket.close();
+    await shutdownNow(daemon);
+
+    const records = await readAuditRecords(stateDir);
+    const cancelledRecord = records.find((record) => record.tool === "slow");
+    expect(cancelledRecord?.outcome).toBe("cancelled");
+    expect(cancelledRecord?.errorType).toBe("tool_cancelled");
   });
 });
 

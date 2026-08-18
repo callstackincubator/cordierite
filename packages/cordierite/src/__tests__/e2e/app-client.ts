@@ -23,6 +23,7 @@ type Ack = {
 };
 
 type ToolCallFrame = { type: "tool_call"; session_id: string; id: string; name: string; args: Record<string, unknown> };
+type ToolCancelFrame = { type: "tool_cancel"; session_id: string; id: string; reason: string };
 
 export type ToolCallHandler = (
   call: ToolCallFrame,
@@ -39,6 +40,8 @@ export class FakeAppClient {
   private socket: WebSocket | undefined;
   private toolCallHandler: ToolCallHandler | undefined;
   private closeWaiters: Array<(info: CloseInfo) => void> = [];
+  private toolCancelWaiters: Array<(frame: ToolCancelFrame) => void> = [];
+  private toolCallWaiters: Array<(frame: ToolCallFrame) => void> = [];
 
   sessionId = "";
   alias = "";
@@ -155,6 +158,21 @@ export class FakeAppClient {
     });
   }
 
+  /** Resolves on the next `tool_cancel` frame (issue #9: daemon -> app cancellation). */
+  waitForToolCancel(): Promise<ToolCancelFrame> {
+    return new Promise((resolve) => {
+      this.toolCancelWaiters.push(resolve);
+    });
+  }
+
+  /** Resolves on the next `tool_call` frame, independent of whether `answerCalls` is set — for
+   * scenarios that need to observe receipt of a call the app deliberately never answers. */
+  waitForToolCall(): Promise<ToolCallFrame> {
+    return new Promise((resolve) => {
+      this.toolCallWaiters.push(resolve);
+    });
+  }
+
   private requireSocket(): WebSocket {
     if (!this.socket) {
       throw new Error("FakeAppClient has no open socket — call claim()/resume() first.");
@@ -184,8 +202,26 @@ export class FakeAppClient {
         return;
       }
 
-      if (message.type === "tool_call" && this.toolCallHandler) {
-        void this.handleToolCall(socket, message as unknown as ToolCallFrame);
+      if (message.type === "tool_call") {
+        const waiters = this.toolCallWaiters;
+        this.toolCallWaiters = [];
+        for (const waiter of waiters) {
+          waiter(message as unknown as ToolCallFrame);
+        }
+
+        if (this.toolCallHandler) {
+          void this.handleToolCall(socket, message as unknown as ToolCallFrame);
+        }
+
+        return;
+      }
+
+      if (message.type === "tool_cancel") {
+        const waiters = this.toolCancelWaiters;
+        this.toolCancelWaiters = [];
+        for (const waiter of waiters) {
+          waiter(message as unknown as ToolCancelFrame);
+        }
       }
     });
 

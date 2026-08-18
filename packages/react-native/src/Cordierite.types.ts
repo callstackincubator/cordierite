@@ -224,6 +224,9 @@ export type CordieriteToolExecutionContext = {
   invocationId: string;
   receivedAt: string;
   reportProgress: CordieriteReportProgress;
+  /** Aborted when the daemon sends `tool_cancel` for this call, or when the session suspends
+   * mid-call. Handlers may ignore it — they then run to completion as before. */
+  signal: AbortSignal;
 };
 
 export type CordieriteToolHandler<TArgs = unknown, TResult = unknown> = (

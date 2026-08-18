@@ -529,6 +529,98 @@ describe("tools.call: suspend mid-call", () => {
   }, 10_000);
 });
 
+describe("tools.cancel", () => {
+  test("sends tool_cancel to the app; the app's tool_cancelled reply rejects the pending call", async () => {
+    const { daemon, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    await snapshotTools(daemon, app, [{ name: "slow" }]);
+
+    const cancelMessages: Record<string, unknown>[] = [];
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+
+      if (msg.type === "tool_cancel") {
+        cancelMessages.push(msg);
+        app.socket.send(
+          JSON.stringify({
+            type: "tool_error",
+            session_id: app.sessionId,
+            id: msg.id,
+            error: { type: "tool_cancelled", message: "cancelled by client" },
+          }),
+        );
+      }
+    });
+
+    const started = waitForEvent(daemon, "tool_call_started");
+    const callPromise = rpcCall(daemon.paths.socketPath, "tools.call", { selector: app.alias, name: "slow", args: {} });
+    const startedEvent = await started;
+    const callId = (startedEvent.data as { callId: string }).callId;
+
+    const cancelResult = await rpcCall(daemon.paths.socketPath, "tools.cancel", { selector: app.alias, callId });
+    expect(cancelResult).toEqual({ cancelled: true });
+
+    await expect(callPromise).rejects.toMatchObject({ data: { type: "tool_cancelled" } });
+
+    expect(cancelMessages).toHaveLength(1);
+    expect(cancelMessages[0]).toMatchObject({ type: "tool_cancel", session_id: app.sessionId, id: callId });
+
+    app.socket.close();
+  });
+
+  test("cancelling an unknown or already-finished callId is a no-op, not an error", async () => {
+    const { daemon, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const result = await rpcCall(daemon.paths.socketPath, "tools.cancel", {
+      selector: app.alias,
+      callId: "call_does_not_exist",
+    });
+    expect(result).toEqual({ cancelled: false });
+
+    app.socket.close();
+  });
+});
+
+describe("tools.call: cancel on connection drop", () => {
+  test("the connection that issued tools.call dropping mid-flight sends tool_cancel to the app", async () => {
+    const { daemon, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    await snapshotTools(daemon, app, [{ name: "slow" }]);
+
+    const gotToolCall = new Promise<void>((resolve) => {
+      app.socket.once("message", (data) => {
+        const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+        if (msg.type === "tool_call") {
+          resolve();
+        }
+      });
+    });
+
+    const gotToolCancel = new Promise<Record<string, unknown>>((resolve) => {
+      app.socket.on("message", (data) => {
+        const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+        if (msg.type === "tool_cancel") {
+          resolve(msg);
+        }
+      });
+    });
+
+    const issuingConnection = await openRpcConnection(daemon.paths.socketPath);
+    // Fire-and-forget: the connection is about to be dropped, so nothing will ever read this
+    // response — only the app-visible side effect (tool_cancel) is under test here.
+    issuingConnection.call("tools.call", { selector: app.alias, name: "slow", args: {} }).catch(() => {});
+
+    await gotToolCall;
+    issuingConnection.close();
+
+    const cancelMessage = await gotToolCancel;
+    expect(cancelMessage).toMatchObject({ type: "tool_cancel", session_id: app.sessionId });
+
+    app.socket.close();
+  });
+});
+
 describe("events.subscribe", () => {
   test("a subscriber receives session_claimed, tools_changed, app_event, tool_call_started/finished in order", async () => {
     const { daemon, port } = await startTestDaemon();
