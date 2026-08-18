@@ -14,10 +14,13 @@ import { fileURLToPath } from "node:url";
 
 import {
   RPC_METHODS,
+  EVENT_KINDS,
   type EventKind,
   type ErrorType,
   type DaemonShutdownResult,
   type DaemonStatusResult,
+  type EventsSinceParams,
+  type EventsSinceResult,
   type EventsSubscribeParams,
   type EventsSubscribeResult,
   type LinkCreateParams,
@@ -30,6 +33,8 @@ import {
   type ToolCallProgressMessage,
   type ToolsCallParams,
   type ToolsCallResult,
+  type ToolsCancelParams,
+  type ToolsCancelResult,
   type ToolsListResult,
 } from "@cordierite/shared";
 
@@ -47,23 +52,8 @@ import { createSessionManager, type SessionManager } from "./sessions.js";
 import { ensureStateDir, getSocketPath, getStateDirPaths, type StateDirPaths } from "./state-dir.js";
 import { createTlsManager, toAgentEndpoint, type TlsManager } from "./tls.js";
 
-/** Runtime mirror of the shared `EventKind` union (ARCHITECTURE.md §5), used to validate
- * `events.subscribe`'s `kinds` filter — the shared package only exports the type. */
-const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set<EventKind>([
-  "daemon_started",
-  "link_created",
-  "link_expired",
-  "session_claimed",
-  "session_suspended",
-  "session_resumed",
-  "session_revoked",
-  "session_expired",
-  "tools_changed",
-  "app_event",
-  "tool_call_started",
-  "tool_call_progress",
-  "tool_call_finished",
-]);
+/** Used to validate `events.subscribe`/`events.since`'s `kinds` filter. */
+const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set<EventKind>(EVENT_KINDS);
 
 /** Per-connection `events.subscribe` state, stashed in `RpcConnection.state`. */
 type EventSubscription = {
@@ -179,12 +169,45 @@ const asToolsCallParams = (params: unknown): ToolsCallParams => {
     throw new RpcApplicationError("invalid_request", '"caller" must be "cli", "mcp", or "client".');
   }
 
+  const consent = record.consent;
+
+  if (consent !== undefined && consent !== "client") {
+    throw new RpcApplicationError("invalid_request", '"consent" must be "client".');
+  }
+
   return {
     selector: selector as string | undefined,
     name: record.name,
     args: args as Record<string, unknown>,
     timeoutMs: timeoutMs as number | undefined,
     caller: caller as "cli" | "mcp" | "client" | undefined,
+    consent: consent as "client" | undefined,
+  };
+};
+
+const asToolsCancelParams = (params: unknown): ToolsCancelParams => {
+  const record = asRecordParams(params);
+
+  const selector = record.selector;
+
+  if (selector !== undefined && typeof selector !== "string") {
+    throw new RpcApplicationError("invalid_request", '"selector" must be a string.');
+  }
+
+  if (typeof record.callId !== "string" || record.callId.length === 0) {
+    throw new RpcApplicationError("invalid_request", '"callId" must be a non-empty string.');
+  }
+
+  const reason = record.reason;
+
+  if (reason !== undefined && typeof reason !== "string") {
+    throw new RpcApplicationError("invalid_request", '"reason" must be a string.');
+  }
+
+  return {
+    selector: selector as string | undefined,
+    callId: record.callId,
+    reason: reason as string | undefined,
   };
 };
 
@@ -209,6 +232,46 @@ const asEventsSubscribeParams = (params: unknown): EventsSubscribeParams => {
   }
 
   return { sessionSelector: sessionSelector as string | undefined, kinds };
+};
+
+const asEventsSinceParams = (params: unknown): EventsSinceParams => {
+  const record = asRecordParams(params);
+
+  const selector = record.selector;
+
+  if (selector !== undefined && typeof selector !== "string") {
+    throw new RpcApplicationError("invalid_request", '"selector" must be a string.');
+  }
+
+  const since = record.since;
+
+  if (since !== undefined && (typeof since !== "number" || !Number.isInteger(since) || since < 0)) {
+    throw new RpcApplicationError("invalid_request", '"since" must be a non-negative integer.');
+  }
+
+  const kindsRaw = record.kinds;
+  let kinds: EventKind[] | undefined;
+
+  if (kindsRaw !== undefined) {
+    if (!Array.isArray(kindsRaw) || !kindsRaw.every((kind) => typeof kind === "string" && KNOWN_EVENT_KINDS.has(kind))) {
+      throw new RpcApplicationError("invalid_request", '"kinds" must be an array of known event kinds.');
+    }
+
+    kinds = kindsRaw as EventKind[];
+  }
+
+  const limit = record.limit;
+
+  if (limit !== undefined && (typeof limit !== "number" || !Number.isInteger(limit) || limit <= 0)) {
+    throw new RpcApplicationError("invalid_request", '"limit" must be a positive integer.');
+  }
+
+  return {
+    selector: selector as string | undefined,
+    since: since as number | undefined,
+    kinds,
+    limit: limit as number | undefined,
+  };
 };
 
 const asLinkCreateParams = (params: unknown): LinkCreateParams => {
@@ -291,7 +354,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
       },
     });
 
-    eventBus = createEventBus(clock);
+    eventBus = createEventBus({ clock, bufferSize: config.eventBufferSize });
     const activeEventBus = eventBus;
     const detectAddress =
       options.detectAddress ??
@@ -332,6 +395,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
 
     callsManager = createCallsManager({
       send: (sessionId, message) => activeSessionManager.sendToolCall(sessionId, message),
+      sendCancel: (sessionId, message) => activeSessionManager.sendToolCancel(sessionId, message),
       eventBus: activeEventBus,
     });
 
@@ -421,18 +485,31 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           const { selector } = asSelectorParams(params);
           // ARCHITECTURE.md §5: tools.list works for ACTIVE and SUSPENDED sessions alike (the
           // retained registry survives suspend); only tools.call requires ACTIVE.
-          return activeSessionManager.resolveForTools(selector).registry.list();
+          const resolved = activeSessionManager.resolveForTools(selector);
+
+          // Each entry carries its effective policy decision (ARCHITECTURE.md §12) so the MCP
+          // server can emit `_meta["anthropic/requiresUserInteraction"]` for "prompt" tools
+          // without a second round trip (issue #14).
+          return resolved.registry.list().map((descriptor) => ({
+            ...descriptor,
+            policy: evaluatePolicy(descriptor, { alias: resolved.alias }, config.policy),
+          }));
         },
         // This handler is the single seam every `tools.call` passes through: policy (ARCHITECTURE.md
         // §12) is evaluated once the target tool descriptor is known, and one audit record is
         // written for every attempt that reaches a resolved session, across ok/error/denied.
-        [RPC_METHODS.toolsCall]: async (params): Promise<ToolsCallResult> => {
-          const { selector, name, args, timeoutMs, caller } = asToolsCallParams(params);
+        [RPC_METHODS.toolsCall]: async (params, context): Promise<ToolsCallResult> => {
+          const { selector, name, args, timeoutMs, caller, consent } = asToolsCallParams(params);
           const effectiveCaller = caller ?? "cli";
           const resolved = activeSessionManager.resolveForTools(selector);
           const auditStartedAt = clock.now().getTime();
 
-          const writeAudit = (outcome: "ok" | "error" | "denied", errorType?: ErrorType): void => {
+          const writeAudit = (
+            outcome: "ok" | "error" | "denied" | "cancelled",
+            errorType?: ErrorType,
+            grantedConsent?: "client",
+            deniedReason?: "policy" | "no_consent_channel",
+          ): void => {
             auditLogger.record({
               sessionId: resolved.sessionId,
               alias: resolved.alias,
@@ -440,8 +517,10 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               argsSha256: argsSha256(args),
               outcome,
               errorType,
+              deniedReason,
               durationMs: clock.now().getTime() - auditStartedAt,
               caller: effectiveCaller,
+              consent: grantedConsent,
             });
           };
 
@@ -460,8 +539,24 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           }
 
           const policyDecision = evaluatePolicy(tool, { alias: resolved.alias }, config.policy);
+          // "prompt" fails closed (ARCHITECTURE.md §12 / issue #14): it proceeds only when the
+          // caller carried `consent: "client"`. This is trusted verbatim once present — the daemon
+          // does not and cannot re-derive whether an MCP client's `_meta` was actually honored, the
+          // same way it doesn't re-verify any other RPC param. `consent` is only ever justified
+          // when set by this codebase's own MCP server (mcp/server.ts), which sets it solely after
+          // confirming both that it emitted `_meta["anthropic/requiresUserInteraction"]` for this
+          // exact tool on this connection's most recent listing, and that the connected client is
+          // known to enforce it. Any other local process with access to `daemon.sock` — including
+          // the CLI, or an agent with shell access, which is the typical setup this feature targets
+          // — could send `consent: "client"` directly; that is not a bypass of this feature so much
+          // as a restatement of this codebase's existing trust boundary (docs/SECURITY.md: anything
+          // that can reach the socket already has full daemon control). "prompt" guards against a
+          // compliant MCP client silently auto-approving on the caller's behalf, not against a
+          // hostile process on the operator's own machine.
+          const grantedConsent: "client" | undefined =
+            policyDecision === "prompt" && consent === "client" ? "client" : undefined;
 
-          if (policyDecision === "deny") {
+          if (policyDecision === "deny" || (policyDecision === "prompt" && grantedConsent === undefined)) {
             // Denied → no frame reaches the app, and the call never starts.
             activeEventBus.emit({
               kind: "tool_call_finished",
@@ -469,7 +564,22 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               alias: resolved.alias,
               data: { name, outcome: "denied" },
             });
-            writeAudit("denied");
+
+            if (policyDecision === "prompt") {
+              writeAudit("denied", undefined, undefined, "no_consent_channel");
+
+              throw new RpcApplicationError(
+                "policy_denied",
+                `Policy requires prompt consent to call "${name}" on session "${resolved.alias}", but no consent channel confirmed it.`,
+                -32000,
+                {
+                  reason: "no_consent_channel",
+                  hint: `This caller did not confirm human consent for "${name}". Claude Code ≥ v2.1.199 confirms it automatically over MCP; every other caller (including the CLI) is denied by design until another consent channel is implemented. To change this tool's policy, edit "policy.tools[\"${resolved.alias}/${name}\"]" (or policy.default/policy.destructive) in ${paths.configPath}.`,
+                },
+              );
+            }
+
+            writeAudit("denied", undefined, undefined, "policy");
 
             throw new RpcApplicationError(
               "policy_denied",
@@ -487,6 +597,15 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           // notifications by this id, unambiguous under concurrent calls.
           const { callId, result: callResult } = activeCallsManager.call(session, name, args, timeoutMs);
 
+          // If the connection that issued this tools.call drops while the call is still pending
+          // (CLI Ctrl-C, MCP client disconnect), tell the app to stop rather than leaving an
+          // orphaned handler running for a caller nobody is waiting on anymore. Unregistered once
+          // this call settles either way — otherwise a long-lived connection issuing many calls
+          // (e.g. the MCP server's persistent stream) leaks one closure per call for its lifetime.
+          const unregisterOnClose = context.onClose(() => {
+            activeCallsManager.cancel(resolved.sessionId, callId, "connection_closed");
+          });
+
           activeEventBus.emit({
             kind: "tool_call_started",
             sessionId: resolved.sessionId,
@@ -503,22 +622,32 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               alias: resolved.alias,
               data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome: "ok" },
             });
-            writeAudit("ok");
+            writeAudit("ok", undefined, grantedConsent);
 
             return { result, callId };
           } catch (error) {
             const errorType = error instanceof RpcApplicationError ? error.type : "tool_execution_error";
+            const outcome = errorType === "tool_cancelled" ? "cancelled" : "error";
 
             activeEventBus.emit({
               kind: "tool_call_finished",
               sessionId: resolved.sessionId,
               alias: resolved.alias,
-              data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome: "error", errorType },
+              data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome, errorType },
             });
-            writeAudit("error", errorType);
+            writeAudit(outcome, errorType, grantedConsent);
 
             throw error;
+          } finally {
+            unregisterOnClose();
           }
+        },
+        [RPC_METHODS.toolsCancel]: (params): ToolsCancelResult => {
+          const { selector, callId, reason } = asToolsCancelParams(params);
+          const resolved = activeSessionManager.resolveForTools(selector);
+          const cancelled = activeCallsManager.cancel(resolved.sessionId, callId, reason ?? "client_cancelled");
+
+          return { cancelled };
         },
         [RPC_METHODS.eventsSubscribe]: (params, context): EventsSubscribeResult => {
           const { sessionSelector, kinds } = asEventsSubscribeParams(params);
@@ -529,6 +658,16 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           } satisfies EventSubscription;
 
           return { ok: true };
+        },
+        [RPC_METHODS.eventsSince]: (params): EventsSinceResult => {
+          const { selector, since, kinds, limit } = asEventsSinceParams(params);
+          // Resolved the same way as every other selector-taking method (`sessions.describe`,
+          // `tools.list`): defaults to the sole active/suspended session, errors on ambiguity, and
+          // works for a suspended session too — a suspended app's already-retained events are still
+          // fair game to drain.
+          const resolved = activeSessionManager.describe(selector);
+
+          return activeEventBus.since(resolved.sessionId, { since, kinds, limit });
         },
       },
     });

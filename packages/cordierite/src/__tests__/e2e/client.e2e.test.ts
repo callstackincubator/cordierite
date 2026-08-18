@@ -183,6 +183,85 @@ describe("e2e: cordierite/client", () => {
     fakeApp.close();
   });
 
+  test(
+    "waitForEvent() resolves from the retained buffer for an event emitted before it was called (no live-subscribe race)",
+    async () => {
+      const { stateDir, port } = await makeTempStateDir();
+      await ensureDaemon(stateDir);
+      const pinnedKeys = await fetchPinnedKeys(stateDir);
+
+      const events = await subscribeToEvents(stateDir);
+      const link = await mintLink(stateDir);
+      const fakeApp = new FakeAppClient(port, pinnedKeys);
+      await fakeApp.claim(link, { model: "Pixel 8" });
+
+      const toolsChanged = events.waitFor("tools_changed");
+      fakeApp.registerTools([{ name: "echo" }]);
+      await toolsChanged;
+      events.close();
+      fakeApp.answerCalls(() => ({ result: "ok" }));
+
+      const app = await connect({ stateDir, selector: link.sessionId });
+
+      // Emitted well before `waitForEvent` is ever called — a live-only subscription would miss
+      // this entirely; the daemon's retention buffer is what lets this still resolve.
+      fakeApp.emitEvent("checkout_done", { orderId: "already-happened" });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const event = await app.waitForEvent<{ orderId: string }>("checkout_done", { timeoutMs: 5000 });
+      expect(event).toMatchObject({ name: "checkout_done", payload: { orderId: "already-happened" } });
+      expect(typeof event.seq).toBe("number");
+
+      app.close();
+      fakeApp.close();
+    },
+    15_000,
+  );
+
+  test(
+    "events() drains the retained buffer, and waitForEvent()'s since skips events already seen",
+    async () => {
+      const { stateDir, port } = await makeTempStateDir();
+      await ensureDaemon(stateDir);
+      const pinnedKeys = await fetchPinnedKeys(stateDir);
+
+      const events = await subscribeToEvents(stateDir);
+      const link = await mintLink(stateDir);
+      const fakeApp = new FakeAppClient(port, pinnedKeys);
+      await fakeApp.claim(link, { model: "Pixel 8" });
+
+      const toolsChanged = events.waitFor("tools_changed");
+      fakeApp.registerTools([{ name: "echo" }]);
+      await toolsChanged;
+      events.close();
+      fakeApp.answerCalls(() => ({ result: "ok" }));
+
+      const app = await connect({ stateDir, selector: link.sessionId });
+
+      fakeApp.emitEvent("checkout_done", { orderId: "first" });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const drained = await app.events();
+      expect(drained.events.map((event) => event.payload)).toContainEqual({ orderId: "first" });
+      expect(drained.cursor).toBeGreaterThan(0);
+
+      // With `since` set to the cursor already drained, a second wait must not re-resolve
+      // instantly against the same "first" event — only a genuinely new one.
+      const waitingForNext = app.waitForEvent<{ orderId: string }>("checkout_done", {
+        timeoutMs: 5000,
+        since: drained.cursor,
+      });
+      fakeApp.emitEvent("checkout_done", { orderId: "second" });
+      const next = await waitingForNext;
+      expect(next).toMatchObject({ payload: { orderId: "second" } });
+      expect(next.seq).toBeGreaterThan(drained.cursor);
+
+      app.close();
+      fakeApp.close();
+    },
+    15_000,
+  );
+
   test("connect() rejects with a connection_error CordieriteError when the daemon is unreachable and auto-spawn is disabled", async () => {
     const { stateDir } = await makeTempStateDir();
 

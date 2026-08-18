@@ -14,5 +14,13 @@
 export { connect, type ConnectOptions } from "./connect.js";
 export { link, waitForSession, type LinkOptions, type LinkResult, type WaitForSessionOptions } from "./bootstrap.js";
 export { CordieriteError, type CordieriteErrorType } from "./errors.js";
-export type { AppClient, AppEvent, CallOptions, ToolMap, WaitForEventOptions } from "./app-client.js";
+export type {
+  AppClient,
+  AppEvent,
+  CallOptions,
+  EventsOptions,
+  EventsResult,
+  ToolMap,
+  WaitForEventOptions,
+} from "./app-client.js";
 export type { AgentEndpoint, ErrorType, ToolDescriptor } from "@cordierite/shared";

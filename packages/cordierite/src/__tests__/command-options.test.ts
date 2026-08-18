@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   parseJsonInputOption,
+  parseNonNegativeIntegerOption,
   parsePositiveIntegerOption,
   splitOptionalSelector,
   splitOptionalSelectorAndTarget,
@@ -21,6 +22,23 @@ describe("parsePositiveIntegerOption", () => {
     expect(() => parsePositiveIntegerOption("0", "--ttl")).toThrow(/positive integer/u);
     expect(() => parsePositiveIntegerOption("-5", "--ttl")).toThrow(/positive integer/u);
     expect(() => parsePositiveIntegerOption("abc", "--ttl")).toThrow(/positive integer/u);
+  });
+});
+
+describe("parseNonNegativeIntegerOption", () => {
+  test("passes through undefined", () => {
+    expect(parseNonNegativeIntegerOption(undefined, "--since")).toBeUndefined();
+  });
+
+  test("accepts a numeric string, including zero", () => {
+    expect(parseNonNegativeIntegerOption("0", "--since")).toBe(0);
+    expect(parseNonNegativeIntegerOption("42", "--since")).toBe(42);
+  });
+
+  test("rejects negative, non-integer, and non-numeric values", () => {
+    expect(() => parseNonNegativeIntegerOption("-1", "--since")).toThrow(/non-negative integer/u);
+    expect(() => parseNonNegativeIntegerOption("1.5", "--since")).toThrow(/non-negative integer/u);
+    expect(() => parseNonNegativeIntegerOption("abc", "--since")).toThrow(/non-negative integer/u);
   });
 });
 

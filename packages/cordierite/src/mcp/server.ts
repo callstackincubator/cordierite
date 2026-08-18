@@ -38,6 +38,14 @@ import {
   WAIT_FOR_SESSION_TOOL_NAME,
 } from "./connect-tool.js";
 import { fetchEffectiveTools } from "./daemon-tools.js";
+import {
+  EVENTS_TOOL_DESCRIPTOR,
+  EVENTS_TOOL_NAME,
+  handleEventsTool,
+  handleWaitForEventTool,
+  WAIT_FOR_EVENT_TOOL_DESCRIPTOR,
+  WAIT_FOR_EVENT_TOOL_NAME,
+} from "./events-tool.js";
 import { toMcpTool } from "./tool-mapping.js";
 import { findNamespacedTool, namespacedToolsSnapshotKey, type NamespacedTool } from "./tool-namespace.js";
 
@@ -60,6 +68,57 @@ const LIST_CHANGE_EVENT_KINDS: readonly EventKind[] = [
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+};
+
+/** The minimum Claude Code version documented (ARCHITECTURE.md §12 / issue #14) to enforce
+ * `_meta["anthropic/requiresUserInteraction"]` on every call, in every permission mode, with no
+ * "don't ask again" option. Older Claude Code and every other client ignore the flag silently. */
+const REQUIRES_USER_INTERACTION_MIN_VERSION = [2, 1, 199] as const;
+
+/** Strict `\d+` per dot-separated part — rejects a pre-release/build suffix (`"2.1.199-beta.1"`,
+ * `"2.1.199rc"`) rather than letting `Number.parseInt`'s leading-digits-only parsing treat it as
+ * `2.1.199` and wrongly report a pre-release as version-compliant. */
+const parseVersionParts = (version: string): number[] | undefined => {
+  const rawParts = version.split(".");
+
+  if (!rawParts.every((part) => /^\d+$/u.test(part))) {
+    return undefined;
+  }
+
+  return rawParts.map((part) => Number.parseInt(part, 10));
+};
+
+const isVersionAtLeast = (version: string, min: readonly number[]): boolean => {
+  const parts = parseVersionParts(version);
+
+  if (!parts) {
+    return false;
+  }
+
+  for (let i = 0; i < min.length; i++) {
+    const part = parts[i] ?? 0;
+
+    if (part > min[i]!) {
+      return true;
+    }
+
+    if (part < min[i]!) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+/**
+ * Whether the connected MCP client is known to enforce `_meta["anthropic/requiresUserInteraction"]`
+ * (ARCHITECTURE.md §12 / issue #14). `clientInfo` is self-reported at `initialize` — a hostile
+ * client could claim to be Claude Code, but that is outside this feature's threat model
+ * (unattended automation, not a malicious client); it is documented as a known limitation.
+ */
+const clientHonorsRequiresUserInteraction = (server: Server): boolean => {
+  const clientInfo = server.getClientVersion();
+  return clientInfo?.name === "claude-code" && isVersionAtLeast(clientInfo.version, REQUIRES_USER_INTERACTION_MIN_VERSION);
 };
 
 const toolSuccessContent = (result: unknown): CallToolResult => {
@@ -124,18 +183,43 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
     { capabilities: { tools: { listChanged: true }, resources: {} } },
   );
 
+  // The `mcpName`s this connection's *most recent* `tools/list` response actually emitted
+  // `_meta["anthropic/requiresUserInteraction"]` for — repopulated on every `tools/list` request,
+  // never on the internal `list_changed` refresh below (which doesn't answer a client request, so
+  // nothing was shown to a human). `callProxiedTool` requires membership here in addition to
+  // recomputing the tool's live policy and the client check, so `consent: "client"` reflects an
+  // MCP `Tool` the client actually listed with the flag set on *this* connection, not merely a
+  // client that happens to qualify version-wise (ARCHITECTURE.md §12 / issue #14).
+  const emittedRequiresUserInteraction = new Set<string>();
+
   const callProxiedTool = async (
     tool: NamespacedTool,
     args: Record<string, unknown>,
     progressToken: string | number | undefined,
     sendNotification: (notification: unknown) => Promise<void>,
+    // The MCP SDK aborts this automatically on an inbound `notifications/cancelled` for this
+    // request (ARCHITECTURE.md §9). Only honored on the progress-tracked path below, which is the
+    // only one that learns `callId` while the call is still in flight — a non-progress call has no
+    // `callId` to cancel by until it has already resolved.
+    signal: AbortSignal,
   ): Promise<unknown> => {
+    // Recomputed at call time (never cached from the `tools/list` snapshot) so a stale `_meta`
+    // can't be replayed to manufacture consent (ARCHITECTURE.md §12 / issue #14): this is the
+    // daemon's sole evidence a human gate exists for a "prompt"-policy tool.
+    const consent: "client" | undefined =
+      tool.policy === "prompt" &&
+      clientHonorsRequiresUserInteraction(server) &&
+      emittedRequiresUserInteraction.has(tool.mcpName)
+        ? "client"
+        : undefined;
+
     if (progressToken === undefined) {
       const result = await stream.call<ToolsCallResult>(RPC_METHODS.toolsCall, {
         selector: tool.selector,
         name: tool.descriptor.name,
         args,
         caller: "mcp",
+        ...(consent ? { consent } : {}),
       });
 
       return result.result;
@@ -154,6 +238,26 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
       });
 
       let callId: string | undefined;
+      let cancelRequested = signal.aborted;
+
+      const maybeCancel = (): void => {
+        if (callId === undefined || !cancelRequested) {
+          return;
+        }
+
+        progressStream
+          .call(RPC_METHODS.toolsCancel, { selector: tool.selector, callId, reason: "mcp_client_cancelled" })
+          .catch((error: unknown) => {
+            console.error("cordierite mcp: failed to cancel a proxied tool call:", error);
+          });
+      };
+
+      const onAbort = (): void => {
+        cancelRequested = true;
+        maybeCancel();
+      };
+
+      signal.addEventListener("abort", onAbort);
 
       const unsubscribe = progressStream.onNotification((payload) => {
         const event = payload as EventNotification;
@@ -163,6 +267,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
 
           if (data.name === tool.descriptor.name) {
             callId = data.callId;
+            maybeCancel();
           }
 
           return;
@@ -188,11 +293,13 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
           name: tool.descriptor.name,
           args,
           caller: "mcp",
+          ...(consent ? { consent } : {}),
         });
 
         return result.result;
       } finally {
         unsubscribe();
+        signal.removeEventListener("abort", onAbort);
       }
     } finally {
       progressStream.close();
@@ -201,9 +308,23 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools = await fetchEffectiveTools(stream.call);
+    const clientHonors = clientHonorsRequiresUserInteraction(server);
+
+    emittedRequiresUserInteraction.clear();
+    for (const tool of tools) {
+      if (tool.policy === "prompt" && clientHonors) {
+        emittedRequiresUserInteraction.add(tool.mcpName);
+      }
+    }
 
     return {
-      tools: [CONNECT_TOOL_DESCRIPTOR, WAIT_FOR_SESSION_TOOL_DESCRIPTOR, ...tools.map(toMcpTool)],
+      tools: [
+        CONNECT_TOOL_DESCRIPTOR,
+        WAIT_FOR_SESSION_TOOL_DESCRIPTOR,
+        EVENTS_TOOL_DESCRIPTOR,
+        WAIT_FOR_EVENT_TOOL_DESCRIPTOR,
+        ...tools.map((tool) => toMcpTool(tool, clientHonors)),
+      ],
     };
   });
 
@@ -225,6 +346,23 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
         );
       }
 
+      if (name === EVENTS_TOOL_NAME) {
+        return toolSuccessContent(await handleEventsTool(args, { call: stream.call }));
+      }
+
+      if (name === WAIT_FOR_EVENT_TOOL_NAME) {
+        return toolSuccessContent(
+          await handleWaitForEventTool(args, {
+            stateDir: options.stateDir,
+            spawn: options.spawn,
+            progress:
+              progressToken !== undefined
+                ? { token: progressToken, sendNotification: extra.sendNotification as (notification: unknown) => Promise<void> }
+                : undefined,
+          }),
+        );
+      }
+
       const tools = await fetchEffectiveTools(stream.call);
       const tool = findNamespacedTool(tools, name);
 
@@ -238,6 +376,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
           args,
           progressToken,
           extra.sendNotification as (notification: unknown) => Promise<void>,
+          extra.signal,
         ),
       );
     } catch (error) {

@@ -27,8 +27,9 @@ Deliberately out of scope, so the boundaries of the design are explicit:
 - Arbitrary code execution inside the app — only pre-registered, named tools.
 - Anonymous or unauthenticated remote access.
 - Treating deep links as proof of authority.
-- Interactive consent prompting for individual tool calls (the policy enum reserves a
-  future `"prompt"` value; §12).
+- A general-purpose interactive consent UI. `policy: "prompt"` (§12) exists, but its only
+  implemented gate is an MCP client that enforces `_meta["anthropic/requiresUserInteraction"]`
+  — every other caller fails closed rather than getting a prompt of its own.
 - Remote relay to hosts outside the operator machine.
 - Pinning an offline anchor CA that signs short-lived leaf certs. The current model pins
   the same key used for the TLS leaf; overlapping pin sets are the supported rotation
@@ -86,6 +87,7 @@ The daemon refuses to load a key file that is group/world-readable.
   "graceSeconds": 600,
   "linkTtlSeconds": 300,
   "keepaliveIntervalSeconds": 15,
+  "eventBufferSize": 256,
   "policy": { "default": "allow", "destructive": "allow" },
   "advertisedIp": null,
   "scheme": null
@@ -95,6 +97,7 @@ The daemon refuses to load a key file that is group/world-readable.
 `advertisedIp` overrides auto-detection of the address advertised in minted bootstrap
 payloads. `scheme` is the deep-link URI scheme composed into `cordierite link`'s output
 when `--scheme` is not passed (§10) — set it once here instead of on every invocation.
+`eventBufferSize` caps the per-session `events.since` retention buffer (§5).
 
 ## 4. Daemon lifecycle
 
@@ -138,9 +141,11 @@ Methods:
 | `sessions.list` | — | `SessionSummary[]` |
 | `sessions.describe` | `{ selector? }` | full session detail incl. device metadata, state timestamps, tool count |
 | `sessions.revoke` | `{ selector? }` | `{ ok: true }` — closes socket (code 1000), frees alias |
-| `tools.list` | `{ selector? }` | `ToolDescriptor[]` (full schemas + annotations) |
-| `tools.call` | `{ selector?, name, args, timeoutMs? }` | `{ result, callId }` on success — `callId` lets a caller with several in-flight calls match `tool_call_progress`/`tool_call_finished` events back to this call; JSON-RPC error with `data.type` preserving the wire error type on failure |
+| `tools.list` | `{ selector? }` | `ToolsListEntry[]` — `ToolDescriptor` (full schema + annotations) plus the tool's effective `policy: "allow" \| "deny" \| "prompt"` (§12), resolved daemon-side |
+| `tools.call` | `{ selector?, name, args, timeoutMs?, caller?: "cli" \| "mcp", consent?: "client" }` | `{ result, callId }` on success — `callId` lets a caller with several in-flight calls match `tool_call_progress`/`tool_call_finished` events back to this call; JSON-RPC error with `data.type` preserving the wire error type on failure. `caller` attributes the audit record (§12); `consent` is the MCP server's evidence of a `"prompt"`-policy human gate (§12) — absent for the CLI. |
+| `tools.cancel` | `{ selector?, callId, reason? }` | `{ cancelled: boolean }` — sends `tool_cancel` (§7) to the app for a still-pending call; `false` for an unknown/already-finished `callId` or no active socket (a no-op, not an error) |
 | `events.subscribe` | `{ sessionSelector?, kinds? }` | `{ ok: true }`, then `event` notifications on this connection |
+| `events.since` | `{ selector?, since?, kinds?, limit? }` | `{ events: EventNotification[], cursor }` — pull counterpart to `events.subscribe`, draining the per-session retention buffer described below |
 
 `SessionSummary`: `{ sessionId, alias, state, device: { manufacturer?, model?, os? },
 createdAt, claimedAt?, suspendedAt?, toolCount }`.
@@ -148,18 +153,40 @@ createdAt, claimedAt?, suspendedAt?, toolCount }`.
 `daemon.status`'s result also reports the effective policy config and audit surfacing:
 `{ ..., policy: { default, destructive, tools? }, audit: { path, failedWrites } }` (§12).
 
-Event notification payload: `{ kind, sessionId?, alias?, ts, data }` where `kind` is one
+Event notification payload: `{ kind, sessionId?, alias?, ts, data, seq }` where `kind` is one
 of `daemon_started`, `link_created`, `link_expired`, `session_claimed`,
 `session_suspended`, `session_resumed`, `session_revoked`, `session_expired`,
 `tools_changed`, `app_event`, `tool_call_started`, `tool_call_progress`,
-`tool_call_finished`.
+`tool_call_finished`. `seq` is a per-session cursor (§ below); daemon-wide events (no
+`sessionId`) carry `seq: 0` and are never retained.
+
+**Event retention (issue #6):** alongside the live `events.subscribe` fan-out, the daemon
+keeps a per-session ring buffer of the last `eventBufferSize` events (`config.json`,
+default 256; `tool_call_progress` is excluded — a single chatty call can emit far more of
+these than the buffer holds, which would otherwise evict every retained `app_event`),
+each stamped with a `seq` that increases monotonically per session. `events.since` drains
+it — `since` is an exclusive lower bound on `seq`, `kinds` filters by event kind, `limit`
+caps the response to the **oldest** N so paging forward with the returned `cursor` never
+skips anything; the result's `cursor` is the `seq` of the last event actually **returned**
+(so `since: cursor` on the next call resumes right after it), falling back to the session's
+true high-water mark only when nothing was returned (an empty buffer, or every retained
+event was filtered out by `kinds`) so an empty page still lets a caller skip past events it
+explicitly excluded rather than re-scanning them forever. `selector` defaults the same way
+as every other selector-taking method (§ above). A session's buffer is discarded the
+instant it hits a terminal event (`session_expired`/`session_revoked`) — matching "terminal
+states free the alias" (§6) — the terminal event itself is still delivered live, just never
+retained; an unclaimed pending link's buffer is discarded the same way when it's
+discarded for any reason (TTL, revoke, attempt-limit exceeded), even the paths with no
+event kind of their own. This exists because MCP is strictly request/response (§9): without
+it, an agent that calls a tool and then asks "what happened?" has already missed the
+answer, since it was never subscribed at the moment the app pushed it.
 
 **Error codes** (JSON-RPC `error.data.type`): `no_session`, `ambiguous_session`,
 `unknown_session`, `session_not_active`, `tool_not_found`,
 `tool_input_validation_error`, `tool_output_validation_error`, `tool_execution_error`,
-`tool_serialization_error`, `tool_timeout`, `session_suspended`, `policy_denied`,
-`invalid_request`. App-side error types must be preserved **verbatim** end-to-end
-(daemon → RPC → CLI/MCP output); never re-wrap them under a generic type.
+`tool_serialization_error`, `tool_timeout`, `tool_cancelled`, `session_suspended`,
+`policy_denied`, `invalid_request`. App-side error types must be preserved **verbatim**
+end-to-end (daemon → RPC → CLI/MCP output); never re-wrap them under a generic type.
 
 ## 6. Session state machine
 
@@ -231,10 +258,31 @@ proxies daemon RPC (auto-spawning the daemon like any client):
   several → namespaced `<alias>__<name>`. Registry and session changes emit
   `notifications/tools/list_changed`, so an agent's tool list tracks the device.
 - Tool calls, progress frames, errors (with their `type` preserved), and descriptor
-  annotations all map through verbatim — the MCP surface adds no semantics of its own.
+  annotations all map through verbatim. Two semantics the MCP surface does add:
+  `"prompt"`-policy consent (§12) — `tools/list` emits
+  `_meta["anthropic/requiresUserInteraction"]` for a tool whose effective policy is
+  `"prompt"`, gated on the connected client's `initialize` `clientInfo`, and `tools/call`
+  echoes that gate back to the daemon as `consent: "client"`, only for a tool this same
+  connection's most recent listing actually flagged — and cancellation: an MCP client's
+  `notifications/cancelled` maps to `tools.cancel` (§5), only for a call that requested
+  progress (the SDK only assigns a `progressToken`, and only the progress-tracked path
+  opens the dedicated connection that learns `callId` while the call is still in flight;
+  a non-progress call has no `callId` to cancel by until it has already resolved, at
+  which point cancelling it is moot).
 - Two built-in management tools, `cordierite_connect` and `cordierite_wait_for_session`,
   let an agent mint a bootstrap link, deliver it to an emulator/simulator, and wait for the
   claim — without shell access. This is what makes the agent path self-service.
+- Two more built-in tools, `cordierite_events` and `cordierite_wait_for_event` (issue #6),
+  give an agent a pull surface over `postEvent()`-pushed `app_event`s: `cordierite_events`
+  is a thin proxy over `events.since`; `cordierite_wait_for_event` blocks for a matching
+  event, draining the retained buffer for an already-arrived match before falling back to
+  a live wait — closing the same race `cordierite_wait_for_session` doesn't have to worry
+  about (a session is either claimed or not, but an event can fire between "the agent
+  decides to wait" and "the wait subscription lands"). `timeoutMs` is capped server-side
+  well under the 30-minute idle window a stdio MCP tool call gets before Claude Code aborts
+  it for sending neither a response nor a progress notification; a call still running after
+  about two minutes moves to a Claude Code background task, so its result may arrive well
+  after the call returns.
 
 ## 10. CLI surface
 
@@ -246,6 +294,11 @@ The per-command reference lives in the [`cordierite` package README](../packages
 which is where it stays current. Global flags: `--json` (machine output, NDJSON for streams),
 `--no-color`, `--state-dir`. The `--scheme` used to compose a deep link comes from the flag,
 else `config.json`, else a clear error.
+
+`cordierite invoke`: a SIGINT while the call is still pending cancels it (§5's
+`tools.cancel`, via the RPC connection dropping) rather than leaving the app-side handler
+running for a caller that has already exited; the process then exits reporting
+`tool_cancelled`.
 
 ## 11. React Native SDK
 
@@ -316,8 +369,21 @@ Client behavior:
   `error` (covers bootstrap parse/connect and socket errors), `sessionChange`.
 - Schema handling: Standard Schema JSON exporter as in v1; when a schema lacks the
   exporter, log a dev warning that agents will see a shapeless tool.
-- App-side handler timeout: if a handler exceeds the call timeout hint, reply
-  `tool_timeout` and ignore the late result.
+- App-side handler timeout: if a handler exceeds the call timeout hint, abort its
+  `AbortSignal`, reply `tool_timeout`, and ignore the late result.
+- Cancellation: `tool.handler(args, context)`'s `context.signal` (`AbortSignal`) aborts on
+  a `tool_cancel` frame (§7) or when the session's transport is lost (suspend) — the
+  latter can't itself deliver `tool_cancel` (there is no socket left), so it aborts every
+  in-flight handler directly instead. A handler that ignores the signal keeps running and
+  replies normally, exactly as it did before cancellation existed; one that observes it
+  and throws/rejects gets its `tool_error` sent as `tool_cancelled` (only for an
+  explicit `tool_cancel` — a handler that throws after its own timeout still reports
+  `tool_timeout`, not `tool_cancelled`). `AbortController`/`AbortSignal` are used directly
+  from the global — RN has polyfilled both since 0.60 (`abort-controller` under
+  `polyfillGlobal`), which covers every RN version this package supports (Expo SDK 52+ /
+  RN 0.76+); only the older WHATWG surface is relied on (`aborted`,
+  `addEventListener("abort", …)`), never `AbortSignal.timeout`/`.abort`/`.any`,
+  `throwIfAborted()`, or `.reason` semantics, which that polyfill predates.
 
 Native layer: iOS `URLSession`, Android OkHttp. Two rules keep the two platforms honest —
 all connection state is serialized (an actor on iOS, a single-thread executor/lock on
@@ -329,14 +395,43 @@ it.
 ## 12. Policy & audit
 
 - Policy applies at the daemon on every `tools.call` (CLI and MCP alike), keyed on the
-  descriptor's `annotations`: `policy.default` (`allow`/`deny`) for tools without
-  `destructiveHint`, `policy.destructive` (`allow`/`deny`) for tools with it, plus
-  per-tool overrides `policy.tools["<alias>/<name>"]`. Denied calls return
-  `policy_denied` and are audited. Interactive prompting is not implemented; the
-  policy configuration leaves room for a future `prompt` value.
+  descriptor's `annotations`: `policy.default`/`policy.destructive`/per-tool overrides
+  `policy.tools["<alias>/<name>"]`, each `"allow" | "deny" | "prompt"`. `allow`/`deny`
+  behave as before; denied calls return `policy_denied` and are audited.
+- `"prompt"` means "a human gate is required; if one cannot be guaranteed, deny" — it
+  fails closed rather than silently behaving like `allow`. The only implemented gate
+  today is MCP: `tools/list` emits `_meta["anthropic/requiresUserInteraction"] = true`
+  for a `"prompt"` tool, per connection, only when the connected client's `initialize`
+  `clientInfo` is known to enforce it (Claude Code ≥ v2.1.199 — every other client
+  ignores the flag). `tools/call` then sets `consent: "client"` only for a tool this
+  same connection's most recent `tools/list` actually flagged that way — not merely a
+  tool whose live policy happens to be `"prompt"` on a client that happens to qualify —
+  so a call can't ride on a stale or hypothetical listing. Every other caller (CLI, an
+  older or non-compliant MCP client) is denied with `policy_denied`, reason
+  `no_consent_channel`.
+  - This is evidence the flag was *emitted*, not that a human answered a prompt: the
+    daemon never observes the client's own permission-prompt UI or its answer, only
+    that the call arrived carrying the marker. `clientInfo` is self-reported, and
+    `consent` is an ordinary RPC param on `daemon.sock` — any local process that can
+    reach the socket (the CLI, or an agent with shell access, which is the typical
+    Claude Code setup this feature targets) can set it directly, same as it could send
+    any other RPC call. `"prompt"` guards against a compliant client silently
+    auto-approving on the caller's behalf; it is not a defense against a hostile
+    process on the operator's own machine — see `docs/SECURITY.md`'s threat model,
+    which already treats socket access as full daemon control.
+  - Two client-observable behaviors worth documenting rather than filing as bugs:
+    non-interactive Claude Code (`--permission-prompt-tool`) converts an `allow` result
+    for a flagged tool into a denial (`MCP tool requires user interaction; not
+    supported via --permission-prompt-tool`) — that conversion is the client's, not
+    the daemon's. And `"prompt"` denies unconditionally in any unattended pipeline
+    (CI has no consent channel at all); pipelines that need a tool to run
+    unattended must set `allow`/`deny` explicitly for it rather than `"prompt"`.
 - Audit: every `tools.call` appends one JSONL record to `audit/<date>.jsonl`:
-  `{ ts, sessionId, alias, tool, argsSha256, outcome: "ok"|"error"|"denied",
-  errorType?, durationMs, caller: "cli"|"mcp"|"client" }`. Raw args are never logged.
+  `{ ts, sessionId, alias, tool, argsSha256, outcome: "ok"|"error"|"denied"|"cancelled",
+  errorType?, durationMs, caller: "cli"|"mcp"|"client", consent?: "client" }`. `consent` is set
+  only when a `"prompt"` call proceeded on the MCP client-gate channel above — kept
+  distinct from a plain `"ok"` since the daemon never observes the consent decision
+  itself, only that the call arrived carrying this marker. Raw args are never logged.
 
 ## 13. Package layout
 

@@ -12,7 +12,9 @@ export const RPC_METHODS = {
   sessionsRevoke: "sessions.revoke",
   toolsList: "tools.list",
   toolsCall: "tools.call",
+  toolsCancel: "tools.cancel",
   eventsSubscribe: "events.subscribe",
+  eventsSince: "events.since",
 } as const;
 
 export type RpcMethod = (typeof RPC_METHODS)[keyof typeof RPC_METHODS];
@@ -48,12 +50,15 @@ export type SessionSelectorParams = {
 
 // --- daemon.status ---
 
+/** Wire-safe mirror of `daemon/config.ts`'s `PolicyDecision` (ARCHITECTURE.md §12). */
+export type EffectivePolicyDecision = "allow" | "deny" | "prompt";
+
 /** Wire-safe mirror of `daemon/config.ts`'s `CordieritePolicyConfig` (ARCHITECTURE.md §12):
  * `daemon.status`'s effective policy, exactly as loaded from `config.json` plus defaults. */
 export type EffectivePolicyConfig = {
-  default: "allow" | "deny";
-  destructive: "allow" | "deny";
-  tools?: Record<string, "allow" | "deny">;
+  default: EffectivePolicyDecision;
+  destructive: EffectivePolicyDecision;
+  tools?: Record<string, EffectivePolicyDecision>;
 };
 
 export type DaemonStatusResult = {
@@ -118,7 +123,16 @@ export type SessionsRevokeResult = { ok: true };
 // --- tools.list / tools.call ---
 
 export type ToolsListParams = SessionSelectorParams;
-export type ToolsListResult = ToolDescriptor[];
+
+/** A `tools.list` entry: the tool's descriptor plus the policy decision (ARCHITECTURE.md §12)
+ * that would apply to it right now — resolved daemon-side (it needs `session.alias` and
+ * `config.policy`) so the MCP server can emit `_meta["anthropic/requiresUserInteraction"]` for
+ * `"prompt"` tools at `tools/list` time without a second round trip. */
+export type ToolsListEntry = ToolDescriptor & {
+  policy: EffectivePolicyDecision;
+};
+
+export type ToolsListResult = ToolsListEntry[];
 
 export type ToolsCallParams = SessionSelectorParams & {
   name: string;
@@ -128,6 +142,20 @@ export type ToolsCallParams = SessionSelectorParams & {
    * always sets `"mcp"`, the `cordierite/client` package always sets `"client"`; omitted (the
    * CLI's case) defaults to `"cli"` at the daemon. */
   caller?: "cli" | "mcp" | "client";
+  /**
+   * Set by this codebase's own MCP server, and only when all of: (a) this tool's effective policy
+   * is `"prompt"`, (b) the server emitted `_meta["anthropic/requiresUserInteraction"]` for it in
+   * this connection's most recent `tools/list` response, and (c) the connected client's
+   * `initialize` `clientInfo` is one known to enforce that flag (`name === "claude-code"`, version
+   * ≥ 2.1.199). The daemon trusts this param verbatim once present — it is the sole evidence a
+   * human gate exists for a `"prompt"`-policy call, and everything else (CLI, a non-compliant MCP
+   * client) is denied (`policy_denied`, reason `no_consent_channel`). The daemon cannot itself
+   * re-verify an MCP client's behavior, so this is not a defense against another local process
+   * (one with access to the same `daemon.sock`) sending this param directly — see
+   * `docs/SECURITY.md`'s threat model, which already treats socket access as full daemon control.
+   * `"prompt"` fails closed by design: see issue #14 / ARCHITECTURE.md §12.
+   */
+  consent?: "client";
 };
 
 export type ToolsCallResult = {
@@ -139,22 +167,42 @@ export type ToolsCallResult = {
   callId: string;
 };
 
+// --- tools.cancel ---
+
+export type ToolsCancelParams = SessionSelectorParams & {
+  /** The `callId` returned by the `tools.call` this cancels. */
+  callId: string;
+  reason?: string;
+};
+
+export type ToolsCancelResult = {
+  /** `false` when `callId` was unknown or already finished — a no-op, not an error. */
+  cancelled: boolean;
+};
+
 // --- events.subscribe ---
 
-export type EventKind =
-  | "daemon_started"
-  | "link_created"
-  | "link_expired"
-  | "session_claimed"
-  | "session_suspended"
-  | "session_resumed"
-  | "session_revoked"
-  | "session_expired"
-  | "tools_changed"
-  | "app_event"
-  | "tool_call_started"
-  | "tool_call_progress"
-  | "tool_call_finished";
+/** The single source of truth for the `EventKind` union below — a `const` array (not just a type)
+ * so runtime validators (the daemon's `events.subscribe`/`events.since` param parsing, the MCP
+ * `cordierite_events`/`cordierite_wait_for_event` tool schemas) can derive their allow-list from it
+ * instead of hand-maintaining a second copy that can silently drift from this type. */
+export const EVENT_KINDS = [
+  "daemon_started",
+  "link_created",
+  "link_expired",
+  "session_claimed",
+  "session_suspended",
+  "session_resumed",
+  "session_revoked",
+  "session_expired",
+  "tools_changed",
+  "app_event",
+  "tool_call_started",
+  "tool_call_progress",
+  "tool_call_finished",
+] as const;
+
+export type EventKind = (typeof EVENT_KINDS)[number];
 
 export type EventsSubscribeParams = {
   sessionSelector?: string;
@@ -171,6 +219,40 @@ export type EventNotification = {
   /** Unix ms. */
   ts: number;
   data: unknown;
+  /**
+   * Monotonically increasing per-session cursor (ARCHITECTURE.md §5), assigned by the daemon-side
+   * retention buffer at emit time. Only meaningful for session-scoped events (`sessionId` set) —
+   * daemon-wide events (e.g. `daemon_started`) are never buffered and carry `seq: 0`. Pass the
+   * highest `seq` seen back into `events.since`'s `since` to resume after it.
+   */
+  seq: number;
+};
+
+// --- events.since ---
+
+/** Pulls events retained in the daemon's per-session ring buffer (ARCHITECTURE.md §5) — the
+ * request/response counterpart to `events.subscribe`'s push model, for callers (MCP tools, a
+ * scripted `cordierite events --since`) that ask "what happened?" after the fact instead of
+ * listening live. */
+export type EventsSinceParams = {
+  /** Session id or alias; omitted selects the sole active/suspended session (same default as
+   * `SessionSelectorParams`). */
+  selector?: string;
+  /** Exclusive lower bound on `EventNotification.seq`; omitted returns the whole retained buffer
+   * (oldest first, subject to `limit`). */
+  since?: number;
+  kinds?: EventKind[];
+  /** Caps the number of events returned (newest-first truncation); omitted returns everything
+   * matching `since`/`kinds` up to the buffer's own retention limit. */
+  limit?: number;
+};
+
+export type EventsSinceResult = {
+  events: EventNotification[];
+  /** The highest `seq` currently retained for this session (not just among the returned events),
+   * so a caller can pass it straight back into the next `since` even when `limit` truncated the
+   * response or nothing new had happened. */
+  cursor: number;
 };
 
 // --- JSON-RPC 2.0 error shape ---

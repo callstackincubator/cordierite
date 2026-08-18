@@ -17,9 +17,10 @@ import { handleRevokeCommand } from "../commands/revoke.js";
 import { handleToolsCommand } from "../commands/tools.js";
 import { resolveStateDir } from "../daemon/state-dir.js";
 import { usageError } from "../errors.js";
-import { renderEventLine } from "../output.js";
+import { renderEventLine, renderEventsCursorLine } from "../output.js";
 import {
   parseJsonInputOption,
+  parseNonNegativeIntegerOption,
   parsePositiveIntegerOption,
   splitOptionalSelector,
   splitOptionalSelectorAndTarget,
@@ -156,22 +157,33 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
         "invoke [selector] <tool> --input '<json>'",
       );
 
-      return executeCommand(
-        "invoke",
-        () =>
-          handleInvokeCommand(
-            {
-              selector,
-              tool,
-              args: parseJsonInputOption(
-                typeof parsedOptions.input === "string" ? parsedOptions.input : undefined,
-              ),
-              timeoutMs: parsePositiveIntegerOption(parsedOptions.timeout, "--timeout"),
-            },
-            { stateDir },
-          ),
-        io,
-      );
+      // SIGINT cancels the in-flight tools.call rather than leaving it running unowned in the app
+      // (issue #9) — the listener is torn down once the command settles either way.
+      const cancelController = new AbortController();
+      const onSigint = (): void => cancelController.abort();
+      process.once("SIGINT", onSigint);
+
+      try {
+        return await executeCommand(
+          "invoke",
+          () =>
+            handleInvokeCommand(
+              {
+                selector,
+                tool,
+                args: parseJsonInputOption(
+                  typeof parsedOptions.input === "string" ? parsedOptions.input : undefined,
+                ),
+                timeoutMs: parsePositiveIntegerOption(parsedOptions.timeout, "--timeout"),
+              },
+              { stateDir },
+              cancelController.signal,
+            ),
+          io,
+        );
+      } finally {
+        process.off("SIGINT", onSigint);
+      }
     }
 
     case "revoke": {
@@ -182,19 +194,32 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
 
     case "events": {
       const { selector } = splitOptionalSelector(parsedArgs, "events [selector]");
+      const since = parseNonNegativeIntegerOption(parsedOptions.since, "--since");
+      const follow = Boolean(parsedOptions.follow);
 
       return executeHostedCommand(
         "events",
-        () =>
-          handleEventsCommand(
-            { selector },
+        () => {
+          // Deferred into the wrapped handler (rather than thrown directly in this case body,
+          // matching the codebase's existing lax convention for that) so `executeHostedCommand`'s
+          // own try/catch renders it as a normal usage_error instead of an uncaught rejection.
+          if (since !== undefined && follow) {
+            throw usageError('"--since" is a one-shot pull and cannot be combined with "--follow".');
+          }
+
+          return handleEventsCommand(
+            { selector, since },
             {
               stateDir,
               onEvent: (event: EventNotification) => {
                 writers.stdout.write(`${renderEventLine(event, { json, color })}\n`);
               },
+              onCursor: (cursor) => {
+                writers.stdout.write(`${renderEventsCursorLine(cursor, { json, color })}\n`);
+              },
             },
-          ),
+          );
+        },
         {
           ...io,
           reporter: {

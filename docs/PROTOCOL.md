@@ -181,11 +181,11 @@ successful result.
   "error": { "type": "tool_execution_error", "message": "Something went wrong", "details": { "stack": "…" } } }
 ```
 
-Guard: `isToolErrorMessage`. `error.type` must be one of the six app-side error types
+Guard: `isToolErrorMessage`. `error.type` must be one of the seven app-side error types
 (§5 in `docs/ARCHITECTURE.md`): `tool_not_found`, `tool_input_validation_error`,
 `tool_output_validation_error`, `tool_execution_error`, `tool_serialization_error`,
-`tool_timeout`. This value is preserved **verbatim** all the way to the CLI/MCP output —
-the daemon never re-wraps it under a generic `"tool_error"` type.
+`tool_timeout`, `tool_cancelled`. This value is preserved **verbatim** all the way to the
+CLI/MCP output — the daemon never re-wraps it under a generic `"tool_error"` type.
 
 ### `tool_call_progress` — app → daemon, optional progress updates during a long-running call
 
@@ -197,6 +197,22 @@ Guard: `isToolCallProgressMessage`. Both `progress` and `message` are optional; 
 daemon maps this to a `tool_call_progress` event (`events.subscribe`) and, over MCP, to
 an MCP progress notification.
 
+### `tool_cancel` — daemon → app, cancels a still-in-flight `tool_call`
+
+```jsonc
+{ "type": "tool_cancel", "session_id": "XzAERP54_Goh74hZ", "id": "call_1", "reason": "client_cancelled" }
+```
+
+Guard: `isToolCancelMessage`. Sent when the caller that issued the matching `tools.call`
+goes away while it is still pending — an MCP client's `notifications/cancelled`, the RPC
+connection that issued `tools.call` dropping (CLI Ctrl-C, MCP client disconnect), or an
+explicit `tools.cancel` RPC call. A cancel for an unknown or already-finished `id` is a
+no-op, not a protocol violation — the daemon never knows for certain which calls the app
+still considers in flight. The app is expected to abort the matching handler (its
+`AbortSignal`, §11) and reply `tool_error` with `error.type: "tool_cancelled"`; a handler
+that ignores the signal keeps running and replies normally, exactly as before this
+message existed.
+
 ### `event` — app → daemon, app-originated telemetry outside the tool-call/result cycle
 
 ```jsonc
@@ -205,7 +221,9 @@ an MCP progress notification.
 ```
 
 Guard: `isEventMessage`. Emitted by `postEvent(name, payload?)` on the React Native
-client; surfaced daemon-side as an `app_event` (`events.subscribe`, `cordierite events`).
+client; surfaced daemon-side as an `app_event` (`events.subscribe`, `cordierite events`) and
+retained per-session (`events.since`, §8) so a request/response caller (an MCP client, a script)
+can ask "what happened?" after the fact instead of only listening live.
 
 ## 5. Tool descriptor shape
 
@@ -303,7 +321,23 @@ types also establish these details:
   several in-flight calls (the MCP server proxying concurrent `tools/call` requests) can
   match `tool_call_progress`/`tool_call_finished` events back to the call that produced
   them without guessing from data shape.
+- `tools.cancel({ selector?, callId, reason? })` sends `tool_cancel` (above) to the
+  session's app for a still-pending call; the result is `{ cancelled: boolean }`, `false`
+  for an unknown/already-finished `callId` or when the session has no active socket to
+  send the frame on. The RPC connection that issued a `tools.call` dropping while it is
+  still pending triggers the same cancel automatically.
 - `daemon.status`'s result additionally reports the effective `policy` config and
   `audit: { path, failedWrites }` (ARCHITECTURE.md §12's audit surfacing).
 - `events.subscribe` includes `link_expired` (a pending link's TTL elapsed with no
   claim) and `tool_call_progress` (mirroring the wire message in §4).
+- `events.since` (issue #6) is the pull counterpart: it drains a per-session ring buffer
+  the daemon retains alongside the live `events.subscribe` fan-out, so a caller that only
+  finds out it wants to know "what happened?" after the fact (every MCP tool call, since
+  MCP is strictly request/response) doesn't need to have been subscribed in advance. Every
+  `EventNotification` carries a `seq`: a cursor that increases monotonically per session,
+  assigned at retention time. Pass the highest `seq` seen back as `since` on the next call
+  to resume without re-reading; a session-scoped event whose session hits a terminal state
+  (`session_expired`/`session_revoked`) discards that session's buffer, matching "terminal
+  states free the alias" (ARCHITECTURE.md §6) — there is no persisted history past that
+  point. Daemon-wide events (no `sessionId`, e.g. `daemon_started`) are never buffered and
+  carry `seq: 0`.

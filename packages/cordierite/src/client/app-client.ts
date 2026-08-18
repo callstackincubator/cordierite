@@ -1,10 +1,20 @@
 /**
  * The typed client handle (issue #8) returned by {@link connect}/{@link waitForSession}: a thin
- * wrapper over the same `tools.list`/`tools.call`/`events.subscribe` RPC the CLI and MCP server use
- * (`rpc/client.ts`'s `DaemonStream`), bound to one resolved session. No new privilege or transport —
- * every call is attributed `caller: "client"` for the audit log (ARCHITECTURE.md §12).
+ * wrapper over the same `tools.list`/`tools.call`/`events.subscribe`/`events.since` RPC the CLI and
+ * MCP server use (`rpc/client.ts`'s `DaemonStream`), bound to one resolved session. No new privilege
+ * or transport — every call is attributed `caller: "client"` for the audit log (ARCHITECTURE.md
+ * §12). {@link AppClient.waitForEvent}'s drain-then-live pattern mirrors the built-in
+ * `cordierite_wait_for_event` MCP tool (`mcp/events-tool.ts`) — see that module's doc comment for
+ * why the notification listener has to be registered before the `events.since` drain call is sent.
  */
-import { RPC_METHODS, type EventNotification, type ToolDescriptor, type ToolsCallResult, type ToolsListResult } from "@cordierite/shared";
+import {
+  RPC_METHODS,
+  type EventNotification,
+  type EventsSinceResult,
+  type ToolDescriptor,
+  type ToolsCallResult,
+  type ToolsListResult,
+} from "@cordierite/shared";
 
 import type { DaemonStream } from "../rpc/client.js";
 import { CordieriteError, toCordieriteError } from "./errors.js";
@@ -37,10 +47,34 @@ export type WaitForEventOptions = {
   /** Extra filter over the event's payload; the event still must match `name` first. A predicate
    * that throws rejects the wait with that error rather than crashing the connection. */
   match?: (payload: unknown) => boolean;
+  /**
+   * Exclusive lower bound on `AppEvent.seq` (a cursor from a previous {@link AppClient.events} or
+   * {@link AppClient.waitForEvent} call) — skips already-retained events at/before it instead of
+   * resolving with an old match instantly. Omitted, the retained buffer is searched from its start,
+   * so a matching event that already fired before this call still resolves immediately.
+   */
+  since?: number;
+};
+
+export type EventsOptions = {
+  /** Exclusive lower bound on `AppEvent.seq`; omitted returns the whole retained buffer (oldest
+   * first, subject to `limit`). */
+  since?: number;
+  /** Caps the number of events returned (oldest-first truncation); omitted returns everything
+   * matching `since` up to the buffer's own retention limit. */
+  limit?: number;
+};
+
+export type EventsResult = {
+  events: AppEvent[];
+  /** The highest `seq` currently retained for this session (not just among the returned events) —
+   * pass it back as `since`/`since` on the next {@link AppClient.events}/{@link
+   * AppClient.waitForEvent} call to resume after it. */
+  cursor: number;
 };
 
 /** An app-pushed event (`postEvent(name, payload)`), narrowed from the daemon's generic
- * `EventNotification` envelope to the shape a `waitForEvent` caller actually wants. */
+ * `EventNotification` envelope to the shape a `waitForEvent`/`events` caller actually wants. */
 export type AppEvent<TPayload = unknown> = {
   name: string;
   payload: TPayload;
@@ -48,6 +82,9 @@ export type AppEvent<TPayload = unknown> = {
   ts: number;
   sessionId: string;
   alias?: string;
+  /** Monotonically increasing per-session cursor (ARCHITECTURE.md §5) assigned by the daemon's
+   * retention buffer at emit time — pass back into `since` to resume after this event. */
+  seq: number;
 };
 
 export type AppClient<TTools = ToolMap> = {
@@ -64,12 +101,19 @@ export type AppClient<TTools = ToolMap> = {
     options?: CallOptions,
   ): Promise<ToolResult<TTools, K>>;
 
+  /** Drains `app_event`s retained in the daemon's per-session ring buffer since a cursor — the pull
+   * counterpart to {@link AppClient.waitForEvent}, for checking what already happened instead of
+   * waiting for the next one. Pass `cursor` from the result back as `since` on the next call to
+   * avoid re-reading events already seen. */
+  events(options?: EventsOptions): Promise<EventsResult>;
+
   /**
    * Waits for the next `app_event` (as pushed by the connected app's `postEvent(name, payload)`)
-   * matching `name`. **Races**: this subscribes live and has no visibility into events emitted
-   * before the subscription lands (there is no daemon-side retention yet — see
-   * https://github.com/callstackincubator/cordierite/issues/6). Call it before triggering the
-   * action that emits the event, not after.
+   * matching `name`. Checks the daemon's retained buffer for an already-arrived match first, then
+   * falls back to a live wait — so an event emitted between "the caller decides to wait" and "the
+   * subscription lands" is never missed; pass `since` (a cursor from a previous {@link
+   * AppClient.events}/`waitForEvent` call) to skip events already handled and wait only for a new
+   * one, since omitting it can return an old match instantly on every call.
    *
    * This shares the connection's single `events.subscribe` filter (the daemon keeps one per
    * connection, replaced — not merged — on each call); concurrent `waitForEvent` calls on the same
@@ -136,8 +180,42 @@ export const makeAppClient = <TTools = ToolMap>(stream: DaemonStream, sessionId:
       }
     },
 
+    events: async (options: EventsOptions = {}): Promise<EventsResult> => {
+      try {
+        const result = await stream.call<EventsSinceResult>(RPC_METHODS.eventsSince, {
+          selector: sessionId,
+          since: options.since,
+          limit: options.limit,
+          kinds: ["app_event"],
+        });
+
+        return {
+          events: result.events
+            .map((event) => appEventFrom(event, sessionId))
+            .filter((event): event is AppEvent => event !== undefined),
+          cursor: result.cursor,
+        };
+      } catch (error) {
+        throw toCordieriteError(error);
+      }
+    },
+
     waitForEvent: (name: string, options: WaitForEventOptions = {}): Promise<AppEvent> => {
       const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_FOR_EVENT_TIMEOUT_MS;
+
+      const toMatch = (event: EventNotification): AppEvent | undefined => {
+        const appEvent = appEventFrom(event, sessionId);
+
+        if (!appEvent || appEvent.name !== name) {
+          return undefined;
+        }
+
+        if (options.match && !options.match(appEvent.payload)) {
+          return undefined;
+        }
+
+        return appEvent;
+      };
 
       return new Promise<AppEvent>((resolve, reject) => {
         let settled = false;
@@ -149,8 +227,8 @@ export const makeAppClient = <TTools = ToolMap>(stream: DaemonStream, sessionId:
 
           settled = true;
           clearTimeout(timer);
-          unsubscribeNotification();
           unsubscribeClose();
+          liveHandler = null;
           fn();
         };
 
@@ -160,50 +238,115 @@ export const makeAppClient = <TTools = ToolMap>(stream: DaemonStream, sessionId:
           );
         }, timeoutMs);
 
-        const unsubscribeClose = stream.onClose(() => {
-          settle(() =>
-            reject(
-              new CordieriteError(
-                "connection_error",
-                `The connection to the Cordierite daemon closed while waiting for event "${name}".`,
-              ),
-            ),
-          );
-        });
+        // Registered before `events.since` is even sent (not merely before it resolves): the
+        // daemon's response to that call and a `notify()` for a brand-new event can arrive in the
+        // same socket chunk, and a listener added only after awaiting that response could miss a
+        // notification from that same chunk. Buffers into `earlyEvents` until the drain below has
+        // merged its own backlog and switched this to `liveHandler`.
+        let liveHandler: ((event: EventNotification) => void) | null = null;
+        const earlyEvents: EventNotification[] = [];
 
         const unsubscribeNotification = stream.onNotification((payload) => {
-          if (settled) {
-            return;
-          }
-
           const event = payload as EventNotification;
 
-          if (event.kind !== "app_event" || event.sessionId !== sessionId) {
-            return;
+          if (liveHandler) {
+            liveHandler(event);
+          } else {
+            earlyEvents.push(event);
           }
-
-          const data = event.data as { name?: unknown; payload?: unknown };
-
-          if (data.name !== name) {
-            return;
-          }
-
-          try {
-            if (options.match && !options.match(data.payload)) {
-              return;
-            }
-          } catch (error) {
-            settle(() => reject(toCordieriteError(error)));
-            return;
-          }
-
-          settle(() =>
-            resolve({ name, payload: data.payload, ts: event.ts, sessionId: event.sessionId!, alias: event.alias }),
-          );
         });
 
-        stream.call(RPC_METHODS.eventsSubscribe, { sessionSelector: sessionId, kinds: ["app_event"] }).catch((error) => {
+        let unsubscribeClose = (): void => {};
+
+        const fail = (error: unknown): void => {
           settle(() => reject(toCordieriteError(error)));
+          unsubscribeNotification();
+        };
+
+        (async () => {
+          await stream.call(RPC_METHODS.eventsSubscribe, { sessionSelector: sessionId, kinds: ["app_event"] });
+
+          const sinceResult = await stream.call<EventsSinceResult>(RPC_METHODS.eventsSince, {
+            selector: sessionId,
+            since: options.since,
+            kinds: ["app_event"],
+          });
+
+          // Merge the retained backlog with whatever arrived on the live channel while the two
+          // calls above were in flight, deduped by `seq` — the same event can legitimately show up
+          // in both (the daemon buffers before it fans out). Everything from here to `liveHandler =
+          // …` below is synchronous — no `await` — so nothing can arrive on the socket and be missed
+          // in the gap.
+          const seenSeqs = new Set<number>();
+          const backlog: EventNotification[] = [];
+
+          for (const event of [...sinceResult.events, ...earlyEvents]) {
+            if (event.sessionId === sessionId && !seenSeqs.has(event.seq)) {
+              seenSeqs.add(event.seq);
+              backlog.push(event);
+            }
+          }
+
+          backlog.sort((a, b) => a.seq - b.seq);
+
+          for (const event of backlog) {
+            try {
+              const matched = toMatch(event);
+
+              if (matched) {
+                settle(() => resolve(matched));
+                unsubscribeNotification();
+                return;
+              }
+            } catch (error) {
+              fail(error);
+              return;
+            }
+          }
+
+          // Nothing matched yet: resume live from the last event actually considered, or — if
+          // nothing was retained/arrived at all — `events.since`'s own cursor, which already
+          // reflects the session's true high-water mark even when the `kinds` filter matched
+          // nothing.
+          const highestConsideredSeq = backlog.length > 0 ? backlog[backlog.length - 1]!.seq : sinceResult.cursor;
+
+          unsubscribeClose = stream.onClose(() => {
+            settle(() =>
+              reject(
+                new CordieriteError(
+                  "connection_error",
+                  `The connection to the Cordierite daemon closed while waiting for event "${name}".`,
+                ),
+              ),
+            );
+            unsubscribeNotification();
+          });
+
+          // From here on, every notification goes straight to this handler instead of
+          // `earlyEvents` — assigned synchronously (no `await` since the backlog scan above), so
+          // nothing is missed.
+          liveHandler = (event) => {
+            if (settled) {
+              return;
+            }
+
+            if (event.sessionId === sessionId && event.seq <= highestConsideredSeq) {
+              return;
+            }
+
+            try {
+              const matched = toMatch(event);
+
+              if (matched) {
+                settle(() => resolve(matched));
+                unsubscribeNotification();
+              }
+            } catch (error) {
+              fail(error);
+            }
+          };
+        })().catch((error) => {
+          fail(error);
         });
       });
     },
@@ -214,4 +357,25 @@ export const makeAppClient = <TTools = ToolMap>(stream: DaemonStream, sessionId:
   };
 
   return client as unknown as AppClient<TTools>;
+};
+
+const appEventFrom = (event: EventNotification, sessionId: string): AppEvent | undefined => {
+  if (event.kind !== "app_event" || event.sessionId !== sessionId) {
+    return undefined;
+  }
+
+  const data = event.data as { name?: unknown; payload?: unknown };
+
+  if (typeof data.name !== "string") {
+    return undefined;
+  }
+
+  return {
+    name: data.name,
+    payload: data.payload,
+    ts: event.ts,
+    sessionId: event.sessionId!,
+    alias: event.alias,
+    seq: event.seq,
+  };
 };

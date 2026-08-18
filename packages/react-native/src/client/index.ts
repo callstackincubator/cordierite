@@ -177,7 +177,7 @@ export const createCordieriteClient = (
       fireAndForget(sendDelta(delta), "sync the tool registry", emitError),
   });
 
-  const invokeRegisteredTool = createToolMessageHandler({
+  const { handleMessage: invokeRegisteredTool, abortAllInFlight } = createToolMessageHandler({
     getSessionId,
     getRegistry: () => registry.entries,
     sendWire: rawSend,
@@ -372,6 +372,11 @@ export const createCordieriteClient = (
     if (destroyed) {
       return;
     }
+
+    // The socket is gone, so no `tool_cancel` frame could ever be delivered for whatever was
+    // still in flight — abort it directly rather than leaving handlers running with no owner.
+    abortAllInFlight();
+
     const myEpoch = epoch;
 
     if (!heldSession) {
@@ -797,6 +802,9 @@ export const createCordieriteClient = (
         ok: false,
         error: new Error("Cordierite client was destroyed."),
       });
+      // Same reasoning as above, for tool handlers: once listeners are removed below, no
+      // `tool_cancel` frame or transport-loss signal will ever reach an in-flight handler again.
+      abortAllInFlight();
       messageSubscription.remove();
       errorSubscription.remove();
       closeSubscription.remove();

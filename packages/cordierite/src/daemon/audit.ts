@@ -19,7 +19,7 @@ import type { ErrorType } from "@cordierite/shared";
 
 import type { Clock } from "../cli/types.js";
 
-export type AuditOutcome = "ok" | "error" | "denied";
+export type AuditOutcome = "ok" | "error" | "denied" | "cancelled";
 export type AuditCaller = "cli" | "mcp" | "client";
 
 export type AuditRecord = {
@@ -32,8 +32,24 @@ export type AuditRecord = {
   argsSha256: string;
   outcome: AuditOutcome;
   errorType?: ErrorType;
+  /**
+   * Set only when `outcome === "denied"`: `"policy"` for an ordinary `policy.*: "deny"` denial,
+   * `"no_consent_channel"` for a `"prompt"`-policy call that had no confirmed human gate
+   * (ARCHITECTURE.md §12). Without this an operator reading `audit/*.jsonl` can't tell a
+   * misconfigured `"deny"` from a `"prompt"` tool nobody has gated yet — both otherwise look like
+   * an identical `{ outcome: "denied" }` line.
+   */
+  deniedReason?: "policy" | "no_consent_channel";
   durationMs: number;
   caller: AuditCaller;
+  /**
+   * Set only when a `"prompt"`-policy call actually proceeded because the MCP server confirmed a
+   * client-side consent gate (ARCHITECTURE.md §12). Deliberately distinct from a plain `"ok"`:
+   * the daemon never observed the consent decision itself, only that the call arrived carrying
+   * this marker — this is the weakest form of evidence (issue #14), and the audit record should
+   * read as such rather than folding it into an ordinary allow.
+   */
+  consent?: "client";
 };
 
 export type AuditLogger = {

@@ -132,6 +132,13 @@ export type ToolCallProgressMessage = {
   message?: string;
 };
 
+export type ToolCancelMessage = {
+  type: "tool_cancel";
+  session_id: SessionId;
+  id: string;
+  reason: string;
+};
+
 export type EventMessage = {
   type: "event";
   session_id: SessionId;
@@ -151,6 +158,7 @@ export type WireMessage =
   | ToolResultMessage
   | ToolErrorMessage
   | ToolCallProgressMessage
+  | ToolCancelMessage
   | EventMessage;
 
 // --- shared field validators ---
@@ -343,6 +351,18 @@ export const isToolCallProgressMessage = (value: unknown): value is ToolCallProg
   return true;
 };
 
+export const isToolCancelMessage = (value: unknown): value is ToolCancelMessage => {
+  if (!isRecord(value) || value.type !== "tool_cancel") {
+    return false;
+  }
+
+  return (
+    isBoundedNonEmptySessionId(value.session_id) &&
+    isBoundedString(value.id, MAX_WIRE_ID_LENGTH) &&
+    isBoundedString(value.reason, MAX_WIRE_STRING_LENGTH)
+  );
+};
+
 export const isEventMessage = (value: unknown): value is EventMessage => {
   if (!isRecord(value) || value.type !== "event") {
     return false;
@@ -365,6 +385,7 @@ const WIRE_MESSAGE_TYPES = [
   "tool_result",
   "tool_error",
   "tool_call_progress",
+  "tool_cancel",
   "event",
 ] as const;
 
@@ -387,6 +408,7 @@ const WIRE_MESSAGE_GUARDS: {
   tool_result: isToolResultMessage,
   tool_error: isToolErrorMessage,
   tool_call_progress: isToolCallProgressMessage,
+  tool_cancel: isToolCancelMessage,
   event: isEventMessage,
 };
 
