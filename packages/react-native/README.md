@@ -161,6 +161,15 @@ export function CordieriteBootstrap() {
 
 Mount that component near app startup, or register from another module that loads on startup. The host can only list and invoke tools that your app has already registered.
 
+**Cancellation:** `handler(args, context)`'s `context.signal` (an `AbortSignal`) aborts if the caller cancels the call, or if the session's connection is lost mid-call. Forward it into anything that accepts one (`fetch(url, { signal: context.signal })`) or check `context.signal.aborted`/listen for `"abort"` to stop early. Ignoring it is fine — the handler just keeps running and replies normally, as it always has.
+
+```ts
+handler: async ({ url }, { signal }) => {
+  const response = await fetch(url, { signal });
+  return { body: await response.text() };
+},
+```
+
 **Gating a tool by build variant:** `useCordieriteTool` takes a third `options` argument, `{ enabled?: boolean }` (default `true`). `enabled: false` never registers the tool, and removing it (or a hook that was already mounted) leaves no registration behind. Toggling `enabled` at runtime registers/unregisters cleanly — this is the supported way to make registration conditional, so put the condition in the argument instead of wrapping the hook call in an `if`, which is a rules-of-hooks violation:
 
 ```ts

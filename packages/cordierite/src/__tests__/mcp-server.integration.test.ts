@@ -326,6 +326,63 @@ describe("mcp: tools/list and tools/call", () => {
     app.socket.close();
   });
 
+  test("an MCP client's notifications/cancelled forwards to the app as tool_cancel (issue #9)", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    await snapshotTools(daemon, app, [{ name: "slow" }]);
+
+    const receivedByApp: Record<string, unknown>[] = [];
+    const gotToolCancel = new Promise<Record<string, unknown>>((resolve) => {
+      app.socket.on("message", (data) => {
+        const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+        receivedByApp.push(msg);
+        // Deliberately never reply to tool_call — the point is that cancellation reaches the app
+        // while the call is still pending.
+        if (msg.type === "tool_cancel") {
+          resolve(msg);
+        }
+      });
+    });
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const controller = new AbortController();
+    const callPromise = client
+      .request(
+        { method: "tools/call", params: { name: "slow", arguments: {} } },
+        CallToolResultSchema,
+        // `onprogress` is what makes the SDK attach a progressToken — required for the server's
+        // progress-correlation path (mcp/server.ts's callProxiedTool) to ever learn `callId`.
+        { onprogress: () => {}, signal: controller.signal },
+      )
+      .catch(() => {
+        // The SDK rejects the client-side promise locally as soon as it sends the cancellation —
+        // that's the SDK's own behavior, not what this test is verifying.
+      });
+
+    await new Promise<void>((resolve) => {
+      const check = (): void => {
+        if (receivedByApp.some((msg) => msg.type === "tool_call")) {
+          resolve();
+        }
+      };
+      app.socket.on("message", check);
+      check();
+    });
+
+    controller.abort("user cancelled");
+
+    const cancelMessage = await gotToolCancel;
+    expect(cancelMessage).toMatchObject({ type: "tool_cancel", session_id: app.sessionId, reason: "mcp_client_cancelled" });
+
+    const toolCallMessage = receivedByApp.find((msg) => msg.type === "tool_call");
+    expect(cancelMessage.id).toBe(toolCallMessage?.id);
+
+    await callPromise;
+    app.socket.close();
+  });
+
   test("the generated MCP tool list (built-ins + one proxied tool) matches the locked mapping", async () => {
     const { daemon, stateDir, port } = await startTestDaemon();
     const app = await claimApp(daemon, port);

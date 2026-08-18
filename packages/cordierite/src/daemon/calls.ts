@@ -18,6 +18,7 @@ import { randomBytes } from "node:crypto";
 import type {
   ToolCallMessage,
   ToolCallProgressMessage,
+  ToolCancelMessage,
   ToolErrorMessage,
   ToolResultMessage,
 } from "@cordierite/shared";
@@ -42,8 +43,12 @@ export type CallSession = {
  * the resulting rejection comes from the `session_suspended` transition below, not this return). */
 export type SendToolCall = (sessionId: string, message: ToolCallMessage) => boolean;
 
+/** Sends a `tool_cancel` frame to the session's active socket; `false` if there is none. */
+export type SendToolCancel = (sessionId: string, message: ToolCancelMessage) => boolean;
+
 export type CallsManagerOptions = {
   send: SendToolCall;
+  sendCancel: SendToolCancel;
   eventBus: EventBus;
   timers?: TimerFns;
 };
@@ -70,6 +75,12 @@ export type CallsManager = {
   /** Routes a validated `tool_call_progress` frame to the event bus; unknown correlation ids are
    * dropped (no event is emitted). */
   handleToolCallProgress: (message: ToolCallProgressMessage) => void;
+  /** Sends `tool_cancel` for a still-pending call. Does not itself resolve/reject the pending
+   * call — the app's eventual `tool_error` (`tool_cancelled`) or a late `tool_result` still wins
+   * normally, and the existing timeout remains a backstop if the app never replies. Returns
+   * `false` (a no-op, not an error) when `callId` is unknown/already finished, or when the
+   * session has no active socket to send the frame on right now. */
+  cancel: (sessionId: string, callId: string, reason: string) => boolean;
   /** Rejects every pending call for a session immediately (suspend/revoke/expiry transitions). */
   rejectSession: (sessionId: string, errorType: "session_suspended" | "unknown_session") => void;
   /** Rejects and clears every pending call across every session (daemon shutdown). */
@@ -206,6 +217,17 @@ export const createCallsManager = (options: CallsManagerOptions): CallsManager =
     });
   };
 
+  const cancel = (sessionId: string, callId: string, reason: string): boolean => {
+    const pending = pendingBySession.get(sessionId)?.get(callId);
+
+    if (!pending) {
+      return false;
+    }
+
+    const message: ToolCancelMessage = { type: "tool_cancel", session_id: sessionId, id: callId, reason };
+    return options.sendCancel(sessionId, message);
+  };
+
   const rejectSession = (sessionId: string, errorType: "session_suspended" | "unknown_session"): void => {
     const sessionMap = pendingBySession.get(sessionId);
 
@@ -239,5 +261,5 @@ export const createCallsManager = (options: CallsManagerOptions): CallsManager =
     }
   };
 
-  return { call, handleToolResult, handleToolError, handleToolCallProgress, rejectSession, disposeAll };
+  return { call, handleToolResult, handleToolError, handleToolCallProgress, cancel, rejectSession, disposeAll };
 };

@@ -30,6 +30,7 @@ import {
   type SessionSummary,
   type ToolCallMessage,
   type ToolCallProgressMessage,
+  type ToolCancelMessage,
   type ToolErrorMessage,
   type ToolResultMessage,
 } from "@cordierite/shared";
@@ -183,6 +184,10 @@ export type SessionManager = {
    * active socket right now (caller has typically already checked ACTIVE state via
    * {@link resolveForTools}, but the socket can still disappear between check and send). */
   sendToolCall: (sessionId: string, message: ToolCallMessage) => boolean;
+  /** Sends a `tool_cancel` frame to the session's active socket; `false` if the session has no
+   * active socket right now. A cancel for an unknown/finished call is the app's problem to
+   * no-op on — the daemon never knows which calls the app still considers in flight. */
+  sendToolCancel: (sessionId: string, message: ToolCancelMessage) => boolean;
   /** Closes every live socket with the given code (daemon shutdown) and clears all timers. */
   disposeAll: (code: number, reason: string) => void;
 };
@@ -596,7 +601,7 @@ export const createSessionManager = (options: SessionManagerOptions): SessionMan
     return { sessionId: session.sessionId, alias: session.alias, state: session.state, registry: session.registry };
   };
 
-  const sendToolCall = (sessionId: string, message: ToolCallMessage): boolean => {
+  const sendToApp = (sessionId: string, message: ToolCallMessage | ToolCancelMessage): boolean => {
     const session = sessions.get(sessionId);
 
     if (!session || session.state !== "active" || !session.socket) {
@@ -625,7 +630,8 @@ export const createSessionManager = (options: SessionManagerOptions): SessionMan
     describe: (selector) => toSummary(resolveSession(selector)),
     revoke,
     resolveForTools,
-    sendToolCall,
+    sendToolCall: sendToApp,
+    sendToolCancel: sendToApp,
     disposeAll,
   };
 };

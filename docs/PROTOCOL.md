@@ -181,11 +181,11 @@ successful result.
   "error": { "type": "tool_execution_error", "message": "Something went wrong", "details": { "stack": "…" } } }
 ```
 
-Guard: `isToolErrorMessage`. `error.type` must be one of the six app-side error types
+Guard: `isToolErrorMessage`. `error.type` must be one of the seven app-side error types
 (§5 in `docs/ARCHITECTURE.md`): `tool_not_found`, `tool_input_validation_error`,
 `tool_output_validation_error`, `tool_execution_error`, `tool_serialization_error`,
-`tool_timeout`. This value is preserved **verbatim** all the way to the CLI/MCP output —
-the daemon never re-wraps it under a generic `"tool_error"` type.
+`tool_timeout`, `tool_cancelled`. This value is preserved **verbatim** all the way to the
+CLI/MCP output — the daemon never re-wraps it under a generic `"tool_error"` type.
 
 ### `tool_call_progress` — app → daemon, optional progress updates during a long-running call
 
@@ -196,6 +196,22 @@ the daemon never re-wraps it under a generic `"tool_error"` type.
 Guard: `isToolCallProgressMessage`. Both `progress` and `message` are optional; the
 daemon maps this to a `tool_call_progress` event (`events.subscribe`) and, over MCP, to
 an MCP progress notification.
+
+### `tool_cancel` — daemon → app, cancels a still-in-flight `tool_call`
+
+```jsonc
+{ "type": "tool_cancel", "session_id": "XzAERP54_Goh74hZ", "id": "call_1", "reason": "client_cancelled" }
+```
+
+Guard: `isToolCancelMessage`. Sent when the caller that issued the matching `tools.call`
+goes away while it is still pending — an MCP client's `notifications/cancelled`, the RPC
+connection that issued `tools.call` dropping (CLI Ctrl-C, MCP client disconnect), or an
+explicit `tools.cancel` RPC call. A cancel for an unknown or already-finished `id` is a
+no-op, not a protocol violation — the daemon never knows for certain which calls the app
+still considers in flight. The app is expected to abort the matching handler (its
+`AbortSignal`, §11) and reply `tool_error` with `error.type: "tool_cancelled"`; a handler
+that ignores the signal keeps running and replies normally, exactly as before this
+message existed.
 
 ### `event` — app → daemon, app-originated telemetry outside the tool-call/result cycle
 
@@ -303,6 +319,11 @@ types also establish these details:
   several in-flight calls (the MCP server proxying concurrent `tools/call` requests) can
   match `tool_call_progress`/`tool_call_finished` events back to the call that produced
   them without guessing from data shape.
+- `tools.cancel({ selector?, callId, reason? })` sends `tool_cancel` (above) to the
+  session's app for a still-pending call; the result is `{ cancelled: boolean }`, `false`
+  for an unknown/already-finished `callId` or when the session has no active socket to
+  send the frame on. The RPC connection that issued a `tools.call` dropping while it is
+  still pending triggers the same cancel automatically.
 - `daemon.status`'s result additionally reports the effective `policy` config and
   `audit: { path, failedWrites }` (ARCHITECTURE.md §12's audit surfacing).
 - `events.subscribe` includes `link_expired` (a pending link's TTL elapsed with no

@@ -156,22 +156,33 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
         "invoke [selector] <tool> --input '<json>'",
       );
 
-      return executeCommand(
-        "invoke",
-        () =>
-          handleInvokeCommand(
-            {
-              selector,
-              tool,
-              args: parseJsonInputOption(
-                typeof parsedOptions.input === "string" ? parsedOptions.input : undefined,
-              ),
-              timeoutMs: parsePositiveIntegerOption(parsedOptions.timeout, "--timeout"),
-            },
-            { stateDir },
-          ),
-        io,
-      );
+      // SIGINT cancels the in-flight tools.call rather than leaving it running unowned in the app
+      // (issue #9) — the listener is torn down once the command settles either way.
+      const cancelController = new AbortController();
+      const onSigint = (): void => cancelController.abort();
+      process.once("SIGINT", onSigint);
+
+      try {
+        return await executeCommand(
+          "invoke",
+          () =>
+            handleInvokeCommand(
+              {
+                selector,
+                tool,
+                args: parseJsonInputOption(
+                  typeof parsedOptions.input === "string" ? parsedOptions.input : undefined,
+                ),
+                timeoutMs: parsePositiveIntegerOption(parsedOptions.timeout, "--timeout"),
+              },
+              { stateDir },
+              cancelController.signal,
+            ),
+          io,
+        );
+      } finally {
+        process.off("SIGINT", onSigint);
+      }
     }
 
     case "revoke": {

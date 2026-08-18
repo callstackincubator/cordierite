@@ -8,6 +8,7 @@ import {
   isSessionResumeMessage,
   isToolCallMessage,
   isToolCallProgressMessage,
+  isToolCancelMessage,
   isToolErrorMessage,
   isToolRegistryDeltaMessage,
   isToolRegistrySnapshotMessage,
@@ -20,6 +21,7 @@ import {
   type SessionResumeMessage,
   type ToolCallMessage,
   type ToolCallProgressMessage,
+  type ToolCancelMessage,
   type ToolErrorMessage,
   type ToolRegistryRemoveDeltaMessage,
   type ToolRegistrySnapshotMessage,
@@ -99,6 +101,13 @@ const validProgress = (): ToolCallProgressMessage => ({
   id: "call-1",
   progress: 0.5,
   message: "halfway",
+});
+
+const validCancel = (): ToolCancelMessage => ({
+  type: "tool_cancel",
+  session_id: "session-1",
+  id: "call-1",
+  reason: "client_cancelled",
 });
 
 const validEvent = (): EventMessage => ({
@@ -368,6 +377,29 @@ describe("tool_call_progress", () => {
   });
 });
 
+describe("tool_cancel", () => {
+  test("accepts a valid message", () => {
+    expect(isToolCancelMessage(validCancel())).toBe(true);
+  });
+
+  test("rejects the wrong type", () => {
+    expect(isToolCancelMessage({ ...validCancel(), type: "tool_call" })).toBe(false);
+  });
+
+  test("rejects a missing field", () => {
+    const { reason: _reason, ...rest } = validCancel();
+    expect(isToolCancelMessage(rest)).toBe(false);
+  });
+
+  test("rejects a wrong field type", () => {
+    expect(isToolCancelMessage({ ...validCancel(), id: 123 })).toBe(false);
+  });
+
+  test("rejects an oversized reason", () => {
+    expect(isToolCancelMessage({ ...validCancel(), reason: "x".repeat(MAX_WIRE_STRING_LENGTH + 1) })).toBe(false);
+  });
+});
+
 describe("event", () => {
   test("accepts a valid message", () => {
     expect(isEventMessage(validEvent())).toBe(true);
@@ -404,6 +436,7 @@ describe("isKnownWireMessageType / isWireMessage", () => {
       validToolResult(),
       validToolError(),
       validProgress(),
+      validCancel(),
       validEvent(),
     ]) {
       expect(isKnownWireMessageType(message.type)).toBe(true);

@@ -40,6 +40,7 @@ const RPC_ERROR_EXIT_CLASS: Record<ErrorType, CliErrorType> = {
   tool_execution_error: "tool_error",
   tool_serialization_error: "tool_error",
   tool_timeout: "tool_error",
+  tool_cancelled: "tool_error",
   policy_denied: "permission_error",
   invalid_request: "validation_error",
 };
