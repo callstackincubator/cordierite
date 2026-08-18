@@ -108,7 +108,58 @@ Signals 2 and 3 are retained as fallbacks for artifacts built before the marker 
 
 ## Programmatic use
 
-The package exports `runCli` and command handlers from [`src/index.ts`](src/index.ts) so you can embed the same behavior in Node or Bun scripts that need to drive Cordierite without shelling out.
+### Test runners: `cordierite/client`
+
+A thin typed wrapper over the same daemon RPC the CLI and MCP server use — for a Jest/Vitest/Detox spec that wants to drive a running app without spawning `cordierite invoke ... --json` and parsing stdout:
+
+```ts
+import { connect } from "cordierite/client";
+
+// auto-spawns the daemon and picks the single session, or pass { selector: "pixel-8" } to target one explicitly
+const app = await connect();
+
+await app.tools();                                  // ToolDescriptor[]
+const { total } = await app.call("sum", { a: 2, b: 3 });
+const { payload } = await app.waitForEvent("checkout_done", { timeoutMs: 5_000 });
+app.close();
+```
+
+Errors surface as a `CordieriteError` whose `type` preserves the daemon's wire error type verbatim, so a test can assert on it directly instead of string-matching stderr:
+
+```ts
+await expect(app.call("checkout", {})).rejects.toMatchObject({ type: "policy_denied" });
+```
+
+Pair a simulator/emulator in a `globalSetup` without shelling out via `link`/`waitForSession`:
+
+```ts
+import { link, waitForSession } from "cordierite/client";
+
+const { sessionId } = await link({ target: "ios-sim" });
+const app = await waitForSession(sessionId, { timeoutMs: 60_000 });
+```
+
+`app.call`'s tool name and args/result types can't be inferred automatically (tools are registered by the connected app at runtime) — declare your own tool map once for typed calls throughout a suite:
+
+```ts
+type Tools = {
+  sum: { args: { a: number; b: number }; result: { total: number } };
+};
+
+const app = await connect<Tools>();
+const { total } = await app.call("sum", { a: 2, b: 3 }); // typed
+```
+
+`waitForEvent` first drains the daemon's per-session retained buffer for an already-arrived match before falling back to a live wait, so it's safe to call after the action that emits the event too — no need to call it first. Pass `since` (the `cursor` from a previous `app.events()`/`waitForEvent()` call) to skip events already handled and wait only for a new one:
+
+```ts
+const { events, cursor } = await app.events();               // pull: what already happened
+const next = await app.waitForEvent("checkout_done", { since: cursor });
+```
+
+### Everything else: `runCli`
+
+The package also exports `runCli` and command handlers from [`src/index.ts`](src/index.ts) so you can embed the same behavior in Node or Bun scripts that need to drive Cordierite without shelling out.
 
 ## Related packages
 

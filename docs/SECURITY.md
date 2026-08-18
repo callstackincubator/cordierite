@@ -166,9 +166,9 @@ not as the mechanism that keeps a destructive tool out of reach of a hostile one
 
 - **Policy.** Set `config.json`'s `policy.default` / `policy.destructive` (and per-tool
   `policy.tools["<alias>/<name>"]` overrides) to `"deny"` for anything you don't want an
-  arbitrary caller invoking against a production build. Every `tools.call` — CLI and MCP
-  alike — is evaluated against this before it ever reaches the app; a denial returns
-  `policy_denied` and never sends a `tool_call` frame. `"prompt"` requires a human gate
+  arbitrary caller invoking against a production build. Every `tools.call` — CLI, MCP, and
+  `cordierite/client` alike — is evaluated against this before it ever reaches the app;
+  a denial returns `policy_denied` and never sends a `tool_call` frame. `"prompt"` requires a human gate
   and fails closed everywhere one can't be guaranteed: today the only implemented gate
   is an MCP client that enforces `_meta["anthropic/requiresUserInteraction"]` (Claude
   Code ≥ v2.1.199); the CLI and every other client are denied outright
@@ -194,7 +194,7 @@ not as the mechanism that keeps a destructive tool out of reach of a hostile one
 - **Audit.** Every `tools.call` attempt — regardless of outcome — appends one line to
   `audit/<YYYY-MM-DD>.jsonl`: timestamp, session, alias, tool name, a sha256 of the
   canonicalized args (never the raw args), outcome, error type if any, duration, caller
-  (`cli`/`mcp`), and — only for a `"prompt"` call that proceeded — `consent: "client"`.
+  (`cli`/`mcp`/`client`), and — only for a `"prompt"` call that proceeded — `consent: "client"`.
   That marker is the weakest form of evidence recorded here: the daemon never observes
   the actual consent decision, only that the call arrived already gated, so it's kept
   distinct from a plain `"ok"` rather than folded into it. This is on unconditionally;

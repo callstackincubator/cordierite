@@ -428,7 +428,7 @@ it.
     unattended must set `allow`/`deny` explicitly for it rather than `"prompt"`.
 - Audit: every `tools.call` appends one JSONL record to `audit/<date>.jsonl`:
   `{ ts, sessionId, alias, tool, argsSha256, outcome: "ok"|"error"|"denied"|"cancelled",
-  errorType?, durationMs, caller: "cli"|"mcp", consent?: "client" }`. `consent` is set
+  errorType?, durationMs, caller: "cli"|"mcp"|"client", consent?: "client" }`. `consent` is set
   only when a `"prompt"` call proceeded on the MCP client-gate channel above — kept
   distinct from a plain `"ok"` since the daemon never observes the consent decision
   itself, only that the call arrived carrying this marker. Raw args are never logged.
