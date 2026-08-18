@@ -34,6 +34,14 @@ export type AuditRecord = {
   errorType?: ErrorType;
   durationMs: number;
   caller: AuditCaller;
+  /**
+   * Set only when a `"prompt"`-policy call actually proceeded because the MCP server confirmed a
+   * client-side consent gate (ARCHITECTURE.md §12). Deliberately distinct from a plain `"ok"`:
+   * the daemon never observed the consent decision itself, only that the call arrived carrying
+   * this marker — this is the weakest form of evidence (issue #14), and the audit record should
+   * read as such rather than folding it into an ordinary allow.
+   */
+  consent?: "client";
 };
 
 export type AuditLogger = {

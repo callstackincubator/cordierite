@@ -168,15 +168,25 @@ not as the mechanism that keeps a destructive tool out of reach of a hostile one
   `policy.tools["<alias>/<name>"]` overrides) to `"deny"` for anything you don't want an
   arbitrary caller invoking against a production build. Every `tools.call` — CLI and MCP
   alike — is evaluated against this before it ever reaches the app; a denial returns
-  `policy_denied` and never sends a `tool_call` frame. Interactive consent prompting is
-  not implemented (the policy configuration reserves a future `"prompt"` value);
-  until then, `"deny"` is the only way to gate a tool that needs human sign-off.
+  `policy_denied` and never sends a `tool_call` frame. `"prompt"` requires a human gate
+  and fails closed everywhere one can't be guaranteed: today the only implemented gate
+  is an MCP client that enforces `_meta["anthropic/requiresUserInteraction"]` (Claude
+  Code ≥ v2.1.199); the CLI and every other client are denied outright
+  (`policy_denied`, reason `no_consent_channel`) rather than silently treated as
+  `"allow"`. `clientInfo` is self-reported by the client, so `"prompt"` is not a defense
+  against a hostile client claiming to be a compliant one — only against a compliant
+  client's own auto-approval. Until a non-MCP consent channel ships (see the project's
+  issue tracker), `"deny"` remains the only way to hard-block a tool for CLI callers.
 - **Audit.** Every `tools.call` attempt — regardless of outcome — appends one line to
   `audit/<YYYY-MM-DD>.jsonl`: timestamp, session, alias, tool name, a sha256 of the
-  canonicalized args (never the raw args), outcome, error type if any, duration, and
-  caller (`cli`/`mcp`). This is on unconditionally; there's no flag to disable it. Check
-  `daemon.status`'s `audit.failedWrites` if you need to confirm the log is actually
-  landing on disk (e.g. under a read-only or full filesystem).
+  canonicalized args (never the raw args), outcome, error type if any, duration, caller
+  (`cli`/`mcp`), and — only for a `"prompt"` call that proceeded — `consent: "client"`.
+  That marker is the weakest form of evidence recorded here: the daemon never observes
+  the actual consent decision, only that the call arrived already gated, so it's kept
+  distinct from a plain `"ok"` rather than folded into it. This is on unconditionally;
+  there's no flag to disable it. Check `daemon.status`'s `audit.failedWrites` if you
+  need to confirm the log is actually landing on disk (e.g. under a read-only or full
+  filesystem).
 - **Inclusion defaults to dev builds only — not a compiled-in build-type check.** On iOS,
   `react-native.config.js` sets CocoaPods' `:configurations` so the `Debug` configuration
   links Cordierite and `Release` doesn't, by default: a real per-variant linking decision.

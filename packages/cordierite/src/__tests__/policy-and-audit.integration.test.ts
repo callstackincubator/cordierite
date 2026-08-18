@@ -15,7 +15,7 @@ import WebSocket from "ws";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolResultSchema, ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
 
 import { decodeBootstrap, type EventKind, type EventNotification } from "@cordierite/shared";
 
@@ -235,6 +235,7 @@ type AuditRecord = {
   errorType?: string;
   durationMs: number;
   caller: "cli" | "mcp";
+  consent?: "client";
 };
 
 const readAuditRecords = async (stateDir: string): Promise<AuditRecord[]> => {
@@ -321,7 +322,7 @@ describe("policy: evaluate", () => {
 });
 
 describe("policy: config validation", () => {
-  test('policy.destructive: "prompt" fails to load with the documented error', async () => {
+  test('policy.destructive: "prompt" loads successfully', async () => {
     const stateDir = await mkdtemp(path.join(tmpdir(), "cordierite-policy-config-"));
     stateDirs.push(stateDir);
     const paths = getStateDirPaths(stateDir);
@@ -330,10 +331,10 @@ describe("policy: config validation", () => {
     await mkdir(stateDir, { recursive: true });
     await writeFile(paths.configPath, JSON.stringify({ policy: { destructive: "prompt" } }));
 
-    await expect(loadConfig(paths)).rejects.toThrow(/prompt/u);
+    await expect(loadConfig(paths)).resolves.toMatchObject({ policy: { destructive: "prompt" } });
   });
 
-  test('policy.tools entries reject "prompt" the same way', async () => {
+  test('policy.tools entries accept "prompt" the same way', async () => {
     const stateDir = await mkdtemp(path.join(tmpdir(), "cordierite-policy-config-"));
     stateDirs.push(stateDir);
     const paths = getStateDirPaths(stateDir);
@@ -342,7 +343,153 @@ describe("policy: config validation", () => {
     await mkdir(stateDir, { recursive: true });
     await writeFile(paths.configPath, JSON.stringify({ policy: { tools: { "pixel-8/echo": "prompt" } } }));
 
-    await expect(loadConfig(paths)).rejects.toThrow(/prompt/u);
+    await expect(loadConfig(paths)).resolves.toMatchObject({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+  });
+
+  test("an unknown policy value is still rejected", async () => {
+    const stateDir = await mkdtemp(path.join(tmpdir(), "cordierite-policy-config-"));
+    stateDirs.push(stateDir);
+    const paths = getStateDirPaths(stateDir);
+
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(paths.configPath, JSON.stringify({ policy: { destructive: "maybe" } }));
+
+    await expect(loadConfig(paths)).rejects.toThrow(/"allow", "deny", or "prompt"/u);
+  });
+});
+
+describe("policy: prompt via MCP requiresUserInteraction", () => {
+  /** A minimal `Client` that reports `clientInfo` the daemon/MCP server should recognize as
+   * honoring `_meta["anthropic/requiresUserInteraction"]` (ARCHITECTURE.md §12 / issue #14). */
+  const connectCompliantClient = async (mcpHandle: McpServerHandle): Promise<Client> => {
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await mcpHandle.connect(serverTransport);
+    const client = new Client({ name: "claude-code", version: "2.1.199" });
+    await client.connect(clientTransport);
+    return client;
+  };
+
+  test('tools/list emits _meta["anthropic/requiresUserInteraction"] for a "prompt" tool only for a compliant client', async () => {
+    const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "echo" }, { name: "other" }]);
+
+    const compliantHandle = await createMcpServer({
+      stateDir,
+      spawn: () => {
+        throw new Error("must not auto-spawn");
+      },
+    });
+    mcpHandles.push(compliantHandle);
+    const compliantClient = await connectCompliantClient(compliantHandle);
+    const compliantList = await compliantClient.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
+    const compliantEcho = compliantList.tools.find((tool) => tool.name === "echo");
+    expect(compliantEcho?._meta).toEqual({ "anthropic/requiresUserInteraction": true });
+    const compliantOther = compliantList.tools.find((tool) => tool.name === "other");
+    expect(compliantOther?._meta).toBeUndefined();
+
+    const nonCompliantHandle = await createMcpServer({
+      stateDir,
+      spawn: () => {
+        throw new Error("must not auto-spawn");
+      },
+    });
+    mcpHandles.push(nonCompliantHandle);
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await nonCompliantHandle.connect(serverTransport);
+    const nonCompliantClient = new Client({ name: "some-other-client", version: "9.9.9" });
+    await nonCompliantClient.connect(clientTransport);
+    const nonCompliantList = await nonCompliantClient.request(
+      { method: "tools/list", params: {} },
+      ListToolsResultSchema,
+    );
+    const nonCompliantEcho = nonCompliantList.tools.find((tool) => tool.name === "echo");
+    expect(nonCompliantEcho?._meta).toBeUndefined();
+
+    app.socket.close();
+  });
+
+  test('a "prompt" tool call from a compliant MCP client proceeds and is audited with consent: "client"', async () => {
+    const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "echo" }]);
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+      if (msg.type === "tool_call") {
+        app.socket.send(JSON.stringify({ type: "tool_result", session_id: app.sessionId, id: msg.id, result: "ok" }));
+      }
+    });
+
+    const mcpHandle = await createMcpServer({
+      stateDir,
+      spawn: () => {
+        throw new Error("must not auto-spawn");
+      },
+    });
+    mcpHandles.push(mcpHandle);
+    const client = await connectCompliantClient(mcpHandle);
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "echo", arguments: {} } },
+      CallToolResultSchema,
+    );
+    expect(result.isError).not.toBe(true);
+
+    app.socket.close();
+    await shutdownNow(daemon);
+
+    const records = await readAuditRecords(stateDir);
+    const record = records.find((r) => r.tool === "echo" && r.caller === "mcp");
+    expect(record?.outcome).toBe("ok");
+    expect(record?.consent).toBe("client");
+  });
+
+  test('a "prompt" tool call from a non-compliant MCP client is denied with reason no_consent_channel', async () => {
+    const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "echo" }]);
+
+    const mcpHandle = await createMcpServer({
+      stateDir,
+      spawn: () => {
+        throw new Error("must not auto-spawn");
+      },
+    });
+    mcpHandles.push(mcpHandle);
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await mcpHandle.connect(serverTransport);
+    const client = new Client({ name: "some-other-client", version: "9.9.9" });
+    await client.connect(clientTransport);
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "echo", arguments: {} } },
+      CallToolResultSchema,
+    );
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("policy_denied");
+
+    await shutdownNow(daemon);
+    const records = await readAuditRecords(stateDir);
+    const record = records.find((r) => r.tool === "echo" && r.caller === "mcp");
+    expect(record?.outcome).toBe("denied");
+    expect(record?.consent).toBeUndefined();
+
+    app.socket.close();
+  });
+
+  test('a "prompt" tool call from the CLI (no consent channel) is denied with reason no_consent_channel', async () => {
+    const { daemon, port } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "echo" }]);
+
+    await expect(
+      rpcCall(daemon.paths.socketPath, "tools.call", { selector: app.alias, name: "echo", args: {} }),
+    ).rejects.toMatchObject({ data: { type: "policy_denied", details: { reason: "no_consent_channel" } } });
+
+    app.socket.close();
   });
 });
 

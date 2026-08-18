@@ -9,7 +9,7 @@
 import {
   RPC_METHODS,
   type SessionsListResult,
-  type ToolDescriptor,
+  type ToolsListEntry,
   type ToolsListResult,
 } from "@cordierite/shared";
 
@@ -22,7 +22,7 @@ export type DaemonCall = <TResult>(method: string, params?: unknown) => Promise<
 
 export const fetchEffectiveTools = async (call: DaemonCall): Promise<NamespacedTool[]> => {
   const sessions = await call<SessionsListResult>(RPC_METHODS.sessionsList);
-  const toolsByAlias = new Map<string, ToolDescriptor[]>();
+  const toolsByAlias = new Map<string, ToolsListEntry[]>();
 
   for (const session of sessions) {
     try {

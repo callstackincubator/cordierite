@@ -146,9 +146,9 @@ export type DaemonStatusCommandData = {
   };
   /** Effective policy + audit surfacing (ARCHITECTURE.md §12). */
   policy: {
-    default: "allow" | "deny";
-    destructive: "allow" | "deny";
-    tools?: Record<string, "allow" | "deny">;
+    default: "allow" | "deny" | "prompt";
+    destructive: "allow" | "deny" | "prompt";
+    tools?: Record<string, "allow" | "deny" | "prompt">;
   };
   audit: {
     path: string;

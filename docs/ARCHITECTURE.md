@@ -329,14 +329,25 @@ it.
 ## 12. Policy & audit
 
 - Policy applies at the daemon on every `tools.call` (CLI and MCP alike), keyed on the
-  descriptor's `annotations`: `policy.default` (`allow`/`deny`) for tools without
-  `destructiveHint`, `policy.destructive` (`allow`/`deny`) for tools with it, plus
-  per-tool overrides `policy.tools["<alias>/<name>"]`. Denied calls return
-  `policy_denied` and are audited. Interactive prompting is not implemented; the
-  policy configuration leaves room for a future `prompt` value.
+  descriptor's `annotations`: `policy.default`/`policy.destructive`/per-tool overrides
+  `policy.tools["<alias>/<name>"]`, each `"allow" | "deny" | "prompt"`. `allow`/`deny`
+  behave as before; denied calls return `policy_denied` and are audited.
+- `"prompt"` means "a human gate is required; if one cannot be guaranteed, deny" — it
+  fails closed rather than silently behaving like `allow`. The only implemented gate
+  today is MCP: `tools/list` emits `_meta["anthropic/requiresUserInteraction"] = true`
+  for a `"prompt"` tool when the connected client's `initialize` `clientInfo` is known
+  to enforce it (Claude Code ≥ v2.1.199 — every other client ignores the flag). The MCP
+  server then sets `consent: "client"` on that tool's `tools.call`, which is the
+  daemon's sole evidence a human gate exists; every other caller (CLI, an older or
+  non-compliant MCP client, a forged `consent`) is denied with `policy_denied`, reason
+  `no_consent_channel`. `clientInfo` is self-reported — not a defense against a hostile
+  client, only against silent auto-approval by compliant ones.
 - Audit: every `tools.call` appends one JSONL record to `audit/<date>.jsonl`:
   `{ ts, sessionId, alias, tool, argsSha256, outcome: "ok"|"error"|"denied",
-  errorType?, durationMs, caller: "cli"|"mcp" }`. Raw args are never logged.
+  errorType?, durationMs, caller: "cli"|"mcp", consent?: "client" }`. `consent` is set
+  only when a `"prompt"` call proceeded on the MCP client-gate channel above — kept
+  distinct from a plain `"ok"` since the daemon never observes the consent decision
+  itself, only that the call arrived carrying this marker. Raw args are never logged.
 
 ## 13. Package layout
 

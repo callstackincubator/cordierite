@@ -179,12 +179,19 @@ const asToolsCallParams = (params: unknown): ToolsCallParams => {
     throw new RpcApplicationError("invalid_request", '"caller" must be "cli" or "mcp".');
   }
 
+  const consent = record.consent;
+
+  if (consent !== undefined && consent !== "client") {
+    throw new RpcApplicationError("invalid_request", '"consent" must be "client".');
+  }
+
   return {
     selector: selector as string | undefined,
     name: record.name,
     args: args as Record<string, unknown>,
     timeoutMs: timeoutMs as number | undefined,
     caller: caller as "cli" | "mcp" | undefined,
+    consent: consent as "client" | undefined,
   };
 };
 
@@ -421,18 +428,30 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           const { selector } = asSelectorParams(params);
           // ARCHITECTURE.md §5: tools.list works for ACTIVE and SUSPENDED sessions alike (the
           // retained registry survives suspend); only tools.call requires ACTIVE.
-          return activeSessionManager.resolveForTools(selector).registry.list();
+          const resolved = activeSessionManager.resolveForTools(selector);
+
+          // Each entry carries its effective policy decision (ARCHITECTURE.md §12) so the MCP
+          // server can emit `_meta["anthropic/requiresUserInteraction"]` for "prompt" tools
+          // without a second round trip (issue #14).
+          return resolved.registry.list().map((descriptor) => ({
+            ...descriptor,
+            policy: evaluatePolicy(descriptor, { alias: resolved.alias }, config.policy),
+          }));
         },
         // This handler is the single seam every `tools.call` passes through: policy (ARCHITECTURE.md
         // §12) is evaluated once the target tool descriptor is known, and one audit record is
         // written for every attempt that reaches a resolved session, across ok/error/denied.
         [RPC_METHODS.toolsCall]: async (params): Promise<ToolsCallResult> => {
-          const { selector, name, args, timeoutMs, caller } = asToolsCallParams(params);
+          const { selector, name, args, timeoutMs, caller, consent } = asToolsCallParams(params);
           const effectiveCaller = caller ?? "cli";
           const resolved = activeSessionManager.resolveForTools(selector);
           const auditStartedAt = clock.now().getTime();
 
-          const writeAudit = (outcome: "ok" | "error" | "denied", errorType?: ErrorType): void => {
+          const writeAudit = (
+            outcome: "ok" | "error" | "denied",
+            errorType?: ErrorType,
+            grantedConsent?: "client",
+          ): void => {
             auditLogger.record({
               sessionId: resolved.sessionId,
               alias: resolved.alias,
@@ -442,6 +461,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               errorType,
               durationMs: clock.now().getTime() - auditStartedAt,
               caller: effectiveCaller,
+              consent: grantedConsent,
             });
           };
 
@@ -460,8 +480,15 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           }
 
           const policyDecision = evaluatePolicy(tool, { alias: resolved.alias }, config.policy);
+          // "prompt" fails closed (ARCHITECTURE.md §12 / issue #14): it proceeds only when the
+          // caller carried `consent: "client"`, which the MCP server sets only after confirming
+          // both that it emitted `_meta["anthropic/requiresUserInteraction"]` for this tool and
+          // that the connected client is known to enforce it. Every other caller — CLI, a
+          // non-compliant MCP client, a forged param — is denied.
+          const grantedConsent: "client" | undefined =
+            policyDecision === "prompt" && consent === "client" ? "client" : undefined;
 
-          if (policyDecision === "deny") {
+          if (policyDecision === "deny" || (policyDecision === "prompt" && grantedConsent === undefined)) {
             // Denied → no frame reaches the app, and the call never starts.
             activeEventBus.emit({
               kind: "tool_call_finished",
@@ -470,6 +497,18 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               data: { name, outcome: "denied" },
             });
             writeAudit("denied");
+
+            if (policyDecision === "prompt") {
+              throw new RpcApplicationError(
+                "policy_denied",
+                `Policy requires prompt consent to call "${name}" on session "${resolved.alias}", but no consent channel confirmed it.`,
+                -32000,
+                {
+                  reason: "no_consent_channel",
+                  hint: `This caller did not confirm human consent for "${name}" (ARCHITECTURE.md §12). Claude Code ≥ v2.1.199 confirms it automatically over MCP; every other caller (including the CLI) is denied by design until another consent channel is implemented.`,
+                },
+              );
+            }
 
             throw new RpcApplicationError(
               "policy_denied",
@@ -503,7 +542,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               alias: resolved.alias,
               data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome: "ok" },
             });
-            writeAudit("ok");
+            writeAudit("ok", undefined, grantedConsent);
 
             return { result, callId };
           } catch (error) {
@@ -515,7 +554,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
               alias: resolved.alias,
               data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome: "error", errorType },
             });
-            writeAudit("error", errorType);
+            writeAudit("error", errorType, grantedConsent);
 
             throw error;
           }

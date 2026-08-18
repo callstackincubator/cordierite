@@ -48,12 +48,15 @@ export type SessionSelectorParams = {
 
 // --- daemon.status ---
 
+/** Wire-safe mirror of `daemon/config.ts`'s `PolicyDecision` (ARCHITECTURE.md §12). */
+export type EffectivePolicyDecision = "allow" | "deny" | "prompt";
+
 /** Wire-safe mirror of `daemon/config.ts`'s `CordieritePolicyConfig` (ARCHITECTURE.md §12):
  * `daemon.status`'s effective policy, exactly as loaded from `config.json` plus defaults. */
 export type EffectivePolicyConfig = {
-  default: "allow" | "deny";
-  destructive: "allow" | "deny";
-  tools?: Record<string, "allow" | "deny">;
+  default: EffectivePolicyDecision;
+  destructive: EffectivePolicyDecision;
+  tools?: Record<string, EffectivePolicyDecision>;
 };
 
 export type DaemonStatusResult = {
@@ -118,7 +121,16 @@ export type SessionsRevokeResult = { ok: true };
 // --- tools.list / tools.call ---
 
 export type ToolsListParams = SessionSelectorParams;
-export type ToolsListResult = ToolDescriptor[];
+
+/** A `tools.list` entry: the tool's descriptor plus the policy decision (ARCHITECTURE.md §12)
+ * that would apply to it right now — resolved daemon-side (it needs `session.alias` and
+ * `config.policy`) so the MCP server can emit `_meta["anthropic/requiresUserInteraction"]` for
+ * `"prompt"` tools at `tools/list` time without a second round trip. */
+export type ToolsListEntry = ToolDescriptor & {
+  policy: EffectivePolicyDecision;
+};
+
+export type ToolsListResult = ToolsListEntry[];
 
 export type ToolsCallParams = SessionSelectorParams & {
   name: string;
@@ -127,6 +139,17 @@ export type ToolsCallParams = SessionSelectorParams & {
   /** Attribution for the audit log (ARCHITECTURE.md §12): who issued this call. The MCP server
    * always sets `"mcp"`; omitted (the CLI's case) defaults to `"cli"` at the daemon. */
   caller?: "cli" | "mcp";
+  /**
+   * Set by the MCP server only, and only when all of: (a) this tool's effective policy is
+   * `"prompt"`, (b) the server emitted `_meta["anthropic/requiresUserInteraction"]` for it at
+   * `tools/list` time, and (c) the connected client's `initialize` `clientInfo` is one known to
+   * enforce that flag (`name === "claude-code"`, version ≥ 2.1.199). The daemon treats this as
+   * the sole evidence a human gate exists for a `"prompt"`-policy call — anything else (CLI, a
+   * non-compliant MCP client, a forged param from an untrusted caller) is denied
+   * (`policy_denied`, reason `no_consent_channel`). `"prompt"` fails closed by design: see issue
+   * #14 / ARCHITECTURE.md §12.
+   */
+  consent?: "client";
 };
 
 export type ToolsCallResult = {

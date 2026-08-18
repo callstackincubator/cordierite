@@ -62,6 +62,49 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 };
 
+/** The minimum Claude Code version documented (ARCHITECTURE.md §12 / issue #14) to enforce
+ * `_meta["anthropic/requiresUserInteraction"]` on every call, in every permission mode, with no
+ * "don't ask again" option. Older Claude Code and every other client ignore the flag silently. */
+const REQUIRES_USER_INTERACTION_MIN_VERSION = [2, 1, 199] as const;
+
+const parseVersionParts = (version: string): number[] | undefined => {
+  const parts = version.split(".").map((part) => Number.parseInt(part, 10));
+  return parts.length > 0 && parts.every((part) => Number.isInteger(part) && part >= 0) ? parts : undefined;
+};
+
+const isVersionAtLeast = (version: string, min: readonly number[]): boolean => {
+  const parts = parseVersionParts(version);
+
+  if (!parts) {
+    return false;
+  }
+
+  for (let i = 0; i < min.length; i++) {
+    const part = parts[i] ?? 0;
+
+    if (part > min[i]!) {
+      return true;
+    }
+
+    if (part < min[i]!) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+/**
+ * Whether the connected MCP client is known to enforce `_meta["anthropic/requiresUserInteraction"]`
+ * (ARCHITECTURE.md §12 / issue #14). `clientInfo` is self-reported at `initialize` — a hostile
+ * client could claim to be Claude Code, but that is outside this feature's threat model
+ * (unattended automation, not a malicious client); it is documented as a known limitation.
+ */
+const clientHonorsRequiresUserInteraction = (server: Server): boolean => {
+  const clientInfo = server.getClientVersion();
+  return clientInfo?.name === "claude-code" && isVersionAtLeast(clientInfo.version, REQUIRES_USER_INTERACTION_MIN_VERSION);
+};
+
 const toolSuccessContent = (result: unknown): CallToolResult => {
   const content = [{ type: "text" as const, text: JSON.stringify(result) }];
 
@@ -130,12 +173,19 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
     progressToken: string | number | undefined,
     sendNotification: (notification: unknown) => Promise<void>,
   ): Promise<unknown> => {
+    // Recomputed at call time (never cached from the `tools/list` snapshot) so a stale `_meta`
+    // can't be replayed to manufacture consent (ARCHITECTURE.md §12 / issue #14): this is the
+    // daemon's sole evidence a human gate exists for a "prompt"-policy tool.
+    const consent: "client" | undefined =
+      tool.policy === "prompt" && clientHonorsRequiresUserInteraction(server) ? "client" : undefined;
+
     if (progressToken === undefined) {
       const result = await stream.call<ToolsCallResult>(RPC_METHODS.toolsCall, {
         selector: tool.selector,
         name: tool.descriptor.name,
         args,
         caller: "mcp",
+        ...(consent ? { consent } : {}),
       });
 
       return result.result;
@@ -188,6 +238,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
           name: tool.descriptor.name,
           args,
           caller: "mcp",
+          ...(consent ? { consent } : {}),
         });
 
         return result.result;
@@ -201,9 +252,14 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools = await fetchEffectiveTools(stream.call);
+    const clientHonors = clientHonorsRequiresUserInteraction(server);
 
     return {
-      tools: [CONNECT_TOOL_DESCRIPTOR, WAIT_FOR_SESSION_TOOL_DESCRIPTOR, ...tools.map(toMcpTool)],
+      tools: [
+        CONNECT_TOOL_DESCRIPTOR,
+        WAIT_FOR_SESSION_TOOL_DESCRIPTOR,
+        ...tools.map((tool) => toMcpTool(tool, clientHonors)),
+      ],
     };
   });
 

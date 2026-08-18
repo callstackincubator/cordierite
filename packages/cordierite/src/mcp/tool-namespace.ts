@@ -11,7 +11,7 @@
  * the first occurrence of `__` in a namespaced name is always the alias/tool-name boundary.
  */
 
-import type { SessionSummary, ToolDescriptor } from "@cordierite/shared";
+import type { EffectivePolicyDecision, SessionSummary, ToolDescriptor, ToolsListEntry } from "@cordierite/shared";
 
 export const TOOL_NAMESPACE_SEPARATOR = "__";
 
@@ -22,23 +22,29 @@ export type NamespacedTool = {
   /** The session alias `tools.call`'s `selector` should target for this tool. */
   selector: string;
   descriptor: ToolDescriptor;
+  /** The effective policy decision for this tool right now (ARCHITECTURE.md §12), as resolved by
+   * the daemon's `tools.list` — carried through so the MCP server can emit
+   * `_meta["anthropic/requiresUserInteraction"]` and set `consent` on `tools.call` without a
+   * second round trip (issue #14). */
+  policy: EffectivePolicyDecision;
 };
 
 /** Builds the namespaced (or not) tool list for the current set of live sessions. `toolsByAlias`
  * is looked up by `session.alias` (not `sessionId`) to match `tools.list`'s `selector` semantics. */
 export const buildNamespacedTools = (
   sessions: readonly SessionSummary[],
-  toolsByAlias: ReadonlyMap<string, readonly ToolDescriptor[]>,
+  toolsByAlias: ReadonlyMap<string, readonly ToolsListEntry[]>,
 ): NamespacedTool[] => {
   const namespaced = sessions.length > 1;
   const tools: NamespacedTool[] = [];
 
   for (const session of sessions) {
-    for (const descriptor of toolsByAlias.get(session.alias) ?? []) {
+    for (const { policy, ...descriptor } of toolsByAlias.get(session.alias) ?? []) {
       tools.push({
         mcpName: namespaced ? `${session.alias}${TOOL_NAMESPACE_SEPARATOR}${descriptor.name}` : descriptor.name,
         selector: session.alias,
         descriptor,
+        policy,
       });
     }
   }
@@ -58,7 +64,7 @@ export const findNamespacedTool = (
  * `notifications/tools/list_changed` rather than on every qualifying daemon event. */
 export const namespacedToolsSnapshotKey = (tools: readonly NamespacedTool[]): string => {
   const sorted = tools
-    .map((tool) => ({ name: tool.mcpName, selector: tool.selector, descriptor: tool.descriptor }))
+    .map((tool) => ({ name: tool.mcpName, selector: tool.selector, descriptor: tool.descriptor, policy: tool.policy }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
   return JSON.stringify(sorted);
