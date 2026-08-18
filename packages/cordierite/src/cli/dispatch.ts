@@ -20,6 +20,7 @@ import { usageError } from "../errors.js";
 import { renderEventLine } from "../output.js";
 import {
   parseJsonInputOption,
+  parseNonNegativeIntegerOption,
   parsePositiveIntegerOption,
   splitOptionalSelector,
   splitOptionalSelectorAndTarget,
@@ -182,12 +183,13 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
 
     case "events": {
       const { selector } = splitOptionalSelector(parsedArgs, "events [selector]");
+      const since = parseNonNegativeIntegerOption(parsedOptions.since, "--since");
 
       return executeHostedCommand(
         "events",
         () =>
           handleEventsCommand(
-            { selector },
+            { selector, since },
             {
               stateDir,
               onEvent: (event: EventNotification) => {

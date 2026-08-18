@@ -38,6 +38,14 @@ import {
   WAIT_FOR_SESSION_TOOL_NAME,
 } from "./connect-tool.js";
 import { fetchEffectiveTools } from "./daemon-tools.js";
+import {
+  EVENTS_TOOL_DESCRIPTOR,
+  EVENTS_TOOL_NAME,
+  handleEventsTool,
+  handleWaitForEventTool,
+  WAIT_FOR_EVENT_TOOL_DESCRIPTOR,
+  WAIT_FOR_EVENT_TOOL_NAME,
+} from "./events-tool.js";
 import { toMcpTool } from "./tool-mapping.js";
 import { findNamespacedTool, namespacedToolsSnapshotKey, type NamespacedTool } from "./tool-namespace.js";
 
@@ -203,7 +211,13 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
     const tools = await fetchEffectiveTools(stream.call);
 
     return {
-      tools: [CONNECT_TOOL_DESCRIPTOR, WAIT_FOR_SESSION_TOOL_DESCRIPTOR, ...tools.map(toMcpTool)],
+      tools: [
+        CONNECT_TOOL_DESCRIPTOR,
+        WAIT_FOR_SESSION_TOOL_DESCRIPTOR,
+        EVENTS_TOOL_DESCRIPTOR,
+        WAIT_FOR_EVENT_TOOL_DESCRIPTOR,
+        ...tools.map(toMcpTool),
+      ],
     };
   });
 
@@ -222,6 +236,23 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
       if (name === WAIT_FOR_SESSION_TOOL_NAME) {
         return toolSuccessContent(
           await handleWaitForSessionTool(args, { stateDir: options.stateDir, spawn: options.spawn }),
+        );
+      }
+
+      if (name === EVENTS_TOOL_NAME) {
+        return toolSuccessContent(await handleEventsTool(args, { call: stream.call }));
+      }
+
+      if (name === WAIT_FOR_EVENT_TOOL_NAME) {
+        return toolSuccessContent(
+          await handleWaitForEventTool(args, {
+            stateDir: options.stateDir,
+            spawn: options.spawn,
+            progress:
+              progressToken !== undefined
+                ? { token: progressToken, sendNotification: extra.sendNotification as (notification: unknown) => Promise<void> }
+                : undefined,
+          }),
         );
       }
 

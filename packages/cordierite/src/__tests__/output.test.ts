@@ -278,7 +278,7 @@ describe("output rendering", () => {
 
 describe("renderEventLine", () => {
   test("NDJSON mode emits parseable, verbatim JSON", () => {
-    const event = { kind: "session_claimed" as const, sessionId: "s1", alias: "pixel-8", ts: 1_700_000_000_000, data: {} };
+    const event = { kind: "session_claimed" as const, sessionId: "s1", alias: "pixel-8", ts: 1_700_000_000_000, data: {}, seq: 1 };
     const line = renderEventLine(event, { json: true, color: false });
 
     expect(JSON.parse(line)).toEqual(event);
@@ -286,7 +286,7 @@ describe("renderEventLine", () => {
 
   test("human mode includes the kind and alias", () => {
     const line = renderEventLine(
-      { kind: "tools_changed", sessionId: "s1", alias: "pixel-8", ts: 1_700_000_000_000, data: { toolCount: 2 } },
+      { kind: "tools_changed", sessionId: "s1", alias: "pixel-8", ts: 1_700_000_000_000, data: { toolCount: 2 }, seq: 1 },
       { json: false, color: false },
     );
 

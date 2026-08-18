@@ -205,7 +205,9 @@ an MCP progress notification.
 ```
 
 Guard: `isEventMessage`. Emitted by `postEvent(name, payload?)` on the React Native
-client; surfaced daemon-side as an `app_event` (`events.subscribe`, `cordierite events`).
+client; surfaced daemon-side as an `app_event` (`events.subscribe`, `cordierite events`) and
+retained per-session (`events.since`, §8) so a request/response caller (an MCP client, a script)
+can ask "what happened?" after the fact instead of only listening live.
 
 ## 5. Tool descriptor shape
 
@@ -307,3 +309,14 @@ types also establish these details:
   `audit: { path, failedWrites }` (ARCHITECTURE.md §12's audit surfacing).
 - `events.subscribe` includes `link_expired` (a pending link's TTL elapsed with no
   claim) and `tool_call_progress` (mirroring the wire message in §4).
+- `events.since` (issue #6) is the pull counterpart: it drains a per-session ring buffer
+  the daemon retains alongside the live `events.subscribe` fan-out, so a caller that only
+  finds out it wants to know "what happened?" after the fact (every MCP tool call, since
+  MCP is strictly request/response) doesn't need to have been subscribed in advance. Every
+  `EventNotification` carries a `seq`: a cursor that increases monotonically per session,
+  assigned at retention time. Pass the highest `seq` seen back as `since` on the next call
+  to resume without re-reading; a session-scoped event whose session hits a terminal state
+  (`session_expired`/`session_revoked`) discards that session's buffer, matching "terminal
+  states free the alias" (ARCHITECTURE.md §6) — there is no persisted history past that
+  point. Daemon-wide events (no `sessionId`, e.g. `daemon_started`) are never buffered and
+  carry `seq: 0`.

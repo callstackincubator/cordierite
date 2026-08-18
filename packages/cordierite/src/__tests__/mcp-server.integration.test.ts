@@ -211,7 +211,12 @@ const snapshotTools = async (
   await toolsChanged;
 };
 
-const BUILTIN_TOOL_NAMES = new Set(["cordierite_connect", "cordierite_wait_for_session"]);
+const BUILTIN_TOOL_NAMES = new Set([
+  "cordierite_connect",
+  "cordierite_wait_for_session",
+  "cordierite_events",
+  "cordierite_wait_for_event",
+]);
 
 /** Every `tools/list` response always includes the two built-in management tools alongside
  * whatever proxied device tools are live; tests that care only about the proxied tools filter
@@ -552,6 +557,119 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     expect(data.alias.length).toBeGreaterThan(0);
 
     socket.close();
+  }, 10_000);
+});
+
+describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
+  test("cordierite_events drains app_events already emitted, and honors the returned cursor", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const emitted = waitForEvent(daemon, "app_event");
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "greeting", payload: { hi: true }, ts: Date.now() }));
+    await emitted;
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const first = await client.request(
+      { method: "tools/call", params: { name: "cordierite_events", arguments: {} } },
+      CallToolResultSchema,
+    );
+    expect(first.isError).not.toBe(true);
+    const firstData = first.structuredContent as { events: Array<{ kind: string; data: { name: string } }>; cursor: number };
+    expect(firstData.events.some((event) => event.kind === "app_event" && event.data.name === "greeting")).toBe(true);
+
+    const second = await client.request(
+      { method: "tools/call", params: { name: "cordierite_events", arguments: { since: firstData.cursor } } },
+      CallToolResultSchema,
+    );
+    const secondData = second.structuredContent as { events: unknown[] };
+    expect(secondData.events).toEqual([]);
+
+    app.socket.close();
+  });
+
+  test("cordierite_wait_for_event resolves immediately for an event that already fired before the call", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const emitted = waitForEvent(daemon, "app_event");
+    app.socket.send(
+      JSON.stringify({ type: "event", session_id: app.sessionId, name: "already-happened", payload: { n: 1 }, ts: Date.now() }),
+    );
+    await emitted;
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      {
+        method: "tools/call",
+        params: { name: "cordierite_wait_for_event", arguments: { name: "already-happened", timeoutMs: 2000 } },
+      },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).not.toBe(true);
+    const data = result.structuredContent as { name: string; payload: { n: number } };
+    expect(data.name).toBe("already-happened");
+    expect(data.payload).toEqual({ n: 1 });
+
+    app.socket.close();
+  }, 10_000);
+
+  test("cordierite_wait_for_event resolves once a live-only matching event arrives, ignoring non-matching ones", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const waitPromise = client.request(
+      {
+        method: "tools/call",
+        params: { name: "cordierite_wait_for_event", arguments: { name: "target", timeoutMs: 5000 } },
+      },
+      CallToolResultSchema,
+    );
+
+    const otherEmitted = waitForEvent(daemon, "app_event");
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "not-it", ts: Date.now() }));
+    await otherEmitted;
+
+    const targetEmitted = waitForEvent(daemon, "app_event");
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "target", payload: { ok: true }, ts: Date.now() }));
+    await targetEmitted;
+
+    const result = await waitPromise;
+    expect(result.isError).not.toBe(true);
+    const data = result.structuredContent as { name: string; payload: { ok: boolean } };
+    expect(data.name).toBe("target");
+    expect(data.payload).toEqual({ ok: true });
+
+    app.socket.close();
+  }, 10_000);
+
+  test("cordierite_wait_for_event rejects with tool_timeout when nothing matches in time", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      {
+        method: "tools/call",
+        params: { name: "cordierite_wait_for_event", arguments: { selector: app.alias, name: "never-arrives", timeoutMs: 300 } },
+      },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("tool_timeout");
+
+    app.socket.close();
   }, 10_000);
 });
 

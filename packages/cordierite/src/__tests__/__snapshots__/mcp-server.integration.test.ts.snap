@@ -29,6 +29,61 @@ exports[`mcp: tools/list and tools/call > the generated MCP tool list (built-ins
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "kinds": {
+          "items": {
+            "type": "string",
+          },
+          "type": "array",
+        },
+        "limit": {
+          "exclusiveMinimum": 0,
+          "type": "number",
+        },
+        "selector": {
+          "type": "string",
+        },
+        "since": {
+          "minimum": 0,
+          "type": "number",
+        },
+      },
+      "type": "object",
+    },
+    "name": "cordierite_events",
+    "outputSchema": undefined,
+  },
+  {
+    "annotations": undefined,
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "match": {
+          "type": "object",
+        },
+        "name": {
+          "type": "string",
+        },
+        "selector": {
+          "type": "string",
+        },
+        "timeoutMs": {
+          "exclusiveMinimum": 0,
+          "type": "number",
+        },
+      },
+      "required": [
+        "name",
+      ],
+      "type": "object",
+    },
+    "name": "cordierite_wait_for_event",
+    "outputSchema": undefined,
+  },
+  {
+    "annotations": undefined,
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
         "sessionId": {
           "type": "string",
         },

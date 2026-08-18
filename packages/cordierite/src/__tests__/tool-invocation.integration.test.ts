@@ -600,6 +600,72 @@ describe("events.subscribe", () => {
   });
 });
 
+describe("events.since", () => {
+  test("drains retained app_events with no live subscription, and cursor advances", async () => {
+    const { daemon, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const first = waitForEvent(daemon, "app_event");
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "a", ts: Date.now() }));
+    await first;
+
+    const second = waitForEvent(daemon, "app_event");
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "b", ts: Date.now() }));
+    await second;
+
+    const since = (await rpcCall(daemon.paths.socketPath, "events.since", { selector: app.alias })) as {
+      events: Array<{ kind: string; seq: number; data: { name: string } }>;
+      cursor: number;
+    };
+
+    const appEvents = since.events.filter((event) => event.kind === "app_event");
+    expect(appEvents.map((event) => event.data.name)).toEqual(["a", "b"]);
+    expect(since.cursor).toBeGreaterThanOrEqual(appEvents[appEvents.length - 1]!.seq);
+
+    // A second pull with `since` set to the first response's cursor sees nothing new.
+    const drained = (await rpcCall(daemon.paths.socketPath, "events.since", {
+      selector: app.alias,
+      since: since.cursor,
+    })) as { events: unknown[] };
+    expect(drained.events).toEqual([]);
+
+    app.socket.close();
+  });
+
+  test("selector defaults to the sole active/suspended session, matching sessions.describe", async () => {
+    const { daemon, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const emitted = waitForEvent(daemon, "app_event");
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "solo", ts: Date.now() }));
+    await emitted;
+
+    const since = (await rpcCall(daemon.paths.socketPath, "events.since", {})) as {
+      events: Array<{ kind: string; data: { name: string } }>;
+    };
+    expect(since.events.some((event) => event.kind === "app_event" && event.data.name === "solo")).toBe(true);
+
+    app.socket.close();
+  });
+
+  test("a terminal transition discards the retained buffer", async () => {
+    const { daemon, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const emitted = waitForEvent(daemon, "app_event");
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "before-revoke", ts: Date.now() }));
+    await emitted;
+
+    const revoked = waitForEvent(daemon, "session_revoked");
+    await rpcCall(daemon.paths.socketPath, "sessions.revoke", { selector: app.alias });
+    await revoked;
+
+    await expect(
+      rpcCall(daemon.paths.socketPath, "events.since", { selector: app.sessionId }),
+    ).rejects.toMatchObject({ data: { type: "unknown_session" } });
+  });
+});
+
 describe("tools.* selectors", () => {
   test("unknown_session and ambiguous_session error types", async () => {
     const { daemon, port } = await startTestDaemon();

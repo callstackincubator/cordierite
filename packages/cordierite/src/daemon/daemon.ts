@@ -18,6 +18,8 @@ import {
   type ErrorType,
   type DaemonShutdownResult,
   type DaemonStatusResult,
+  type EventsSinceParams,
+  type EventsSinceResult,
   type EventsSubscribeParams,
   type EventsSubscribeResult,
   type LinkCreateParams,
@@ -211,6 +213,46 @@ const asEventsSubscribeParams = (params: unknown): EventsSubscribeParams => {
   return { sessionSelector: sessionSelector as string | undefined, kinds };
 };
 
+const asEventsSinceParams = (params: unknown): EventsSinceParams => {
+  const record = asRecordParams(params);
+
+  const selector = record.selector;
+
+  if (selector !== undefined && typeof selector !== "string") {
+    throw new RpcApplicationError("invalid_request", '"selector" must be a string.');
+  }
+
+  const since = record.since;
+
+  if (since !== undefined && (typeof since !== "number" || !Number.isInteger(since) || since < 0)) {
+    throw new RpcApplicationError("invalid_request", '"since" must be a non-negative integer.');
+  }
+
+  const kindsRaw = record.kinds;
+  let kinds: EventKind[] | undefined;
+
+  if (kindsRaw !== undefined) {
+    if (!Array.isArray(kindsRaw) || !kindsRaw.every((kind) => typeof kind === "string" && KNOWN_EVENT_KINDS.has(kind))) {
+      throw new RpcApplicationError("invalid_request", '"kinds" must be an array of known event kinds.');
+    }
+
+    kinds = kindsRaw as EventKind[];
+  }
+
+  const limit = record.limit;
+
+  if (limit !== undefined && (typeof limit !== "number" || !Number.isInteger(limit) || limit <= 0)) {
+    throw new RpcApplicationError("invalid_request", '"limit" must be a positive integer.');
+  }
+
+  return {
+    selector: selector as string | undefined,
+    since: since as number | undefined,
+    kinds,
+    limit: limit as number | undefined,
+  };
+};
+
 const asLinkCreateParams = (params: unknown): LinkCreateParams => {
   if (params === undefined || params === null) {
     return {};
@@ -291,7 +333,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
       },
     });
 
-    eventBus = createEventBus(clock);
+    eventBus = createEventBus({ clock, bufferSize: config.eventBufferSize });
     const activeEventBus = eventBus;
     const detectAddress =
       options.detectAddress ??
@@ -529,6 +571,16 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           } satisfies EventSubscription;
 
           return { ok: true };
+        },
+        [RPC_METHODS.eventsSince]: (params): EventsSinceResult => {
+          const { selector, since, kinds, limit } = asEventsSinceParams(params);
+          // Resolved the same way as every other selector-taking method (`sessions.describe`,
+          // `tools.list`): defaults to the sole active/suspended session, errors on ambiguity, and
+          // works for a suspended session too — a suspended app's already-retained events are still
+          // fair game to drain.
+          const resolved = activeSessionManager.describe(selector);
+
+          return activeEventBus.since(resolved.sessionId, { since, kinds, limit });
         },
       },
     });
