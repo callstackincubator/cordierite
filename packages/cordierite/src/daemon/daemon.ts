@@ -30,6 +30,8 @@ import {
   type ToolCallProgressMessage,
   type ToolsCallParams,
   type ToolsCallResult,
+  type ToolsCancelParams,
+  type ToolsCancelResult,
   type ToolsListResult,
 } from "@cordierite/shared";
 
@@ -188,6 +190,32 @@ const asToolsCallParams = (params: unknown): ToolsCallParams => {
   };
 };
 
+const asToolsCancelParams = (params: unknown): ToolsCancelParams => {
+  const record = asRecordParams(params);
+
+  const selector = record.selector;
+
+  if (selector !== undefined && typeof selector !== "string") {
+    throw new RpcApplicationError("invalid_request", '"selector" must be a string.');
+  }
+
+  if (typeof record.callId !== "string" || record.callId.length === 0) {
+    throw new RpcApplicationError("invalid_request", '"callId" must be a non-empty string.');
+  }
+
+  const reason = record.reason;
+
+  if (reason !== undefined && typeof reason !== "string") {
+    throw new RpcApplicationError("invalid_request", '"reason" must be a string.');
+  }
+
+  return {
+    selector: selector as string | undefined,
+    callId: record.callId,
+    reason: reason as string | undefined,
+  };
+};
+
 const asEventsSubscribeParams = (params: unknown): EventsSubscribeParams => {
   const record = asRecordParams(params);
 
@@ -332,6 +360,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
 
     callsManager = createCallsManager({
       send: (sessionId, message) => activeSessionManager.sendToolCall(sessionId, message),
+      sendCancel: (sessionId, message) => activeSessionManager.sendToolCancel(sessionId, message),
       eventBus: activeEventBus,
     });
 
@@ -426,13 +455,13 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
         // This handler is the single seam every `tools.call` passes through: policy (ARCHITECTURE.md
         // §12) is evaluated once the target tool descriptor is known, and one audit record is
         // written for every attempt that reaches a resolved session, across ok/error/denied.
-        [RPC_METHODS.toolsCall]: async (params): Promise<ToolsCallResult> => {
+        [RPC_METHODS.toolsCall]: async (params, context): Promise<ToolsCallResult> => {
           const { selector, name, args, timeoutMs, caller } = asToolsCallParams(params);
           const effectiveCaller = caller ?? "cli";
           const resolved = activeSessionManager.resolveForTools(selector);
           const auditStartedAt = clock.now().getTime();
 
-          const writeAudit = (outcome: "ok" | "error" | "denied", errorType?: ErrorType): void => {
+          const writeAudit = (outcome: "ok" | "error" | "denied" | "cancelled", errorType?: ErrorType): void => {
             auditLogger.record({
               sessionId: resolved.sessionId,
               alias: resolved.alias,
@@ -487,6 +516,15 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           // notifications by this id, unambiguous under concurrent calls.
           const { callId, result: callResult } = activeCallsManager.call(session, name, args, timeoutMs);
 
+          // If the connection that issued this tools.call drops while the call is still pending
+          // (CLI Ctrl-C, MCP client disconnect), tell the app to stop rather than leaving an
+          // orphaned handler running for a caller nobody is waiting on anymore. Unregistered once
+          // this call settles either way — otherwise a long-lived connection issuing many calls
+          // (e.g. the MCP server's persistent stream) leaks one closure per call for its lifetime.
+          const unregisterOnClose = context.onClose(() => {
+            activeCallsManager.cancel(resolved.sessionId, callId, "connection_closed");
+          });
+
           activeEventBus.emit({
             kind: "tool_call_started",
             sessionId: resolved.sessionId,
@@ -508,17 +546,27 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
             return { result, callId };
           } catch (error) {
             const errorType = error instanceof RpcApplicationError ? error.type : "tool_execution_error";
+            const outcome = errorType === "tool_cancelled" ? "cancelled" : "error";
 
             activeEventBus.emit({
               kind: "tool_call_finished",
               sessionId: resolved.sessionId,
               alias: resolved.alias,
-              data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome: "error", errorType },
+              data: { name, callId, durationMs: clock.now().getTime() - startedAt, outcome, errorType },
             });
-            writeAudit("error", errorType);
+            writeAudit(outcome, errorType);
 
             throw error;
+          } finally {
+            unregisterOnClose();
           }
+        },
+        [RPC_METHODS.toolsCancel]: (params): ToolsCancelResult => {
+          const { selector, callId, reason } = asToolsCancelParams(params);
+          const resolved = activeSessionManager.resolveForTools(selector);
+          const cancelled = activeCallsManager.cancel(resolved.sessionId, callId, reason ?? "client_cancelled");
+
+          return { cancelled };
         },
         [RPC_METHODS.eventsSubscribe]: (params, context): EventsSubscribeResult => {
           const { sessionSelector, kinds } = asEventsSubscribeParams(params);

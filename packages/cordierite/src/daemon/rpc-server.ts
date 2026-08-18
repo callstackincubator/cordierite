@@ -40,6 +40,12 @@ export type RpcHandlerContext = {
   connection: RpcConnection;
   /** Registers a callback to run once the in-flight response has been flushed to the socket. */
   afterSend: (callback: () => void) => void;
+  /** Registers a callback to run once this connection closes — e.g. auto-cancelling a `tools.call`
+   * still in flight when the connection that issued it drops. Callbacks run at most once. Returns
+   * an unregister function — callers whose call already settled must use it, or the callback (and
+   * whatever it closed over) leaks for the lifetime of a long-lived connection (e.g. the MCP
+   * server's persistent stream, which issues many `tools.call`s over one connection). */
+  onClose: (callback: () => void) => () => void;
 };
 
 export type RpcHandler = (params: unknown, context: RpcHandlerContext) => unknown | Promise<unknown>;
@@ -105,6 +111,7 @@ const handleLine = async (
   line: string,
   connection: RpcConnection,
   dispatch: RpcDispatchTable,
+  registerOnClose: (callback: () => void) => () => void,
 ): Promise<void> => {
   const { socket } = connection;
   let request: JsonRpcRequest;
@@ -143,6 +150,7 @@ const handleLine = async (
     afterSend: (callback) => {
       afterSendCallbacks.push(callback);
     },
+    onClose: registerOnClose,
   };
 
   try {
@@ -185,6 +193,14 @@ export const startRpcServer = async (options: RpcServerOptions): Promise<RpcServ
     const connection: RpcConnection = { id, socket, state: {} };
     connections.set(id, connection);
 
+    const closeCallbacks = new Set<() => void>();
+    const registerOnClose = (callback: () => void): (() => void) => {
+      closeCallbacks.add(callback);
+      return () => {
+        closeCallbacks.delete(callback);
+      };
+    };
+
     let buffer = "";
 
     socket.on("data", (chunk: Buffer) => {
@@ -214,7 +230,7 @@ export const startRpcServer = async (options: RpcServerOptions): Promise<RpcServ
             return;
           }
 
-          void handleLine(line, connection, options.dispatch);
+          void handleLine(line, connection, options.dispatch, registerOnClose);
         }
 
         newlineIndex = buffer.indexOf("\n");
@@ -223,6 +239,17 @@ export const startRpcServer = async (options: RpcServerOptions): Promise<RpcServ
 
     socket.on("close", () => {
       connections.delete(id);
+
+      const callbacks = Array.from(closeCallbacks);
+      closeCallbacks.clear();
+
+      for (const callback of callbacks) {
+        try {
+          callback();
+        } catch {
+          // A close callback must never crash the daemon.
+        }
+      }
     });
   });
 

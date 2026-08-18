@@ -15,6 +15,7 @@ export const ERROR_TYPES = [
   "tool_execution_error",
   "tool_serialization_error",
   "tool_timeout",
+  "tool_cancelled",
   "session_suspended",
   "policy_denied",
   "invalid_request",
@@ -36,6 +37,7 @@ export const TOOL_ERROR_TYPES = [
   "tool_execution_error",
   "tool_serialization_error",
   "tool_timeout",
+  "tool_cancelled",
 ] as const satisfies readonly ErrorType[];
 
 export type ToolErrorType = (typeof TOOL_ERROR_TYPES)[number];
