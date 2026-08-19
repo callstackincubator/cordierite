@@ -10,18 +10,10 @@ import type {
 } from "./Cordierite.types";
 import {
   cordieriteNativeModule,
-  cordieriteNativeResumeLeaseStore,
   getCordieriteNativeBuildConfig,
-  isCordieriteNativeModuleAvailable,
 } from "./CordieriteModule";
 import { parseBootstrapPayload, parseBootstrapUrl } from "./bootstrap";
-import { createCordieriteClient } from "./client";
-import { realAppState } from "./client/real-app-state";
-import {
-  installCordieriteDeepLinkBootstrap as installDeepLinkBootstrap,
-  type InstallCordieriteDeepLinkBootstrapOptions,
-} from "./deep-link-install";
-import { logger } from "./logger";
+import { cordieriteClient, noopIfNativeUnavailable } from "./default-client";
 import * as noop from "./noop";
 import { createUseCordieriteTool } from "./useCordieriteTool";
 
@@ -34,102 +26,9 @@ export {
   type CreateCordieriteClientOptions,
 } from "./client";
 export { cordieriteNativeModule };
-export type { InstallCordieriteDeepLinkBootstrapOptions } from "./deep-link-install";
+export { cordieriteClient };
 export type { CordierePublicApi, CordieriteSubscription } from "./public-api";
 export type { UseCordieriteToolOptions } from "./useCordieriteTool";
-
-let cordieriteClientInstance: ReturnType<typeof createCordieriteClient> | null =
-  null;
-
-/**
- * Whether Cordierite's native module exists in a build at all is decided entirely by
- * autolinking (see `docs/tasks/00-overview.md`'s "Inclusion" contract), not by any runtime
- * check here. When it is absent — Expo Go, a JS-only bundle, or the app excluded Cordierite
- * from autolinking — `TurboModuleRegistry` never finds it, and every exported function below
- * degrades to the exact `./noop` entry's behavior instead of the real client's — see
- * `noopIfNativeUnavailable`. Logged exactly once per process, not once per call, so an app that
- * calls these functions in a loop or on every render is not spammed.
- */
-let warnedNativeModuleInert = false;
-const warnNativeModuleInertOnce = (): void => {
-  if (warnedNativeModuleInert) {
-    return;
-  }
-  warnedNativeModuleInert = true;
-  logger.warn(
-    "Cordierite: the native module is not available in this build (Expo Go/JS-only, or " +
-      "excluded via autolinking). The public API is inert, matching the `./noop` entry.",
-  );
-};
-
-/** Runs `whenInert()` (a `./noop` call) instead of `whenAvailable()` (the real client call) once
- * the native module has been found unavailable, warning exactly once the first time this happens. */
-function noopIfNativeUnavailable<T>(
-  whenAvailable: () => T,
-  whenInert: () => T,
-): T {
-  if (!isCordieriteNativeModuleAvailable()) {
-    warnNativeModuleInertOnce();
-    return whenInert();
-  }
-  return whenAvailable();
-}
-
-/**
- * Constructing a `CordieriteClient` subscribes native event listeners immediately —
- * harmless when the native module is unavailable (`CordieriteModule.ts`'s `addListener` never
- * throws) but still real work. Deferring the construction itself until first use keeps this root
- * entry genuinely side-effect-free at import time (ARCHITECTURE.md §11), not merely
- * non-throwing.
- */
-const getCordieriteClientInstance = (): ReturnType<
-  typeof createCordieriteClient
-> => {
-  if (!cordieriteClientInstance) {
-    cordieriteClientInstance = createCordieriteClient(cordieriteNativeModule, {
-      appState: realAppState,
-      resumeLeaseStore: cordieriteNativeResumeLeaseStore,
-    });
-  }
-  return cordieriteClientInstance;
-};
-
-/**
- * Default Cordierite client (native TurboModule, real `AppState`). Prefer importing the package
- * top-level functions (`registerTool`, `postEvent`, `addCordieriteListener`, `getCordieriteState`,
- * `installCordieriteDeepLinkBootstrap`) for typical app code; use this instance only for advanced
- * flows (manual `connect`/`send`, custom listeners, testing).
- *
- * A `Proxy` so that merely referencing this export (or importing the module) never constructs the
- * underlying client — only an actual property access (e.g. `cordieriteClient.getState()`) does,
- * which is also the first point any of this module's other top-level functions touch it.
- */
-export const cordieriteClient = new Proxy(
-  {} as ReturnType<typeof createCordieriteClient>,
-  {
-    get(_target, property, receiver) {
-      return Reflect.get(getCordieriteClientInstance(), property, receiver);
-    },
-    has(_target, property) {
-      return Reflect.has(getCordieriteClientInstance(), property);
-    },
-  },
-);
-
-/**
- * Subscribes the default client to runtime deep links and attempts native-lease recovery before
- * processing the initial URL. Safe to call once; a later call with different `options` logs a dev
- * warning instead of silently keeping the first installation's options (see
- * `deep-link-install.ts`).
- */
-export function installCordieriteDeepLinkBootstrap(
-  options?: InstallCordieriteDeepLinkBootstrapOptions,
-): void {
-  noopIfNativeUnavailable(
-    () => installDeepLinkBootstrap(cordieriteClient, options),
-    () => noop.installCordieriteDeepLinkBootstrap(options),
-  );
-}
 
 /**
  * Register a Cordierite tool on the default client. Same as `cordieriteClient.registerTool` —
@@ -189,8 +88,8 @@ export function addCordieriteListener<Kind extends CordieriteListenerKind>(
  * `true` once a resume attempt has started (not once the daemon has acknowledged it), `false` when
  * there is no valid, unexpired lease to restore or this client is already connecting/active.
  *
- * `installCordieriteDeepLinkBootstrap` (and the `./auto` entry) already calls this at startup, so
- * apps using it need nothing more. Call this explicitly if you handle bootstrap links yourself —
+ * The `./auto` entry already calls this at startup, so apps importing it need nothing more. Call
+ * this explicitly if you handle bootstrap links yourself —
  * custom deep-link routing, QR scanning, a manual `connect()` — because otherwise **nothing** reads
  * the lease, and every Metro reload silently drops a session the native side could still have
  * resumed. Call it once at startup, before your own bootstrap handling: a successful restore means
@@ -216,9 +115,9 @@ export function getCordieriteState(): CordieriteClientState {
 
 /**
  * Manually starts the claim/resume handshake on the default client from a decoded bootstrap payload
- * or explicit connect options. Most apps never call this directly — `installCordieriteDeepLinkBootstrap`
- * (or the `./auto` entry) drives it from incoming deep links — but it is exposed for manual bootstrap
- * flows (custom deep-link handling, QR scanning, tests).
+ * or explicit connect options. Most apps never call this directly — the `./auto` entry drives it
+ * from incoming deep links — but it is exposed for manual bootstrap flows (custom deep-link
+ * handling, QR scanning, tests).
  */
 export function connect(input: CordieriteConnectInput): Promise<void> {
   return noopIfNativeUnavailable(

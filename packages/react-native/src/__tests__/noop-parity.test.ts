@@ -37,7 +37,6 @@ describe("noop parity: type-level (see also public-api.ts's doc comment)", () =>
       "useCordieriteTool",
       "postEvent",
       "getRegisteredTools",
-      "installCordieriteDeepLinkBootstrap",
       "addCordieriteListener",
       "restoreSession",
       "getCordieriteState",
@@ -85,11 +84,6 @@ describe("noop entry: runtime no-op behavior", () => {
   test("postEvent resolves without doing anything", async () => {
     const { postEvent } = await import("../noop");
     await expect(postEvent("anything", { a: 1 })).resolves.toBeUndefined();
-  });
-
-  test("installCordieriteDeepLinkBootstrap is a no-op", async () => {
-    const { installCordieriteDeepLinkBootstrap } = await import("../noop");
-    expect(() => installCordieriteDeepLinkBootstrap()).not.toThrow();
   });
 
   test("addCordieriteListener returns a disposer; the callback never fires", async () => {

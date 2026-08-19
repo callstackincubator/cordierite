@@ -19,12 +19,10 @@ import type {
   CordieriteUnifiedListenerMap,
 } from "./Cordierite.types";
 import { CordieriteDisabledError } from "./Cordierite.types";
-import type { InstallCordieriteDeepLinkBootstrapOptions } from "./deep-link-install";
 import type { CordieriteSubscription } from "./public-api";
 import { createUseCordieriteTool } from "./useCordieriteTool";
 
 export * from "./Cordierite.types";
-export type { InstallCordieriteDeepLinkBootstrapOptions } from "./deep-link-install";
 export type { CordierePublicApi, CordieriteSubscription } from "./public-api";
 export type { UseCordieriteToolOptions } from "./useCordieriteTool";
 
@@ -56,11 +54,6 @@ export async function postEvent(
 export function getRegisteredTools(): ToolDescriptor[] {
   return [];
 }
-
-/** No-op: this build never installs deep-link listeners. */
-export function installCordieriteDeepLinkBootstrap(
-  _options?: InstallCordieriteDeepLinkBootstrapOptions,
-): void {}
 
 /** No-op: the returned subscription is inert and the callback never fires. */
 export function addCordieriteListener<Kind extends CordieriteListenerKind>(

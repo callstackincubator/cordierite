@@ -2,6 +2,7 @@ import { encodeBootstrap } from "@cordierite/shared";
 import { afterEach, beforeEach, describe, expect, vi, test } from "vitest";
 
 import type { CordieriteConnectionState } from "../Cordierite.types";
+import type { Spec } from "../NativeCordierite";
 
 (globalThis as { __DEV__?: boolean }).__DEV__ = true;
 
@@ -45,6 +46,16 @@ const validBootstrapUrl = () =>
     expiresAt: Math.floor(Date.now() / 1000) + 60,
   })}`;
 
+const nonPrivateBootstrapUrl = () =>
+  `playground:///?cordierite=${encodeBootstrap({
+    family: 4,
+    address: "8.8.8.8",
+    port: 8443,
+    sessionId: "session-123",
+    token: "a".repeat(43),
+    expiresAt: Math.floor(Date.now() / 1000) + 60,
+  })}`;
+
 const createMockClient = (
   initialState: CordieriteConnectionState = "idle",
   restoreSessionImpl: () => Promise<boolean> = () => Promise.resolve(false)
@@ -77,6 +88,12 @@ describe("installCordieriteDeepLinkBootstrap", () => {
     urlListeners = [];
     const mod = await import("../deep-link-install");
     mod.__cordieriteResetInstallGuardForTests();
+    // The native-module loader is process-global; restore the default so a test that installs a
+    // fake `getConstants()` cannot leak its address policy into the next one.
+    const { __cordieriteSetNativeModuleLoaderForTests } = await import(
+      "../CordieriteModule"
+    );
+    __cordieriteSetNativeModuleLoaderForTests();
   });
 
   afterEach(async () => {
@@ -101,14 +118,14 @@ describe("installCordieriteDeepLinkBootstrap", () => {
     expect(client.connects).toEqual([]);
   });
 
-  test("second call is a no-op when options match", async () => {
+  test("second call is a no-op", async () => {
     const { installCordieriteDeepLinkBootstrap } = await import(
       "../deep-link-install"
     );
     const client = createMockClient();
 
-    installCordieriteDeepLinkBootstrap(client, { requirePrivateIp: true });
-    installCordieriteDeepLinkBootstrap(client, { requirePrivateIp: true });
+    installCordieriteDeepLinkBootstrap(client);
+    installCordieriteDeepLinkBootstrap(client);
 
     expect(urlListeners).toHaveLength(1);
     expect(client.restoreCalls).toBe(1);
@@ -179,61 +196,60 @@ describe("installCordieriteDeepLinkBootstrap", () => {
     expect(client.connects).toHaveLength(1);
   });
 
-  test("options are threaded down to the deep-link handler (requirePrivateIp: false)", async () => {
+  test("a non-private address is accepted only when native reports allowPrivateLanOnly: false", async () => {
+    const { __cordieriteSetNativeModuleLoaderForTests } = await import(
+      "../CordieriteModule"
+    );
+    __cordieriteSetNativeModuleLoaderForTests(() => ({
+      NativeCordierite: {
+        getConstants: () => ({
+          trust: "link",
+          hasEmbeddedPins: false,
+          allowPrivateLanOnly: false,
+        }),
+      } as unknown as Spec,
+    }));
+
     const { installCordieriteDeepLinkBootstrap } = await import(
       "../deep-link-install"
     );
     const client = createMockClient();
 
-    installCordieriteDeepLinkBootstrap(client, { requirePrivateIp: false });
+    installCordieriteDeepLinkBootstrap(client);
     expect(urlListeners).toHaveLength(1);
 
-    const nonPrivatePayload = {
-      family: 4 as const,
-      address: "8.8.8.8",
-      port: 8443,
-      sessionId: "session-123",
-      token: "a".repeat(43),
-      expiresAt: Math.floor(Date.now() / 1000) + 60,
-    };
-    const url = `playground:///?cordierite=${encodeBootstrap(
-      nonPrivatePayload
-    )}`;
-
-    urlListeners[0]?.({ url });
+    urlListeners[0]?.({ url: nonPrivateBootstrapUrl() });
     await flushMicrotasks();
 
+    // The address policy is native build config (`CordieriteAllowPrivateLanOnly`), the same value
+    // native `connect()` enforces -- never a JS-side copy an app could set independently.
     expect(client.connects).toHaveLength(1);
   });
 
-  test("reinstalling with different options logs a dev warning instead of silently keeping the first", async () => {
-    const originalDevWarn = console.warn;
-    const warnings: unknown[][] = [];
-    console.warn = (...args: unknown[]) => {
-      warnings.push(args);
-    };
+  test("a non-private address is rejected when the native build config cannot be read", async () => {
+    const { __cordieriteSetNativeModuleLoaderForTests } = await import(
+      "../CordieriteModule"
+    );
+    __cordieriteSetNativeModuleLoaderForTests(() => ({
+      NativeCordierite: undefined as unknown as Spec,
+    }));
 
-    try {
-      const { installCordieriteDeepLinkBootstrap } = await import(
-        "../deep-link-install"
-      );
-      const client = createMockClient();
+    const { installCordieriteDeepLinkBootstrap } = await import(
+      "../deep-link-install"
+    );
+    const client = createMockClient();
 
-      installCordieriteDeepLinkBootstrap(client, { requirePrivateIp: true });
-      installCordieriteDeepLinkBootstrap(client, { requirePrivateIp: false });
+    installCordieriteDeepLinkBootstrap(client);
+    urlListeners[0]?.({ url: nonPrivateBootstrapUrl() });
+    await flushMicrotasks();
 
-      // Still only one listener installed — the guard is run-once regardless.
-      expect(urlListeners).toHaveLength(1);
-      expect(
-        warnings.some((args) =>
-          args.some(
-            (arg) =>
-              typeof arg === "string" && arg.includes("different options")
-          )
-        )
-      ).toBe(true);
-    } finally {
-      console.warn = originalDevWarn;
-    }
+    // Fail closed: an unreadable config must never widen the address policy.
+    expect(client.connects).toEqual([]);
+
+    // ...and the listener really is live — otherwise the assertion above would pass for the wrong
+    // reason (nothing installed at all).
+    urlListeners[0]?.({ url: validBootstrapUrl() });
+    await flushMicrotasks();
+    expect(client.connects).toHaveLength(1);
   });
 });

@@ -11,9 +11,11 @@ Use this file when the task is to add Cordierite to a new React Native project.
 3. Register the app tools you want Cordierite to expose (`registerTool` /
    `useCordieriteTool`).
 4. Import `@cordierite/react-native/auto` once near the app's entry point to install the
-   deep-link bootstrap listener automatically. (If you'd rather drive bootstrap
-   yourself — custom deep-link handling, QR scanning, tests — import the side-effect-free
-   root entry instead and call `installCordieriteDeepLinkBootstrap()` when ready.)
+   deep-link bootstrap listener automatically — or `require()` it at the point you want
+   it installed (e.g. behind `__DEV__`). (If you'd rather drive bootstrap yourself —
+   custom deep-link handling, QR scanning, tests — skip that entry, use the
+   side-effect-free root entry, and call `restoreSession()` at startup before your own
+   bootstrap handling so a Metro reload still recovers the session.)
 5. Generate a TLS private key for the daemon. For a new setup, run `cordierite keygen`
    (non-interactive with `--out <path>`; writes `~/.cordierite/key.pem` by default).
 6. Add the matching `sha256/...` SPKI pin to the app configuration, in a `cliPins` array

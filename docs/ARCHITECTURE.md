@@ -306,13 +306,17 @@ Package `@cordierite/react-native`. Entry points:
 
 - `@cordierite/react-native` — **side-effect-free**. Its default API includes
   `registerTool`, `useCordieriteTool`, `postEvent`, `getRegisteredTools`,
-  `installCordieriteDeepLinkBootstrap(options?)`, `addCordieriteListener`,
-  `getCordieriteState`, and `connect`; it also exports `cordieriteClient`, parsing
-  helpers, and types for advanced integrations. TurboModule lookup is lazy (first
-  native call), never at import time.
-- `@cordierite/react-native/auto` — side-effect entry: installs the deep-link bootstrap
-  with defaults and starts native-lease recovery on import (the v1 root-import behavior,
-  now opt-in).
+  `addCordieriteListener`, `getCordieriteState`, `restoreSession`, and `connect`; it
+  also exports `cordieriteClient`, parsing helpers, and types for advanced integrations.
+  It installs nothing. TurboModule lookup is lazy (first native call), never at import
+  time.
+- `@cordierite/react-native/auto` — side-effect entry, and the only entry that installs
+  the deep-link bootstrap and starts native-lease recovery. `require()` it instead of
+  `import`ing to control when that happens (`__DEV__`, a QA-build toggle, after other
+  startup work); installing twice installs once. It takes no options: address policy is
+  native build config (`allowPrivateLanOnly`), read by the deep-link handler from the
+  same `getConstants()` source native `connect()` enforces, so JS can only ever narrow
+  what native allows, never widen it.
 - `@cordierite/react-native/noop` — identical public API, inert implementation.
 - `@cordierite/react-native/metro` — `withCordierite(config, { include })`, the supported way
   to swap the real entries for `/noop` at bundle time. It chains to any existing

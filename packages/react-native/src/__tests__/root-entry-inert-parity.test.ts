@@ -65,7 +65,7 @@ describe("root entry: exact ./noop parity when the native module is unavailable"
     await expect(postEvent("anything", { a: 1 })).resolves.toBeUndefined();
   });
 
-  test("installCordieriteDeepLinkBootstrap is a no-op (no Linking listener installed)", async () => {
+  test("importing ./auto installs no Linking listener in an inert build", async () => {
     let urlListenerCount = 0;
     vi.doMock("react-native", () => ({
       AppState: {
@@ -81,10 +81,10 @@ describe("root entry: exact ./noop parity when the native module is unavailable"
       },
     }));
 
-    const { installCordieriteDeepLinkBootstrap } = await import("../index");
-    expect(() => installCordieriteDeepLinkBootstrap()).not.toThrow();
-    // The real path calls `Linking.addEventListener` as part of installing the bootstrap listener;
-    // the noop path never touches `Linking` at all.
+    // `./auto` is the only install path, and it is gated on native availability exactly like every
+    // other root-entry function: in an inert build it must not touch `Linking` at all, matching
+    // what a `./noop`-swapped `/auto` would do.
+    await expect(import("../auto")).resolves.toBeDefined();
     expect(urlListenerCount).toBe(0);
   });
 

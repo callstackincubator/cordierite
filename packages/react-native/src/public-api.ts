@@ -10,7 +10,6 @@ import type {
   CordieriteToolRegistration,
   CordieriteUnifiedListenerMap,
 } from "./Cordierite.types";
-import type { InstallCordieriteDeepLinkBootstrapOptions } from "./deep-link-install";
 import type { UseCordieriteToolOptions } from "./useCordieriteTool";
 
 export type CordieriteSubscription = { remove(): void };
@@ -40,10 +39,6 @@ export type CordierePublicApi = {
   postEvent(name: string, payload?: unknown): Promise<void>;
 
   getRegisteredTools(): ToolDescriptor[];
-
-  installCordieriteDeepLinkBootstrap(
-    options?: InstallCordieriteDeepLinkBootstrapOptions,
-  ): void;
 
   addCordieriteListener<Kind extends CordieriteListenerKind>(
     kind: Kind,
