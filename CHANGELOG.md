@@ -8,6 +8,33 @@ This file is maintained by hand. There is no automated changelog tooling (see
 `docs/CI.md#release-policy` for why) — update this file as part of the commit that bumps the
 package versions for a release.
 
+## 0.7.0 (2026-08-19)
+
+- **Fix: a terminal daemon rejection (1008) now ends the session instead of retrying until
+  grace.** `onSocketLost` previously treated only close code 1000 as terminal, so an
+  unretryable rejection — `unknown_session` after a daemon restart, `invalid_resume_token`, a
+  session revoked or expired while offline — kept the client in `reconnecting` for up to
+  `grace_s` (600s default) before its `sessionChange: lost` listener ever fired. Every
+  daemon-side rejection of this kind closes with 1008, so 1008 is now terminal wholesale rather
+  than matched by reason string; transport-level closes (1011, 1001, 1006) stay retryable. A
+  failed resume's close code now travels with the rejection via
+  `CordieriteHandshakeClosedError` so it isn't thrown away before reaching `onSocketLost`.
+- **Fix: `restoreSession()` is now a first-class export**, reachable without going through
+  `installCordieriteDeepLinkBootstrap` or the `cordieriteClient` proxy. An app that drives
+  bootstrap itself (custom deep-link routing, QR scanning, a manual `connect()`) had nothing
+  reading the native lease, so every Metro reload dropped a session native could still have
+  resumed. Exported from the root and `./noop` entries and `CordierePublicApi`.
+- **Breaking: `requirePrivateIp` is removed; `/auto` is now the only install path.**
+  `allowPrivateLanOnly` was already native build config
+  (`CordieriteAllowPrivateLanOnly` in Info.plist / the Android manifest) enforced by native
+  `connect()` on both platforms — the JS `requirePrivateIp` option could only narrow what
+  native already allowed, so setting it to `false` without also setting the native key did
+  nothing. The deep-link handler now reads `allowPrivateLanOnly` from the same
+  `getConstants()` path native enforces from, failing closed when it can't be read.
+  `installCordieriteDeepLinkBootstrap` and `InstallCordieriteDeepLinkBootstrapOptions` are gone;
+  `require("@cordierite/react-native/auto")` is the only way to install the bootstrap listener
+  now. See `packages/react-native/README.md` for the current surface.
+
 ## 0.6.0 (2026-08-18)
 
 - **New: tool call cancellation.** A new `tools.cancel` RPC and `tool_cancel` wire frame let a
