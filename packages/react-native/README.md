@@ -119,9 +119,21 @@ import { installCordieriteDeepLinkBootstrap } from "@cordierite/react-native";
 installCordieriteDeepLinkBootstrap();
 ```
 
+If you skip `installCordieriteDeepLinkBootstrap()` entirely and call `connect()` yourself, call `restoreSession()` once at startup before your own bootstrap handling — nothing else reads the native resume lease, so without it every Metro reload drops a session the native side could still have resumed:
+
+```ts
+import { connect, restoreSession } from "@cordierite/react-native";
+
+if (!(await restoreSession())) {
+  await connect(myBootstrapPayload); // only claim a fresh link if there was nothing to restore
+}
+```
+
 **Bootstrap connection and recovery:** installation registers the runtime URL listener immediately, reads the initial launch URL, and attempts native-lease recovery once. The initial URL waits for recovery: a successful restore suppresses the old launch-link claim, while no lease or an unexpected orchestration failure falls back to the normal initial-link flow. Runtime URLs still parse the v2 bootstrap payload and call `connect` when the client is idle. You do not need your own `Linking` handler for the default flow.
 
-The resume lease is native **process-memory only** and is committed before JS receives each successful claim/resume acknowledgement. That supports Metro reloads and JS runtime replacement with the same alias and no new link, provided the native app process stays alive. It is never persisted to disk; after native process death, open a fresh bootstrap link. The grace window starts when the transport suspends/disconnects, not when the acknowledgement was received. Advanced flows can trigger the same recovery explicitly with `cordieriteClient.restoreSession()`.
+The resume lease is native **process-memory only** and is committed before JS receives each successful claim/resume acknowledgement. That supports Metro reloads and JS runtime replacement with the same alias and no new link, provided the native app process stays alive. It is never persisted to disk; after native process death, open a fresh bootstrap link. The grace window starts when the transport suspends/disconnects, not when the acknowledgement was received. Any flow can trigger the same recovery explicitly with the exported `restoreSession()` (or `cordieriteClient.restoreSession()`).
+
+**Reconnect vs. give up:** socket loss inside the grace window auto-reconnects with jittered backoff (0.5 s → 30 s cap), including transport-level closes such as `1011 send_failed` and `1001 daemon_shutdown` — the daemon may well be back before grace expires. A `1008` close is different: it is how the daemon reports a rejection no retry of the same frame can satisfy (`unknown_session` after a daemon restart, `invalid_resume_token`, an expired or revoked session, a malformed frame). Those end the session immediately with a `sessionChange: lost` carrying the daemon's reason, instead of retrying for the rest of the grace window.
 
 **Errors:** use `addCordieriteListener("error", callback)` for bootstrap-parse, connect, socket, and tool-handler failures — one unified channel.
 

@@ -348,13 +348,21 @@ Client behavior:
   which anchors `grace_s`; ack time does not. On socket loss, auto-reconnect with
   exponential backoff (0.5 s → 30 s cap, jitter) while the lease remains within grace,
   and re-send the full registry snapshot after every successful resume. Resume attempts
-  pause in background and restart on foreground.
+  pause in background and restart on foreground. A `1008` close is terminal in both
+  directions — mid-session, and as the rejection of a claim/resume handshake: it is the
+  daemon's "no retry of this frame can succeed" signal (`unknown_session`,
+  `invalid_resume_token`, `link_expired`, …), so the session is lost immediately with the
+  daemon's own reason rather than retried for the remainder of the grace window.
+  Transport-level closes (`1011`, `1001`, `1006`) stay retryable.
 - Installing the bootstrap explicitly or importing `/auto` registers the runtime URL
   listener first, then restores once from the native lease before considering the initial
   launch URL. A successful restore suppresses that initial URL claim; no lease or an
   unexpected orchestration failure falls back to normal initial-link handling. This lets
   a fresh Metro JS runtime resume automatically with the same alias and no new link.
-  Native app process death erases the lease and requires a fresh bootstrap.
+  Native app process death erases the lease and requires a fresh bootstrap. Apps that
+  drive bootstrap themselves and never install the listener must call the exported
+  `restoreSession()` at startup — it is the only other reader of the lease, so skipping it
+  drops a resumable session on every JS runtime replacement.
 - `registerTool({ name, description, inputSchema?, outputSchema?, annotations?, handler })`
   → `{ remove() }`. The disposer removes only its own registration (compare by
   registration identity, not name). Duplicate name registration logs a dev warning and

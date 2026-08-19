@@ -595,6 +595,112 @@ describe("createCordieriteClient: resume after socket loss", () => {
     expect(storedLease).toBeNull();
   });
 
+  test("a 1008 rejection of the resume itself ends the session instead of retrying until grace", async () => {
+    const nativeModule = createMockModule();
+    const timers = createFakeTimers({ randomValues: [0, 0] });
+    let storedLease: unknown = validResumeLease();
+    const client = createCordieriteClient(nativeModule, {
+      timers,
+      resumeLeaseStore: {
+        get: () => storedLease,
+        clear: () => {
+          storedLease = null;
+        },
+      },
+    });
+
+    const connectPromise = client.connect(validBootstrap());
+    fireMessage(nativeModule, buildAck());
+    await connectPromise;
+
+    const sessionEvents: CordieriteSessionChangeEvent[] = [];
+    client.addCordieriteListener("sessionChange", (e) => sessionEvents.push(e));
+
+    // Transport-level loss: retryable, so the backoff loop starts as usual.
+    fireClose(nativeModule, { code: 1006, reason: "abnormal closure" });
+    expect(client.getClientState()).toBe("reconnecting");
+
+    // The retry goes out, and *this* time the daemon rejects the resume itself — the shape of a
+    // daemon restart (sessions are in-memory only), or a session revoked/expired while offline.
+    // The close settles the in-flight handshake, so it never reaches `onSocketLost`.
+    timers.advance(1);
+    expect(nativeModule.connectCalls).toHaveLength(2);
+    fireClose(nativeModule, { code: 1008, reason: "unknown_session" });
+    await flushMicrotasks();
+
+    expect(client.getClientState()).toBe("closed");
+    expect(sessionEvents).toEqual([
+      {
+        type: "lost",
+        sessionId: "session-123",
+        alias: "device-1",
+        reason: "unknown_session",
+      },
+    ]);
+    // No further retry is scheduled, and the unusable lease is gone.
+    expect(timers.pendingCount()).toBe(0);
+    expect(storedLease).toBeNull();
+
+    timers.advance(60_000);
+    expect(nativeModule.connectCalls).toHaveLength(2);
+  });
+
+  test("a 1008 close mid-session ends it immediately (no reconnect loop)", async () => {
+    const nativeModule = createMockModule();
+    const timers = createFakeTimers();
+    const client = createCordieriteClient(nativeModule, { timers });
+
+    const connectPromise = client.connect(validBootstrap());
+    fireMessage(nativeModule, buildAck());
+    await connectPromise;
+
+    const sessionEvents: CordieriteSessionChangeEvent[] = [];
+    const errorEvents: CordieriteUnifiedErrorEvent[] = [];
+    client.addCordieriteListener("sessionChange", (e) => sessionEvents.push(e));
+    client.addCordieriteListener("error", (e) => errorEvents.push(e));
+
+    fireClose(nativeModule, { code: 1008, reason: "invalid_message" });
+
+    expect(client.getClientState()).toBe("closed");
+    expect(sessionEvents).toEqual([
+      {
+        type: "lost",
+        sessionId: "session-123",
+        alias: "device-1",
+        reason: "invalid_message",
+      },
+    ]);
+    // The rejection still reaches the unified error channel before the session is finalized.
+    expect(errorEvents).toHaveLength(1);
+    expect(errorEvents[0]?.closeReason).toBe("invalid_message");
+    expect(timers.pendingCount()).toBe(0);
+  });
+
+  test("1011 and 1001 stay retryable: only 1008 is treated as terminal", async () => {
+    const nativeModule = createMockModule();
+    const timers = createFakeTimers({ randomValues: [0, 0] });
+    const client = createCordieriteClient(nativeModule, { timers });
+
+    const connectPromise = client.connect(validBootstrap());
+    fireMessage(nativeModule, buildAck());
+    await connectPromise;
+
+    // `send_failed` — a transport hiccup, not a rejection of the session.
+    fireClose(nativeModule, { code: 1011, reason: "send_failed" });
+    expect(client.getClientState()).toBe("reconnecting");
+
+    timers.advance(1);
+    expect(nativeModule.connectCalls).toHaveLength(2);
+
+    // `daemon_shutdown` — the daemon may well come back inside the grace window.
+    fireClose(nativeModule, { code: 1001, reason: "daemon_shutdown" });
+    await flushMicrotasks();
+    expect(client.getClientState()).toBe("reconnecting");
+
+    timers.advance(1);
+    expect(nativeModule.connectCalls).toHaveLength(3);
+  });
+
   test("a fresh connect() supersedes and stops any in-flight reconnect loop", async () => {
     const nativeModule = createMockModule();
     const timers = createFakeTimers({ randomValues: [0] });

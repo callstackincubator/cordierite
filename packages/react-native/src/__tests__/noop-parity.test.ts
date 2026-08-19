@@ -39,6 +39,7 @@ describe("noop parity: type-level (see also public-api.ts's doc comment)", () =>
       "getRegisteredTools",
       "installCordieriteDeepLinkBootstrap",
       "addCordieriteListener",
+      "restoreSession",
       "getCordieriteState",
       "connect",
       "getCordieriteBuildConfig",
@@ -113,6 +114,11 @@ describe("noop entry: runtime no-op behavior", () => {
     });
 
     expect(getRegisteredTools()).toEqual([]);
+  });
+
+  test("restoreSession() always resolves false (no native lease exists)", async () => {
+    const { restoreSession } = await import("../noop");
+    await expect(restoreSession()).resolves.toBe(false);
   });
 
   test('getCordieriteState() always returns "idle"', async () => {
