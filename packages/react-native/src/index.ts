@@ -184,6 +184,28 @@ export function addCordieriteListener<Kind extends CordieriteListenerKind>(
   );
 }
 
+/**
+ * Recovers the session held in the native process-memory lease, on the default client. Resolves
+ * `true` once a resume attempt has started (not once the daemon has acknowledged it), `false` when
+ * there is no valid, unexpired lease to restore or this client is already connecting/active.
+ *
+ * `installCordieriteDeepLinkBootstrap` (and the `./auto` entry) already calls this at startup, so
+ * apps using it need nothing more. Call this explicitly if you handle bootstrap links yourself —
+ * custom deep-link routing, QR scanning, a manual `connect()` — because otherwise **nothing** reads
+ * the lease, and every Metro reload silently drops a session the native side could still have
+ * resumed. Call it once at startup, before your own bootstrap handling: a successful restore means
+ * you should skip claiming a fresh link.
+ *
+ * Only a JS runtime replacement is recoverable this way; the lease is process memory and never
+ * touches disk, so native process death still requires a fresh bootstrap link.
+ */
+export function restoreSession(): Promise<boolean> {
+  return noopIfNativeUnavailable(
+    () => cordieriteClient.restoreSession(),
+    () => noop.restoreSession(),
+  );
+}
+
 /** Unified client state on the default client: `idle | connecting | active | reconnecting | closed`. */
 export function getCordieriteState(): CordieriteClientState {
   return noopIfNativeUnavailable(

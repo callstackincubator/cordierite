@@ -35,6 +35,12 @@ import { createUnifiedListenerBus } from "./listeners";
 import { createToolRegistry, type RegistryDelta } from "./registry";
 import { isResumeLeaseExpired, parseResumeLease } from "./resume-lease";
 import {
+  CordieriteHandshakeClosedError,
+  isTerminalCloseEvent,
+  isTerminalHandshakeRejection,
+  terminalCloseReason,
+} from "./terminal-close";
+import {
   systemClientTimers,
   type ClientTimerHandle,
   type ClientTimers,
@@ -352,6 +358,14 @@ export const createCordieriteClient = (
         message: "Cordierite resume attempt failed.",
         cause: error,
       });
+      if (isTerminalHandshakeRejection(error)) {
+        // The daemon rejected the resume itself (`unknown_session` after a daemon restart, an
+        // expired/revoked session, `invalid_resume_token`). Retrying the identical frame until the
+        // grace window runs out would leave the app in `reconnecting` for up to `grace_s` — minutes
+        // — before it ever hears `sessionChange: lost`. Finalize now instead.
+        finalizeSessionLost(terminalCloseReason(error.closeEvent));
+        return;
+      }
       scheduleReconnectAttempt(myEpoch);
       return;
     }
@@ -400,6 +414,13 @@ export const createCordieriteClient = (
       hint: lastError?.hint,
     });
 
+    if (isTerminalCloseEvent(event)) {
+      // A policy-violation close mid-session (e.g. the daemon rejected a frame we sent) is as
+      // unresumable as one during the handshake — see `attemptResume`'s matching branch.
+      finalizeSessionLost(terminalCloseReason(event));
+      return;
+    }
+
     const now = timers.now();
     const disconnectedAtMs = heldSession.disconnectedAtMs ?? now;
     heldSession.disconnectedAtMs = disconnectedAtMs;
@@ -444,11 +465,17 @@ export const createCordieriteClient = (
     const errorEvent = lastErrorEvent;
     lastErrorEvent = null;
 
+    // A close that lands while a claim/resume is in flight settles *that attempt* and stops here —
+    // `onSocketLost` never sees it. So the close event travels with the rejection, letting
+    // `attemptResume` tell a terminal daemon rejection apart from a retryable transport failure.
     if (
       settlePendingAttempt({
         ok: false,
-        error: new Error(
-          event.reason ?? errorEvent?.message ?? "Cordierite connection closed."
+        error: new CordieriteHandshakeClosedError(
+          event.reason ??
+            errorEvent?.message ??
+            "Cordierite connection closed.",
+          event
         ),
       })
     ) {

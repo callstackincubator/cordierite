@@ -70,6 +70,11 @@ export function addCordieriteListener<Kind extends CordieriteListenerKind>(
   return noopSubscription;
 }
 
+/** Always `false`: this build has no native module, so there is no resume lease to recover. */
+export function restoreSession(): Promise<boolean> {
+  return Promise.resolve(false);
+}
+
 /** Always `"idle"`. */
 export function getCordieriteState(): CordieriteClientState {
   return "idle";

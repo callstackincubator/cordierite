@@ -50,6 +50,8 @@ export type CordierePublicApi = {
     callback: CordieriteUnifiedListenerMap[Kind],
   ): CordieriteSubscription;
 
+  restoreSession(): Promise<boolean>;
+
   getCordieriteState(): CordieriteClientState;
 
   connect(input: CordieriteConnectInput): Promise<void>;

@@ -129,6 +129,13 @@ public final class CordieriteTurboBridge: NSObject, @unchecked Sendable {
   /// TurboModule invalidation entry point (see `RCTNativeCordierite.invalidate`). Cancels the
   /// socket, invalidates the URLSession, and drops event callbacks so a Metro reload fully
   /// releases the transport instead of leaving a wedged "connecting or active" state.
+  ///
+  /// The `Task` makes this asynchronous, so on a fast reload the replacement manager can resume
+  /// before this body runs — deliberately safe, not a race to fix: the lease store's owner
+  /// generation makes the stale `markDisconnected` a no-op once the replacement's ack has landed
+  /// (`CordieriteProcessResumeLeaseStore.markDisconnected`), and a daemon that briefly sees both
+  /// sockets adopts the new one and closes the old with `1000 session_replaced` (the daemon's
+  /// `handleResume`).
   @objc public func invalidate() {
     Task {
       await self.manager.invalidate()
