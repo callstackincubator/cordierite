@@ -37,7 +37,11 @@ export function hasCordieriteBootstrapQuery(
 
 export type HandleCordieriteDeepLinkOptions = {
   now?: number;
-  /** Reject bootstrap payloads whose address is not a private/loopback range. Default `true`. */
+  /**
+   * Reject bootstrap payloads whose address is not a private/loopback range. Defaults to `true`
+   * (fail-closed). Not an app-facing knob: `deep-link-install.ts` supplies it from the native
+   * `allowPrivateLanOnly` build config, the same value native `connect()` enforces.
+   */
   requirePrivateIp?: boolean;
 };
 

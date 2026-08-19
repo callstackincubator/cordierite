@@ -8,7 +8,7 @@ import { StatusBar } from "expo-status-bar";
 import "react-native-reanimated";
 // Side-effect entry (ARCHITECTURE.md §11): installs the default deep-link bootstrap listener on
 // import, so opening the host's bootstrap link (QR / `cordierite link --open`) is enough to start
-// a session -- no manual `installCordieriteDeepLinkBootstrap()` call needed in this app.
+// a session. `require("@cordierite/react-native/auto")` would install it lazily instead.
 import "@cordierite/react-native/auto";
 
 import { Colors } from "@/constants/theme";

@@ -101,8 +101,8 @@ The package has three entries:
 
 | Entry | Behavior |
 | --- | --- |
-| `@cordierite/react-native` | Side-effect-free. Exports `registerTool`, `useCordieriteTool`, `postEvent`, `installCordieriteDeepLinkBootstrap`, `addCordieriteListener`, `getCordieriteState`, `connect`, and types. The native module is looked up **lazily**, on the first actual native call — importing it (even in Expo Go or a misconfigured build) never crashes; only calling a native-requiring function like `connect()` without native support does, with an actionable error. |
-| `@cordierite/react-native/auto` | Same exports, plus a side effect: installs the default deep-link bootstrap listener and starts recovery from the native process lease on import (the old v1 root-import behavior, now opt-in). |
+| `@cordierite/react-native` | Side-effect-free. Exports `registerTool`, `useCordieriteTool`, `postEvent`, `addCordieriteListener`, `getCordieriteState`, `restoreSession`, `connect`, and types. The native module is looked up **lazily**, on the first actual native call — importing it (even in Expo Go or a misconfigured build) never crashes; only calling a native-requiring function like `connect()` without native support does, with an actionable error. |
+| `@cordierite/react-native/auto` | Same exports, plus a side effect: installs the deep-link bootstrap listener and starts recovery from the native process lease on import. This is the only entry that installs anything. |
 | `@cordierite/react-native/noop` | Same public API, fully inert — for compiling Cordierite out of release builds (see below). |
 
 Most apps just want the deep-link listener installed automatically, so import the side-effect entry once near your app's entry point:
@@ -111,21 +111,23 @@ Most apps just want the deep-link listener installed automatically, so import th
 import "@cordierite/react-native/auto";
 ```
 
-If you'd rather drive bootstrap yourself (custom deep-link handling, QR scanning, tests), import from the root entry and call `installCordieriteDeepLinkBootstrap()` (or `connect()` directly) when you're ready:
+To control *when* that happens — only in `__DEV__`, behind a QA-build toggle, or after other startup work — `require()` the same entry at that point instead. Metro resolves it lazily, and importing it more than once installs once:
 
 ```ts
-import { installCordieriteDeepLinkBootstrap } from "@cordierite/react-native";
-
-installCordieriteDeepLinkBootstrap();
+if (__DEV__) {
+  require("@cordierite/react-native/auto");
+}
 ```
 
-If you skip `installCordieriteDeepLinkBootstrap()` entirely and call `connect()` yourself, call `restoreSession()` once at startup before your own bootstrap handling — nothing else reads the native resume lease, so without it every Metro reload drops a session the native side could still have resumed:
+There is nothing to configure here: which addresses a bootstrap link may point at is native build config (`allowPrivateLanOnly`, configured through the Expo plugin / `CordieriteAllowPrivateLanOnly` above), enforced by native `connect()` and read from the same place by the deep-link handler.
+
+If you drive bootstrap entirely yourself (custom deep-link routing, QR scanning, tests) and never import `/auto`, call `restoreSession()` once at startup before your own bootstrap handling — it is then the only thing reading the native resume lease, and without it every Metro reload drops a session the native side could still have resumed:
 
 ```ts
-import { connect, restoreSession } from "@cordierite/react-native";
+import { connect, parseBootstrapUrl, restoreSession } from "@cordierite/react-native";
 
 if (!(await restoreSession())) {
-  await connect(myBootstrapPayload); // only claim a fresh link if there was nothing to restore
+  await connect(parseBootstrapUrl(url)); // only claim a fresh link if there was nothing to restore
 }
 ```
 
