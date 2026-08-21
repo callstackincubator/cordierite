@@ -38,8 +38,8 @@ export const handleLinkCommand = async (
     openTarget = options.open;
   }
 
-  if (options.device !== undefined && openTarget !== "android") {
-    throw usageError('"--device" only applies with "--open android".');
+  if (options.device !== undefined && openTarget === undefined) {
+    throw usageError('"--device" only applies with "--open".');
   }
 
   const result = await mintLink({

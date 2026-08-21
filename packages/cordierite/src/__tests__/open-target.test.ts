@@ -5,16 +5,30 @@
 
 import { describe, expect, test } from "vitest";
 
-import { deliverToOpenTarget, isOpenTarget, type ExecFn } from "../cli/open-target.js";
+import {
+  deliverToOpenTarget,
+  detectBootedTargets,
+  isOpenTarget,
+  type ExecFn,
+} from "../cli/open-target.js";
 
 const DEEP_LINK = "playground:///?cordierite=abc123";
 
 const bootedSimJson = JSON.stringify({
-  devices: { "iOS 17.0": [{ state: "Booted", udid: "AAAA" }] },
+  devices: { "iOS 17.0": [{ state: "Booted", udid: "AAAA", name: "iPhone 15" }] },
 });
 
 const noBootedSimJson = JSON.stringify({
-  devices: { "iOS 17.0": [{ state: "Shutdown", udid: "AAAA" }] },
+  devices: { "iOS 17.0": [{ state: "Shutdown", udid: "AAAA", name: "iPhone 15" }] },
+});
+
+const twoBootedSimsJson = JSON.stringify({
+  devices: {
+    "iOS 17.0": [
+      { state: "Booted", udid: "AAAA", name: "iPhone 15" },
+      { state: "Booted", udid: "BBBB", name: "iPad Pro" },
+    ],
+  },
 });
 
 describe("isOpenTarget", () => {
@@ -38,7 +52,7 @@ describe("deliverToOpenTarget: ios-sim", () => {
 
     expect(calls).toEqual([
       { command: "xcrun", args: ["simctl", "list", "devices", "booted", "--json"] },
-      { command: "xcrun", args: ["simctl", "openurl", "booted", DEEP_LINK] },
+      { command: "xcrun", args: ["simctl", "openurl", "AAAA", DEEP_LINK] },
     ]);
   });
 
@@ -82,6 +96,40 @@ describe("deliverToOpenTarget: ios-sim", () => {
     await expect(
       deliverToOpenTarget({ target: "ios-sim", deepLink: DEEP_LINK, wssPort: 8443, exec: flakyExec }),
     ).rejects.toThrow(/simulator busy/u);
+  });
+
+  test("multiple booted simulators without --device: ambiguous, error names both", async () => {
+    const calls: string[] = [];
+    const exec: ExecFn = async (command, args) => {
+      calls.push(`${command} ${args.join(" ")}`);
+      return { stdout: twoBootedSimsJson, stderr: "" };
+    };
+
+    // Delivering to simctl's `booted` alias here would silently pick one of the two, and the
+    // session would never be claimed — indistinguishable from a hung wait.
+    await expect(
+      deliverToOpenTarget({ target: "ios-sim", deepLink: DEEP_LINK, wssPort: 8443, exec }),
+    ).rejects.toThrow(/iPhone 15 \(AAAA\).*iPad Pro \(BBBB\)/su);
+
+    expect(calls).toHaveLength(1);
+  });
+
+  test("--device passthrough: openurl targets the udid directly, no preflight", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec: ExecFn = async (command, args) => {
+      calls.push({ command, args });
+      return { stdout: "", stderr: "" };
+    };
+
+    await deliverToOpenTarget({
+      target: "ios-sim",
+      deepLink: DEEP_LINK,
+      wssPort: 8443,
+      device: "BBBB",
+      exec,
+    });
+
+    expect(calls).toEqual([{ command: "xcrun", args: ["simctl", "openurl", "BBBB", DEEP_LINK] }]);
   });
 });
 
@@ -202,5 +250,89 @@ describe("deliverToOpenTarget: android", () => {
     await expect(
       deliverToOpenTarget({ target: "android", deepLink: DEEP_LINK, wssPort: 8443, exec, env: {} }),
     ).rejects.toThrow(/"adb" was not found on PATH/u);
+  });
+});
+
+describe("detectBootedTargets", () => {
+  const oneAndroid = "List of devices attached\nemulator-5554\tdevice\n\n";
+  const noAndroid = "List of devices attached\n\n";
+
+  const execFor = (simStdout: string, adbStdout: string): ExecFn => {
+    return async (command) => {
+      if (command === "xcrun") {
+        return { stdout: simStdout, stderr: "" };
+      }
+      return { stdout: adbStdout, stderr: "" };
+    };
+  };
+
+  test("exactly one booted simulator: resolves it concretely, by udid", async () => {
+    const detection = await detectBootedTargets({ exec: execFor(bootedSimJson, noAndroid), env: {} });
+
+    expect(detection).toEqual({
+      kind: "single",
+      detected: { target: "ios-sim", device: "AAAA", label: "iPhone 15 (AAAA)" },
+    });
+  });
+
+  test("exactly one attached android device: resolves it by serial", async () => {
+    const detection = await detectBootedTargets({ exec: execFor(noBootedSimJson, oneAndroid), env: {} });
+
+    expect(detection).toEqual({
+      kind: "single",
+      detected: { target: "android", device: "emulator-5554", label: "emulator-5554" },
+    });
+  });
+
+  test("nothing booted or attached: none", async () => {
+    const detection = await detectBootedTargets({ exec: execFor(noBootedSimJson, noAndroid), env: {} });
+
+    expect(detection).toEqual({ kind: "none" });
+  });
+
+  test("a simulator and an emulator both up: ambiguous, listing both", async () => {
+    const detection = await detectBootedTargets({ exec: execFor(bootedSimJson, oneAndroid), env: {} });
+
+    expect(detection.kind).toBe("ambiguous");
+    expect(detection.kind === "ambiguous" && detection.candidates.map((c) => c.target)).toEqual([
+      "ios-sim",
+      "android",
+    ]);
+  });
+
+  test("two booted simulators: ambiguous rather than an arbitrary pick", async () => {
+    const detection = await detectBootedTargets({ exec: execFor(twoBootedSimsJson, noAndroid), env: {} });
+
+    expect(detection.kind).toBe("ambiguous");
+    expect(detection.kind === "ambiguous" && detection.candidates.map((c) => c.device)).toEqual([
+      "AAAA",
+      "BBBB",
+    ]);
+  });
+
+  test("ANDROID_SERIAL narrows the android side to that serial without listing", async () => {
+    const commands: string[] = [];
+    const exec: ExecFn = async (command) => {
+      commands.push(command);
+      return { stdout: command === "xcrun" ? noBootedSimJson : oneAndroid, stderr: "" };
+    };
+
+    const detection = await detectBootedTargets({ exec, env: { ANDROID_SERIAL: "ZY3239" } });
+
+    expect(detection).toEqual({
+      kind: "single",
+      detected: { target: "android", device: "ZY3239", label: "ZY3239" },
+    });
+    expect(commands).not.toContain("adb");
+  });
+
+  test("missing tooling is not an error: a machine with no xcrun/adb detects nothing", async () => {
+    const exec: ExecFn = async (command) => {
+      throw Object.assign(new Error(`spawn ${command} ENOENT`), { code: "ENOENT" });
+    };
+
+    // Detection runs when no target was named, so a missing toolchain has to degrade to the QR
+    // fallback rather than failing the whole cordierite_connect call.
+    await expect(detectBootedTargets({ exec, env: {} })).resolves.toEqual({ kind: "none" });
   });
 });

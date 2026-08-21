@@ -31,6 +31,7 @@ import { decodeBootstrap } from "@cordierite/shared";
 
 import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { createMcpServer, type McpServerHandle } from "../mcp/server.js";
+import type { ExecFn } from "../cli/open-target.js";
 import { writeTestHostKey } from "./fixtures.js";
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -225,8 +226,26 @@ const withoutBuiltinTools = <T extends { name: string }>(tools: T[]): T[] => {
   return tools.filter((tool) => !BUILTIN_TOOL_NAMES.has(tool.name));
 };
 
-const createMcpHandle = async (stateDir: string): Promise<McpServerHandle> => {
-  const handle = await createMcpServer({ stateDir, spawn: failIfCalled, scheme: "cordierite" });
+/** `xcrun`/`adb` stub reporting an empty machine. `cordierite_connect` auto-detects a delivery
+ * target when none is given, so without an injected `exec` these tests would shell out to the real
+ * toolchain and behave differently depending on whether the developer running them happens to have
+ * a simulator booted. Tests that want a device inject their own. */
+const noDevicesExec: ExecFn = async (command) => {
+  if (command === "xcrun") {
+    return { stdout: JSON.stringify({ devices: {} }), stderr: "" };
+  }
+
+  return { stdout: "List of devices attached\n\n", stderr: "" };
+};
+
+const createMcpHandle = async (stateDir: string, exec: ExecFn = noDevicesExec): Promise<McpServerHandle> => {
+  const handle = await createMcpServer({
+    stateDir,
+    spawn: failIfCalled,
+    scheme: "cordierite",
+    exec,
+    env: {},
+  });
   mcpHandles.push(handle);
   return handle;
 };
@@ -552,7 +571,7 @@ describe("mcp: namespacing and list_changed", () => {
 });
 
 describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
-  test("cordierite_connect (no target) returns a decodable deep link and a QR", async () => {
+  test("no target and no device available: falls back to a QR, with instructions to show it", async () => {
     const { stateDir } = await startTestDaemon();
     const handle = await createMcpHandle(stateDir);
     const client = await connectInMemoryClient(handle);
@@ -563,14 +582,154 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     );
 
     expect(result.isError).not.toBe(true);
-    const data = result.structuredContent as { sessionId: string; deepLink: string; qr: string };
+    const data = result.structuredContent as {
+      sessionId: string;
+      deepLink: string;
+      qr: string;
+      note: string;
+      instructions: string;
+      delivered?: true;
+    };
     expect(data.sessionId).toBeTruthy();
     expect(data.qr.length).toBeGreaterThan(0);
+    expect(data.delivered).toBeUndefined();
+    expect(data.note).toMatch(/no booted iOS simulator or attached Android device/iu);
+    // The agent has to be told to render the QR and ask, or it goes straight to a silent wait.
+    expect(data.instructions).toMatch(/show the user the "qr" field/iu);
+    expect(data.instructions).toMatch(/cordierite_wait_for_session/u);
 
     const payload = data.deepLink.split("cordierite=")[1]!;
     const decoded = decodeBootstrap(payload);
     expect(decoded).not.toBeNull();
     expect(decoded!.sessionId).toBe(data.sessionId);
+  });
+
+  test("no target but one booted simulator: delivers to it instead of returning a QR", async () => {
+    const { stateDir } = await startTestDaemon();
+
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec: ExecFn = async (command, args) => {
+      calls.push({ command, args });
+
+      if (command === "xcrun" && args.includes("--json")) {
+        return {
+          stdout: JSON.stringify({
+            devices: { "iOS 17.0": [{ state: "Booted", udid: "SIM-1", name: "iPhone 15" }] },
+          }),
+          stderr: "",
+        };
+      }
+
+      return { stdout: "List of devices attached\n\n", stderr: "" };
+    };
+
+    const handle = await createMcpHandle(stateDir, exec);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: {} } },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).not.toBe(true);
+    const data = result.structuredContent as {
+      delivered?: true;
+      autoDetected?: true;
+      target?: string;
+      device?: string;
+      qr?: string;
+      note?: string;
+    };
+
+    expect(data.delivered).toBe(true);
+    expect(data.autoDetected).toBe(true);
+    expect(data.target).toBe("ios-sim");
+    expect(data.device).toBe("SIM-1");
+    // No QR at all on the delivered path: there is nothing for a human to do.
+    expect(data.qr).toBeUndefined();
+    expect(data.note).toMatch(/iPhone 15 \(SIM-1\)/u);
+
+    expect(calls.some((call) => call.args.includes("openurl") && call.args.includes("SIM-1"))).toBe(true);
+  });
+
+  test('target "none" forces the QR path even with a device booted', async () => {
+    const { stateDir } = await startTestDaemon();
+
+    const calls: string[] = [];
+    const exec: ExecFn = async (command, args) => {
+      calls.push(`${command} ${args.join(" ")}`);
+      return {
+        stdout: JSON.stringify({
+          devices: { "iOS 17.0": [{ state: "Booted", udid: "SIM-1", name: "iPhone 15" }] },
+        }),
+        stderr: "",
+      };
+    };
+
+    const handle = await createMcpHandle(stateDir, exec);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { target: "none" } } },
+      CallToolResultSchema,
+    );
+
+    const data = result.structuredContent as { qr?: string; delivered?: true; note?: string };
+    expect(data.delivered).toBeUndefined();
+    expect(data.qr!.length).toBeGreaterThan(0);
+    expect(data.note).toMatch(/target: "none"/u);
+    // An explicit opt-out should not even look for devices.
+    expect(calls).toEqual([]);
+  });
+
+  test("no target and several devices: no arbitrary pick, the note names every candidate", async () => {
+    const { stateDir } = await startTestDaemon();
+
+    const exec: ExecFn = async (command) => {
+      if (command === "xcrun") {
+        return {
+          stdout: JSON.stringify({
+            devices: {
+              "iOS 17.0": [
+                { state: "Booted", udid: "SIM-1", name: "iPhone 15" },
+                { state: "Booted", udid: "SIM-2", name: "iPad Pro" },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      }
+
+      return { stdout: "List of devices attached\n\n", stderr: "" };
+    };
+
+    const handle = await createMcpHandle(stateDir, exec);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: {} } },
+      CallToolResultSchema,
+    );
+
+    const data = result.structuredContent as { qr?: string; delivered?: true; note?: string };
+    expect(data.delivered).toBeUndefined();
+    expect(data.qr!.length).toBeGreaterThan(0);
+    expect(data.note).toMatch(/SIM-1/u);
+    expect(data.note).toMatch(/SIM-2/u);
+  });
+
+  test('"device" without an explicit target is rejected rather than guessed at', async () => {
+    const { stateDir } = await startTestDaemon();
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { device: "SIM-1" } } },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(/device.{0,4} requires an explicit/u);
   });
 
   test("cordierite_wait_for_session resolves once a fake client claims the minted session", async () => {
@@ -614,6 +773,110 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     expect(data.alias.length).toBeGreaterThan(0);
 
     socket.close();
+  }, 10_000);
+
+  test("auto-detected delivery that fails falls back to a QR instead of erroring the call", async () => {
+    const { stateDir } = await startTestDaemon();
+
+    // One booted simulator, but `openurl` fails on it — the app simply isn't installed there.
+    // Nobody asked for this device, so this must not become the caller's error.
+    const exec: ExecFn = async (command, args) => {
+      if (command === "xcrun" && args.includes("--json")) {
+        return {
+          stdout: JSON.stringify({
+            devices: { "iOS 17.0": [{ state: "Booted", udid: "SIM-1", name: "iPhone 15" }] },
+          }),
+          stderr: "",
+        };
+      }
+
+      if (args.includes("openurl")) {
+        throw Object.assign(new Error("Command failed"), { stderr: "no matching URL scheme" });
+      }
+
+      return { stdout: "List of devices attached\n\n", stderr: "" };
+    };
+
+    const handle = await createMcpHandle(stateDir, exec);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: {} } },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).not.toBe(true);
+    const data = result.structuredContent as {
+      qr?: string;
+      delivered?: true;
+      note?: string;
+      instructions?: string;
+      deepLink: string;
+    };
+
+    expect(data.delivered).toBeUndefined();
+    expect(data.qr!.length).toBeGreaterThan(0);
+    expect(data.instructions).toBeTruthy();
+    expect(data.note).toMatch(/no matching URL scheme/u);
+    expect(data.note).toMatch(/falling back to a QR/iu);
+
+    // The fallback link has to be a fresh mint: the first one was minted for 127.0.0.1 on the
+    // assumption it was going to a local simulator, which is the wrong address for a scanner.
+    expect(decodeBootstrap(data.deepLink.split("cordierite=")[1]!)).not.toBeNull();
+  });
+
+  test("cordierite_wait_for_session returns immediately for a session claimed before it was called", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    // The claim is already in the past, so no `session_claimed` event will ever arrive on a
+    // subscription opened now — only the catch-up describe can resolve this.
+    const result = await client.request(
+      {
+        method: "tools/call",
+        params: { name: "cordierite_wait_for_session", arguments: { sessionId: app.sessionId, timeoutMs: 5000 } },
+      },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).not.toBe(true);
+    const data = result.structuredContent as { sessionId: string; claimed: true; alias: string };
+    expect(data.sessionId).toBe(app.sessionId);
+    expect(data.claimed).toBe(true);
+    expect(data.alias).toBe(app.alias);
+
+    app.socket.close();
+  }, 10_000);
+
+  test("cordierite_wait_for_session reports a daemon that goes away instead of waiting out its timeout", async () => {
+    const { daemon, stateDir } = await startTestDaemon();
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const connectResult = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { target: "none" } } },
+      CallToolResultSchema,
+    );
+    const { sessionId } = connectResult.structuredContent as { sessionId: string };
+
+    // A generous timeout: the point is that the call comes back on the connection dropping, not on
+    // the clock. Without an onClose handler this sits silently for the full 30s.
+    const waitPromise = client.request(
+      {
+        method: "tools/call",
+        params: { name: "cordierite_wait_for_session", arguments: { sessionId, timeoutMs: 30_000 } },
+      },
+      CallToolResultSchema,
+    );
+
+    await daemon.shutdown();
+
+    const waitResult = await waitPromise;
+    expect(waitResult.isError).toBe(true);
+    expect(JSON.stringify(waitResult.content)).toMatch(/closed while waiting/u);
   }, 10_000);
 });
 

@@ -36,7 +36,8 @@ export type MintLinkOptions = {
   /** Delivers the link directly to a booted Android emulator/device or iOS simulator instead of
    * leaving delivery to the caller. */
   target?: OpenTarget;
-  /** Only valid with `target: "android"`. */
+  /** An adb device serial (`target: "android"`) or a simulator udid (`target: "ios-sim"`).
+   * Only meaningful alongside a target. */
   device?: string;
   /** Overrides `config.json`'s `scheme`. */
   scheme?: string;
@@ -63,8 +64,8 @@ export const mintLink = async (options: MintLinkOptions): Promise<MintLinkResult
     throw usageError(`"target" must be "android" or "ios-sim" (got "${options.target}").`);
   }
 
-  if (options.device !== undefined && options.target !== "android") {
-    throw usageError('"device" only applies with target "android".');
+  if (options.device !== undefined && options.target === undefined) {
+    throw usageError('"device" only applies alongside a target.');
   }
 
   const paths = getStateDirPaths(options.stateDir);
