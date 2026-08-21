@@ -876,7 +876,11 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
 
     const waitResult = await waitPromise;
     expect(waitResult.isError).toBe(true);
+    // One message regardless of which route reports the loss — `onClose`, or an in-flight call
+    // rejecting with a raw socket error. Linux tends to reset where macOS closes cleanly, and the
+    // caller should not have to tell those apart.
     expect(JSON.stringify(waitResult.content)).toMatch(/closed while waiting/u);
+    expect(JSON.stringify(waitResult.content)).not.toMatch(/ECONNRESET|EPIPE/u);
   }, 10_000);
 });
 

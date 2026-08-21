@@ -27,7 +27,12 @@ import {
   type OpenTarget,
 } from "../cli/open-target.js";
 import { renderQrToTerminal } from "../qr-terminal.js";
-import { openDaemonStream, DaemonRpcError, type SpawnFn } from "../rpc/client.js";
+import {
+  openDaemonStream,
+  DaemonRpcError,
+  isDaemonUnreachableError,
+  type SpawnFn,
+} from "../rpc/client.js";
 import type { DaemonCall } from "./daemon-tools.js";
 
 export const CONNECT_TOOL_NAME = "cordierite_connect";
@@ -343,6 +348,21 @@ export const handleConnectTool = async (
   };
 };
 
+/** Socket-level failures that mean the daemon went away mid-wait. `isDaemonUnreachableError`
+ * covers the "never got there" cases (`ENOENT`/`ECONNREFUSED`) and a timed-out request; these are
+ * the "was there, then wasn't" ones, which surface raw from a call that was already in flight. */
+const CONNECTION_LOST_CODES: ReadonlySet<string> = new Set(["ECONNRESET", "EPIPE"]);
+
+const isConnectionLost = (error: unknown): boolean => {
+  if (isDaemonUnreachableError(error)) {
+    return true;
+  }
+
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+
+  return typeof code === "string" && CONNECTION_LOST_CODES.has(code);
+};
+
 export type WaitForSessionToolDeps = {
   stateDir: string;
   spawn?: SpawnFn;
@@ -396,17 +416,16 @@ export const handleWaitForSessionTool = async (
         );
       }, timeoutMs);
 
+      const connectionLost = (): McpBuiltinToolError =>
+        new McpBuiltinToolError(
+          "tool_execution_error",
+          `The connection to the Cordierite daemon closed while waiting for session "${sessionId}".`,
+        );
+
       // A daemon that goes away mid-wait must not read as "still waiting" for the rest of the
       // timeout — the caller has to know the connection is gone, not sit in silence.
       const unsubscribeClose = stream.onClose(() => {
-        settle(() =>
-          reject(
-            new McpBuiltinToolError(
-              "tool_execution_error",
-              `The connection to the Cordierite daemon closed while waiting for session "${sessionId}".`,
-            ),
-          ),
-        );
+        settle(() => reject(connectionLost()));
       });
 
       // Registered *before* `events.subscribe` is sent (not after awaiting it) — a
@@ -446,7 +465,12 @@ export const handleWaitForSessionTool = async (
             return;
           }
 
-          settle(() => reject(error));
+          // A daemon dying mid-wait races two routes to get here: `onClose` above, or whichever
+          // call was in flight rejecting with a raw socket error. Same condition, so report it the
+          // same way — which route wins is a platform detail (Linux tends to reset where macOS
+          // closes), and nobody should have to read `connect ECONNRESET <socket path>` to find out
+          // the daemon stopped.
+          settle(() => reject(isConnectionLost(error) ? connectionLost() : error));
         });
     });
   } finally {
