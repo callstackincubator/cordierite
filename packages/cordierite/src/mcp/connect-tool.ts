@@ -31,6 +31,7 @@ import {
   openDaemonStream,
   DaemonRpcError,
   isDaemonUnreachableError,
+  type DaemonStream,
   type SpawnFn,
 } from "../rpc/client.js";
 import type { DaemonCall } from "./daemon-tools.js";
@@ -353,6 +354,18 @@ export const handleConnectTool = async (
  * the "was there, then wasn't" ones, which surface raw from a call that was already in flight. */
 const CONNECTION_LOST_CODES: ReadonlySet<string> = new Set(["ECONNRESET", "EPIPE"]);
 
+/** Appends the underlying cause, so an operator reading CI output still gets the syscall detail
+ * even though the sentence in front of it is what the agent acts on. */
+const describeCause = (error: unknown): string => {
+  return error instanceof Error && error.message.length > 0 ? ` (${error.message})` : "";
+};
+
+const daemonClosedMessage = (sessionId: string): string =>
+  `The connection to the Cordierite daemon closed while waiting for session "${sessionId}".`;
+
+const daemonUnreachableMessage = (sessionId: string, error: unknown): string =>
+  `The Cordierite daemon is unreachable, so session "${sessionId}" cannot be waited on${describeCause(error)}.`;
+
 const isConnectionLost = (error: unknown): boolean => {
   if (isDaemonUnreachableError(error)) {
     return true;
@@ -387,7 +400,24 @@ export const handleWaitForSessionTool = async (
   const sessionId = args.sessionId;
   const timeoutMs = asOptionalPositiveNumber(args.timeoutMs, "timeoutMs") ?? DEFAULT_WAIT_TIMEOUT_MS;
 
-  const stream = await openDaemonStream({ stateDir: deps.stateDir, spawn: deps.spawn });
+  let stream: DaemonStream;
+
+  try {
+    stream = await openDaemonStream({ stateDir: deps.stateDir, spawn: deps.spawn });
+  } catch (error) {
+    // The daemon can be on its way out at the exact moment this tool opens its stream, in which
+    // case `connect` fails with ECONNRESET — not the ENOENT/ECONNREFUSED that would mean "not
+    // running" and trigger an auto-spawn. That is the same situation as losing it mid-wait, and
+    // has to read the same way rather than as a bare syscall error against a socket path.
+    if (isConnectionLost(error)) {
+      throw new McpBuiltinToolError(
+        "tool_execution_error",
+        daemonUnreachableMessage(sessionId, error),
+      );
+    }
+
+    throw error;
+  }
 
   try {
     return await new Promise<WaitForSessionToolResult>((resolve, reject) => {
@@ -417,10 +447,7 @@ export const handleWaitForSessionTool = async (
       }, timeoutMs);
 
       const connectionLost = (): McpBuiltinToolError =>
-        new McpBuiltinToolError(
-          "tool_execution_error",
-          `The connection to the Cordierite daemon closed while waiting for session "${sessionId}".`,
-        );
+        new McpBuiltinToolError("tool_execution_error", daemonClosedMessage(sessionId));
 
       // A daemon that goes away mid-wait must not read as "still waiting" for the rest of the
       // timeout — the caller has to know the connection is gone, not sit in silence.
