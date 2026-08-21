@@ -8,6 +8,7 @@ import {
 import type {
   CordieriteCloseEvent,
   CordieriteConnectionState,
+  CordieriteConnectCallOptions,
   CordieriteConnectInput,
   CordieriteConnectOptions,
   CordieriteClientState,
@@ -126,6 +127,11 @@ export const createCordieriteClient = (
   };
 
   const getSessionId = () => heldSession?.sessionId ?? null;
+
+  /** The session an in-flight `connect()` is claiming, before any ack sets `heldSession`. Read
+   * only by the public `getSessionId()`, never by `send`/tool routing — those must continue to
+   * see `null` until a session is genuinely established. */
+  let connectingSessionId: string | null = null;
 
   const rawSend = (json: string) => module.send(json);
 
@@ -572,17 +578,27 @@ export const createCordieriteClient = (
      * has accepted the socket). On success the resume token, alias, and grace/keepalive intervals
      * are held in memory and a full tool registry snapshot is sent.
      */
-    async connect(input: CordieriteConnectInput): Promise<void> {
+    async connect(
+      input: CordieriteConnectInput,
+      connectOptions?: CordieriteConnectCallOptions,
+    ): Promise<void> {
       const options = toConnectOptions(input, clientOptions);
       const nowSeconds = Math.floor(timers.now() / 1000);
 
+      // Validated before anything is torn down: `supersede` closes a live session, so an invalid
+      // or expired payload must not be able to cost the caller the session it already has.
       if (!isConnectOptionsValid(options, nowSeconds)) {
         logger.debug("connect rejected: invalid or expired bootstrap payload");
         throw new Error("Invalid or expired Cordierite bootstrap payload.");
       }
 
       const nativeState = module.getState();
-      const supersedingReconnect = clientState === "reconnecting";
+      // `reconnecting` supersedes implicitly (the resume/backoff loop is this client's own work to
+      // abandon). An explicit `supersede` is the bootstrap-link case: something with local access
+      // to this device just delivered a *newer* session, which outranks whatever is held —
+      // including a resume attempt wedged against a daemon that is no longer there.
+      const supersedingReconnect =
+        clientState === "reconnecting" || connectOptions?.supersede === true;
       if (
         (nativeState === "connecting" || nativeState === "active") &&
         !supersedingReconnect
@@ -604,6 +620,7 @@ export const createCordieriteClient = (
       clearGraceTimer();
       reconnectAttempt = 0;
       heldSession = null;
+      connectingSessionId = options.sessionId;
       resumeInFlight = false;
       clearResumeLease();
       if (supersedingReconnect) {
@@ -627,6 +644,7 @@ export const createCordieriteClient = (
         ack = await performHandshake(options);
       } catch (error) {
         if (myEpoch === epoch) {
+          connectingSessionId = null;
           setClientState("closed", "connect_error");
           emitError({
             phase: "connect",
@@ -641,10 +659,12 @@ export const createCordieriteClient = (
       }
 
       if (myEpoch !== epoch) {
-        // Superseded by a newer `connect()` call while awaiting the ack; abandon silently.
+        // Superseded by a newer `connect()` call while awaiting the ack; abandon silently. The
+        // newer attempt owns `connectingSessionId` now, so leave it alone.
         return;
       }
 
+      connectingSessionId = null;
       onAckReceived(ack, "claimed", { ip: options.ip, port: options.port });
     },
 
@@ -761,6 +781,14 @@ export const createCordieriteClient = (
     /** Raw native connection state (no resume concept — see `getClientState()` for the unified surface). */
     getState(): CordieriteConnectionState {
       return module.getState();
+    },
+
+    /** The session currently held, or the one an in-flight `connect()` is claiming, or `null`.
+     * Lets a caller distinguish a re-delivery of the link it is already on (ignore) from a
+     * genuinely new one (supersede) — see `deep-link-core`. Covers the connecting window on
+     * purpose: a link delivered twice during its own handshake must not supersede itself. */
+    getSessionId(): string | null {
+      return getSessionId() ?? connectingSessionId;
     },
 
     /** Unified client state: `idle | connecting | active | reconnecting | closed`. */

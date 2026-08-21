@@ -58,25 +58,40 @@ const nonPrivateBootstrapUrl = () =>
 
 const createMockClient = (
   initialState: CordieriteConnectionState = "idle",
-  restoreSessionImpl: () => Promise<boolean> = () => Promise.resolve(false)
+  restoreSessionImpl: () => Promise<boolean> = () => Promise.resolve(false),
+  restoredSessionId = "restored-session",
 ) => {
-  const state = initialState;
+  let state = initialState;
+  let sessionId: string | null = null;
   const connects: unknown[] = [];
+  const supersedes: (boolean | undefined)[] = [];
   let restoreCalls = 0;
   return {
     connects,
+    supersedes,
     get restoreCalls() {
       return restoreCalls;
     },
     async restoreSession() {
       restoreCalls += 1;
-      return restoreSessionImpl();
+      const restored = await restoreSessionImpl();
+      // Mirror the real client: a successful restore installs the leased session, which is what
+      // the initial URL then has to be judged against.
+      if (restored) {
+        state = "active";
+        sessionId = restoredSessionId;
+      }
+      return restored;
     },
     getState() {
       return state;
     },
-    async connect(input: unknown) {
+    getSessionId() {
+      return sessionId;
+    },
+    async connect(input: unknown, options?: { supersede?: boolean }) {
       connects.push(input);
+      supersedes.push(options?.supersede);
     },
     reportBootstrapError() {},
   };
@@ -131,12 +146,39 @@ describe("installCordieriteDeepLinkBootstrap", () => {
     expect(client.restoreCalls).toBe(1);
   });
 
-  test("successful startup recovery suppresses the initial deep-link claim", async () => {
+  test("a restored lease does not suppress an initial link for a different session", async () => {
+    // The app launched *because* someone delivered this link, so it outranks a session recovered
+    // from process memory. Skipping the initial URL whenever recovery succeeded is what made a
+    // reloaded app silently ignore the operator's freshly minted session.
     getInitialURLImpl = () => Promise.resolve(validBootstrapUrl());
     const { installCordieriteDeepLinkBootstrap } = await import(
       "../deep-link-install"
     );
-    const client = createMockClient("idle", () => Promise.resolve(true));
+    const client = createMockClient(
+      "idle",
+      () => Promise.resolve(true),
+      "an-older-session",
+    );
+
+    installCordieriteDeepLinkBootstrap(client);
+    await flushMicrotasks();
+
+    expect(client.restoreCalls).toBe(1);
+    expect(client.connects).toHaveLength(1);
+    expect(client.supersedes).toEqual([true]);
+  });
+
+  test("a restored lease for the very session the initial link names is left alone", async () => {
+    // Same session on both sides: the lease already holds it, and the link's token is spent.
+    getInitialURLImpl = () => Promise.resolve(validBootstrapUrl());
+    const { installCordieriteDeepLinkBootstrap } = await import(
+      "../deep-link-install"
+    );
+    const client = createMockClient(
+      "idle",
+      () => Promise.resolve(true),
+      "session-123",
+    );
 
     installCordieriteDeepLinkBootstrap(client);
     await flushMicrotasks();

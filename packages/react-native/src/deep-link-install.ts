@@ -33,7 +33,8 @@ const requirePrivateIp = (): boolean => {
 
 /**
  * Subscribes to runtime deep links immediately, then attempts startup recovery before considering
- * the initial URL. Idempotent: later calls no-op.
+ * the initial URL — recovery goes first so the link is judged against a settled session, not so it
+ * wins. Idempotent: later calls no-op.
  *
  * @internal Reached by app code only through the `./auto` entry, which passes the default client.
  */
@@ -84,17 +85,20 @@ export function installCordieriteDeepLinkBootstrap(
   }
 
   (async () => {
-    let restored = false;
+    // Awaited for ordering, not for its answer: letting recovery settle first means the initial
+    // URL is judged against a known session rather than racing one into place.
     try {
-      restored = await restorePromise;
+      await restorePromise;
     } catch {
       warnRecoveryFailure();
     }
 
-    if (restored) {
-      return;
-    }
-
+    // The initial URL is handled even when a lease *was* restored. A link delivered to launch this
+    // app is newer intent than a session recovered from process memory, and
+    // `handleCordieriteDeepLinkUrl` arbitrates between them: same session id keeps the restored
+    // one, a different id supersedes it. Returning early here instead is what let a
+    // lease-restored app silently ignore the link an operator had just delivered — the session
+    // they were waiting on was never claimed and nothing said why.
     const initialUrl = await initialUrlPromise;
     handleCordieriteDeepLinkUrl(client, initialUrl, {
       requirePrivateIp: requirePrivateIp(),
