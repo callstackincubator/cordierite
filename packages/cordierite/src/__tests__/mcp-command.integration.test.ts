@@ -133,8 +133,11 @@ describe("cordierite mcp command", () => {
     const { stateDir } = await startTestDaemon({ scheme: "cordierite-test" });
     const { client } = await startMcpCommandWithClient(stateDir);
 
+    // `target: "none"` keeps this about scheme resolution: this test drives the real `cordierite
+    // mcp` binary, so there is no `exec` seam to inject, and a bare call would auto-detect against
+    // whatever simulators the developer running the suite happens to have booted.
     const result = await client.request(
-      { method: "tools/call", params: { name: "cordierite_connect", arguments: {} } },
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { target: "none" } } },
       CallToolResultSchema,
     );
 

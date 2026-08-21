@@ -41,18 +41,22 @@ const bootstrapUrl = (p: BootstrapPayload) =>
   `playground:///?cordierite=${encodeBootstrap(p)}`;
 
 const createMockClient = (
-  initialState: CordieriteConnectionState = "idle"
+  initialState: CordieriteConnectionState = "idle",
+  initialSessionId: string | null = null,
 ): CordieriteAutoBootstrapClient & {
   connects: unknown[];
+  supersedes: (boolean | undefined)[];
   bootstrapErrors: { phase: "parse" | "connect"; error: unknown }[];
   setState(s: CordieriteConnectionState): void;
 } => {
   let state = initialState;
   const connects: unknown[] = [];
+  const supersedes: (boolean | undefined)[] = [];
   const bootstrapErrors: { phase: "parse" | "connect"; error: unknown }[] = [];
 
   return {
     connects,
+    supersedes,
     bootstrapErrors,
     restoreSession: async () => false,
     setState(s: CordieriteConnectionState) {
@@ -61,8 +65,12 @@ const createMockClient = (
     getState() {
       return state;
     },
-    async connect(input: unknown) {
+    getSessionId() {
+      return initialSessionId;
+    },
+    async connect(input: unknown, options) {
       connects.push(input);
+      supersedes.push(options?.supersede);
     },
     reportBootstrapError(event) {
       bootstrapErrors.push(event);
@@ -138,14 +146,60 @@ describe("cordierite deep-link bootstrap", () => {
     expect(client.connects).toHaveLength(1);
   });
 
-  test("handleCordieriteDeepLinkUrl skips when already connecting or active", () => {
+  test("a link for a different session supersedes one already connecting or active", () => {
+    // The old behavior — ignoring the link outright — left the operator's freshly minted session
+    // unclaimed with nothing logged anywhere, so `wait_for_session` just ran out its timeout.
     for (const state of ["connecting", "active"] as const) {
-      const client = createMockClient(state);
+      const client = createMockClient(state, "some-other-session");
+      handleCordieriteDeepLinkUrl(client, bootstrapUrl(basePayload), {
+        now: FIXED_NOW,
+      });
+      expect(client.connects).toHaveLength(1);
+      expect(client.supersedes).toEqual([true]);
+    }
+  });
+
+  test("a link for the session already held is ignored, not re-claimed", () => {
+    // Its token is single-use: the daemon answers a second claim with a terminal
+    // `1008 already_claimed`, so tearing down to re-claim would leave the app with no session at
+    // all. The same link can legitimately arrive twice (getInitialURL overlapping the url event).
+    for (const state of ["connecting", "active"] as const) {
+      const client = createMockClient(state, basePayload.sessionId);
       handleCordieriteDeepLinkUrl(client, bootstrapUrl(basePayload), {
         now: FIXED_NOW,
       });
       expect(client.connects).toEqual([]);
+      expect(client.bootstrapErrors).toEqual([]);
     }
+  });
+
+  test("connecting to a fresh session from idle does not ask to supersede", () => {
+    const client = createMockClient("idle");
+    handleCordieriteDeepLinkUrl(client, bootstrapUrl(basePayload), {
+      now: FIXED_NOW,
+    });
+    expect(client.supersedes).toEqual([false]);
+  });
+
+  test("an invalid link never tears down a live session", () => {
+    // Parse/validate strictly precedes any teardown decision — otherwise a malformed or expired
+    // link becomes a free way to kill a working session.
+    const client = createMockClient("active", "held-session");
+
+    handleCordieriteDeepLinkUrl(client, "playground:///?cordierite=not-valid", {
+      now: FIXED_NOW,
+    });
+    handleCordieriteDeepLinkUrl(
+      client,
+      bootstrapUrl({ ...basePayload, expiresAt: FIXED_NOW - 1 }),
+      { now: FIXED_NOW }
+    );
+
+    expect(client.connects).toEqual([]);
+    expect(client.bootstrapErrors.map((entry) => entry.phase)).toEqual([
+      "parse",
+      "parse",
+    ]);
   });
 
   test("handleCordieriteDeepLinkUrl reports a parse-phase bootstrap error on bad payload", () => {
@@ -164,6 +218,7 @@ describe("cordierite deep-link bootstrap", () => {
     const client: CordieriteAutoBootstrapClient = {
       restoreSession: async () => false,
       getState: (): CordieriteConnectionState => "idle",
+      getSessionId: () => null,
       async connect() {
         throw new Error("native failed");
       },
@@ -192,6 +247,7 @@ describe("cordierite deep-link bootstrap", () => {
       getState() {
         throw new Error("getState is not available on this platform");
       },
+      getSessionId: () => null,
       connect: async () => {},
       reportBootstrapError: () => {},
     };

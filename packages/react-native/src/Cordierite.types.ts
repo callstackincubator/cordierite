@@ -90,6 +90,19 @@ export type CordieriteConnectInput =
   | CordieriteConnectOptions
   | CordieriteBootstrapConnectInput;
 
+/** Per-call options for `connect()`, distinct from the payload being connected with. */
+export type CordieriteConnectCallOptions = {
+  /**
+   * Replace a session that is already connecting or active instead of throwing.
+   *
+   * Reserved for a freshly delivered bootstrap deep link: something with local access to this
+   * device just asked for *this* session, which outranks whatever is currently held (commonly a
+   * lease restored after a Metro reload, possibly pointing at a daemon that no longer exists).
+   * The existing connection is closed only after the new payload validates.
+   */
+  supersede?: boolean;
+};
+
 /**
  * Parsed JSON from the wire. Non-object or invalid JSON may surface as `{}` (see `CordieriteModule`).
  */

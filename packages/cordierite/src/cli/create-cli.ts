@@ -26,7 +26,7 @@ export const createCli = () => {
     .option("--qr", "Also render the deep link as a terminal QR code.")
     .option("--scheme <scheme>", "Deep-link URI scheme (default: config.json's \"scheme\").")
     .option("--open <target>", "Deliver the link automatically via adb/simctl (android|ios-sim).")
-    .option("--device <serial>", "adb device serial to target when --open android is ambiguous.");
+    .option("--device <id>", "adb serial or simulator udid to target when --open is ambiguous.");
 
   cli.command("ls", "List Cordierite sessions.");
 

@@ -3,6 +3,10 @@
  * deep link to a booted Android emulator/device or iOS simulator without any human handling a QR
  * code — this is the CI/agent path. All subprocess execution goes through the injectable
  * {@link ExecFn} seam so every branch here is testable without `adb`/`xcrun` installed.
+ *
+ * {@link detectBootedTargets} is the same enumeration used *before* a target is chosen, so callers
+ * that were given no explicit target (notably `cordierite_connect` over MCP) can deliver to the one
+ * obvious device instead of falling back to a QR code nobody is there to scan.
  */
 
 import { execFile } from "node:child_process";
@@ -63,32 +67,68 @@ const run = async (exec: ExecFn, command: string, args: string[]): Promise<ExecR
 
 // --- ios-sim ---
 
+type SimctlDeviceEntry = { udid?: string; name?: string; state?: string };
+
 type SimctlDeviceListing = {
-  devices?: Record<string, Array<{ state?: string }>>;
+  devices?: Record<string, SimctlDeviceEntry[]>;
 };
 
-const hasBootedSimulator = (stdout: string): boolean => {
+export type BootedSimulator = { udid: string; name: string };
+
+const parseBootedSimulators = (stdout: string): BootedSimulator[] => {
   let parsed: SimctlDeviceListing;
 
   try {
     parsed = JSON.parse(stdout) as SimctlDeviceListing;
   } catch {
-    return false;
+    return [];
   }
 
-  return Object.values(parsed.devices ?? {}).some((entries) =>
-    entries.some((entry) => entry.state === "Booted"),
-  );
+  return Object.values(parsed.devices ?? {})
+    .flat()
+    .filter(
+      (entry): entry is SimctlDeviceEntry & { udid: string } =>
+        entry.state === "Booted" && typeof entry.udid === "string" && entry.udid.length > 0,
+    )
+    .map((entry) => ({ udid: entry.udid, name: entry.name ?? entry.udid }));
 };
 
-const deliverIosSim = async (exec: ExecFn, deepLink: string): Promise<void> => {
+const listBootedSimulators = async (exec: ExecFn): Promise<BootedSimulator[]> => {
   const preflight = await run(exec, "xcrun", ["simctl", "list", "devices", "booted", "--json"]);
+  return parseBootedSimulators(preflight.stdout);
+};
 
-  if (!hasBootedSimulator(preflight.stdout)) {
+const describeSimulator = (simulator: BootedSimulator): string => `${simulator.name} (${simulator.udid})`;
+
+const deliverIosSim = async (exec: ExecFn, deepLink: string, device: string | undefined): Promise<void> => {
+  // An explicit udid is honored without a preflight, mirroring android's `--device` passthrough:
+  // the caller has already named the device, so re-listing only adds a failure mode.
+  if (device) {
+    await run(exec, "xcrun", ["simctl", "openurl", device, deepLink]);
+    return;
+  }
+
+  const booted = await listBootedSimulators(exec);
+
+  if (booted.length === 0) {
     throw usageError("No booted iOS simulator found. Boot a simulator (e.g. via Xcode) and retry.");
   }
 
-  await run(exec, "xcrun", ["simctl", "openurl", "booted", deepLink]);
+  if (booted.length > 1) {
+    // Previously this delivered to simctl's `booted` alias regardless, which silently picks one of
+    // several booted simulators — the link would land on an arbitrary device and the session would
+    // never be claimed, looking exactly like a hung `wait_for_session`. Errors like android does.
+    throw usageError(
+      `Multiple iOS simulators are booted (${booted
+        .map(describeSimulator)
+        .join(", ")}); specify --device <udid>.`,
+    );
+  }
+
+  // Target the resolved udid rather than the `booted` alias: `booted` is only unambiguous while
+  // exactly one simulator is up, and a second one booting between the preflight and this call would
+  // otherwise redirect the link to an arbitrary device.
+  await run(exec, "xcrun", ["simctl", "openurl", booted[0]!.udid, deepLink]);
 };
 
 // --- android ---
@@ -109,6 +149,14 @@ const parseAdbDevices = (stdout: string): AdbDeviceEntry[] => {
     .filter((entry) => entry.serial.length > 0);
 };
 
+const listAttachedAndroidDevices = async (exec: ExecFn): Promise<string[]> => {
+  const listing = await run(exec, "adb", ["devices"]);
+
+  return parseAdbDevices(listing.stdout)
+    .filter((entry) => entry.state === "device")
+    .map((entry) => entry.serial);
+};
+
 /**
  * Resolves the `-s <serial>` argument, if any. `--device` always wins; otherwise, if
  * `ANDROID_SERIAL` is set, `adb` already honors it with no flag needed from us; otherwise exactly
@@ -127,8 +175,7 @@ const resolveAndroidSerial = async (
     return undefined;
   }
 
-  const listing = await run(exec, "adb", ["devices"]);
-  const attached = parseAdbDevices(listing.stdout).filter((entry) => entry.state === "device");
+  const attached = await listAttachedAndroidDevices(exec);
 
   if (attached.length === 0) {
     throw usageError('No Android device or emulator is attached ("adb devices" listed none).');
@@ -136,9 +183,9 @@ const resolveAndroidSerial = async (
 
   if (attached.length > 1) {
     throw usageError(
-      `Multiple Android devices are attached (${attached
-        .map((entry) => entry.serial)
-        .join(", ")}); specify --device <serial> or set ANDROID_SERIAL.`,
+      `Multiple Android devices are attached (${attached.join(
+        ", ",
+      )}); specify --device <serial> or set ANDROID_SERIAL.`,
     );
   }
 
@@ -183,13 +230,88 @@ const deliverAndroid = async (
   );
 };
 
+// --- detection ---
+
+/** One device a link could be delivered to, resolved concretely enough to deliver without a
+ * second, racy lookup: `device` is an adb serial or a simulator udid. */
+export type DetectedTarget = {
+  target: OpenTarget;
+  device: string;
+  /** Human-readable form for error messages and agent-facing notes. */
+  label: string;
+};
+
+export type TargetDetection =
+  | { kind: "single"; detected: DetectedTarget }
+  | { kind: "none" }
+  | { kind: "ambiguous"; candidates: DetectedTarget[] };
+
+/** Best-effort enumeration: a missing or failing `xcrun`/`adb` means "no devices of that platform"
+ * rather than an error. Detection runs when the caller named *no* target, so a machine without the
+ * Android tools installed (or without Xcode) must still reach a clean `{ kind: "none" }` and its
+ * QR fallback instead of failing the whole call. */
+const safeList = async <T>(list: () => Promise<T[]>): Promise<T[]> => {
+  try {
+    return await list();
+  } catch {
+    return [];
+  }
+};
+
+export type DetectBootedTargetsOptions = {
+  exec?: ExecFn;
+  env?: NodeJS.ProcessEnv;
+};
+
+/**
+ * Enumerates every booted simulator and attached Android device so a caller with no explicit
+ * target can deliver to the single obvious one. `ANDROID_SERIAL`, when set, narrows the Android
+ * side to that serial — it is exactly the disambiguation the user has already made.
+ */
+export const detectBootedTargets = async (
+  options: DetectBootedTargetsOptions = {},
+): Promise<TargetDetection> => {
+  const exec = options.exec ?? defaultExec;
+  const env = options.env ?? process.env;
+
+  const [simulators, androidSerials] = await Promise.all([
+    safeList(() => listBootedSimulators(exec)),
+    env.ANDROID_SERIAL
+      ? Promise.resolve([env.ANDROID_SERIAL])
+      : safeList(() => listAttachedAndroidDevices(exec)),
+  ]);
+
+  const candidates: DetectedTarget[] = [
+    ...simulators.map((simulator) => ({
+      target: "ios-sim" as const,
+      device: simulator.udid,
+      label: describeSimulator(simulator),
+    })),
+    ...androidSerials.map((serial) => ({
+      target: "android" as const,
+      device: serial,
+      label: serial,
+    })),
+  ];
+
+  if (candidates.length === 0) {
+    return { kind: "none" };
+  }
+
+  if (candidates.length === 1) {
+    return { kind: "single", detected: candidates[0]! };
+  }
+
+  return { kind: "ambiguous", candidates };
+};
+
 export type OpenTargetOptions = {
   target: OpenTarget;
   /** The composed `<scheme>:///?cordierite=<payload>` deep link to deliver. */
   deepLink: string;
   /** The daemon's wss port; used for `adb reverse tcp:<port> tcp:<port>`. */
   wssPort: number;
-  /** `--device <serial>`; android-only. */
+  /** An adb device serial (`target: "android"`) or a simulator udid (`target: "ios-sim"`). */
   device?: string;
   /** Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -202,7 +324,7 @@ export const deliverToOpenTarget = async (options: OpenTargetOptions): Promise<v
   const exec = options.exec ?? defaultExec;
 
   if (options.target === "ios-sim") {
-    await deliverIosSim(exec, options.deepLink);
+    await deliverIosSim(exec, options.deepLink, options.device);
     return;
   }
 

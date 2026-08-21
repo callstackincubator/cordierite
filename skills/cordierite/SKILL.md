@@ -65,6 +65,9 @@ For a simulator/emulator you control directly, skip the deep link entirely:
 cordierite link --scheme myapp --open ios-sim     # or: --open android
 ```
 
+With more than one simulator booted (or several devices attached) this errors and lists
+them rather than picking one — re-run with `--device <udid|serial>`.
+
 Then poll (or use `cordierite events <sessionId> --json` to avoid polling) until the
 session shows `state: "active"` in `cordierite ls --json` or
 `cordierite tools <sessionId>` stops erroring.
@@ -72,11 +75,25 @@ session shows `state: "active"` in `cordierite ls --json` or
 ## Establish a session (MCP)
 
 If this agent is talking to Cordierite over MCP instead of a shell, use the built-in
-management tools instead of the CLI commands above: `cordierite_connect` (optionally with
-`target: "android"` or `"ios-sim"`) mints and, for a target, delivers the link without any
-shell access; `cordierite_wait_for_session({ sessionId })` blocks until that session is
-claimed (or returns immediately if it already was). After that, the app's own tools
-appear directly in `tools/list` — call them with `tools/call` like any other MCP tool.
+management tools instead of the CLI commands above.
+
+**Call `cordierite_connect` with no arguments.** It auto-detects a booted iOS simulator or
+attached Android device and delivers the link straight to it — no human involved. A result
+with `delivered: true` is done; go on to `cordierite_wait_for_session({ sessionId })`,
+which blocks until the device connects (or returns immediately if it already has). After
+that the app's own tools appear directly in `tools/list` — call them with `tools/call`
+like any other MCP tool.
+
+Pass `target: "android"` / `"ios-sim"` (plus `device` — an adb serial or simulator udid) only
+to override that choice, e.g. when several devices are up and the result said so.
+
+**If the result has a `qr` field instead of `delivered: true`, nothing was delivered and a
+human has to act.** Do not call `cordierite_wait_for_session` yet — it produces no output
+while it waits, so calling it first looks like a hang and burns its whole timeout. Show the
+user the `qr` value verbatim in a fenced code block, show `deepLink` under it, and ask them
+to scan. The result's `instructions` field says exactly this; follow it. Read `note` to see
+why delivery didn't happen — usually no device is booted, or several are and you should
+re-call with an explicit `target`.
 
 ## Terminate the connection
 

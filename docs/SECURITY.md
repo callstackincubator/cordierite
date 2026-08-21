@@ -97,6 +97,14 @@ bounded by the link's TTL), but it is not equivalent to pinned trust — do not 
 production or internal-distribution build without `cliPins` for anything beyond local
 development.
 
+A delivered bootstrap link also *supersedes* a session the app is already holding, rather than
+being ignored while one is active (see `deep-link-core.ts`): a link is a deliberate, local act
+by the operator and outranks a session the app happens to be sitting on. Within the residual
+risk above, that means such a link can interrupt a legitimate session as well as stand in for
+a daemon — an availability effect, bounded the same way. It is not a cheap one: the payload is
+parsed and validated in full, against the same address policy and expiry, *before* anything is
+torn down, so a malformed or expired link costs the existing session nothing.
+
 **What actually contains link trust now, since there is no build-type gate:** it is opt-in
 configuration alone. Set `cliPins` (which makes `trust: "pin"` the default) on any build you
 don't want accepting a link-carried pin. Separately, if you don't want Cordierite's native

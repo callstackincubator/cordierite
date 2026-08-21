@@ -151,7 +151,7 @@ describe("link --open: CLI wiring", () => {
     expect(calls[1]!.command).toBe("xcrun");
     expect(calls[1]!.args[0]).toBe("simctl");
     expect(calls[1]!.args[1]).toBe("openurl");
-    expect(calls[1]!.args[2]).toBe("booted");
+    expect(calls[1]!.args[2]).toBe("ABC");
     expect(calls[1]!.args[3]).toBe(result.data.deepLink);
 
     void daemon;
