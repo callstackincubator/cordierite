@@ -5,9 +5,13 @@
  * tool's `inputSchema.type` to be the literal `"object"`); `annotations` map verbatim.
  *
  * A tool whose effective policy is `"prompt"` (ARCHITECTURE.md §12) gets
- * `_meta["anthropic/requiresUserInteraction"] = true` — but only when the connected client is
- * known to enforce it (issue #14); emitting the flag for a client that ignores it would create a
- * false sense of security, so the caller must confirm that separately and pass it in.
+ * `_meta["anthropic/requiresUserInteraction"] = true` — but only when the caller says to
+ * (`emitRequiresUserInteractionFlag`), which `mcp/server.ts` decides is true only when the
+ * connected client is known to enforce the flag (issue #14) *and* it hasn't already preferred the
+ * elicitation channel instead (issue #10). Emitting the flag for a client that ignores it would
+ * create a false sense of security; emitting it *and* using elicitation for the same tool would
+ * arm two consent prompts for one call — so this function never decides that itself, only renders
+ * the decision it's handed.
  */
 
 import type { NamespacedTool } from "./tool-namespace.js";
@@ -25,9 +29,9 @@ export type McpToolSchema = {
   _meta?: Record<string, unknown>;
 };
 
-export const toMcpTool = (tool: NamespacedTool, clientHonorsRequiresUserInteraction: boolean): McpToolSchema => {
+export const toMcpTool = (tool: NamespacedTool, emitRequiresUserInteractionFlag: boolean): McpToolSchema => {
   const { descriptor } = tool;
-  const requiresUserInteraction = tool.policy === "prompt" && clientHonorsRequiresUserInteraction;
+  const requiresUserInteraction = tool.policy === "prompt" && emitRequiresUserInteractionFlag;
 
   return {
     name: tool.mcpName,

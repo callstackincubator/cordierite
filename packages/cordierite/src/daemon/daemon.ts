@@ -171,8 +171,8 @@ const asToolsCallParams = (params: unknown): ToolsCallParams => {
 
   const consent = record.consent;
 
-  if (consent !== undefined && consent !== "client") {
-    throw new RpcApplicationError("invalid_request", '"consent" must be "client".');
+  if (consent !== undefined && consent !== "client" && consent !== "elicitation") {
+    throw new RpcApplicationError("invalid_request", '"consent" must be "client" or "elicitation".');
   }
 
   return {
@@ -181,7 +181,7 @@ const asToolsCallParams = (params: unknown): ToolsCallParams => {
     args: args as Record<string, unknown>,
     timeoutMs: timeoutMs as number | undefined,
     caller: caller as "cli" | "mcp" | "client" | undefined,
-    consent: consent as "client" | undefined,
+    consent: consent as "client" | "elicitation" | undefined,
   };
 };
 
@@ -507,7 +507,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           const writeAudit = (
             outcome: "ok" | "error" | "denied" | "cancelled",
             errorType?: ErrorType,
-            grantedConsent?: "client",
+            grantedConsent?: "client" | "elicitation",
             deniedReason?: "policy" | "no_consent_channel",
           ): void => {
             auditLogger.record({
@@ -539,22 +539,25 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           }
 
           const policyDecision = evaluatePolicy(tool, { alias: resolved.alias }, config.policy);
-          // "prompt" fails closed (ARCHITECTURE.md §12 / issue #14): it proceeds only when the
-          // caller carried `consent: "client"`. This is trusted verbatim once present — the daemon
-          // does not and cannot re-derive whether an MCP client's `_meta` was actually honored, the
-          // same way it doesn't re-verify any other RPC param. `consent` is only ever justified
-          // when set by this codebase's own MCP server (mcp/server.ts), which sets it solely after
-          // confirming both that it emitted `_meta["anthropic/requiresUserInteraction"]` for this
-          // exact tool on this connection's most recent listing, and that the connected client is
-          // known to enforce it. Any other local process with access to `daemon.sock` — including
-          // the CLI, or an agent with shell access, which is the typical setup this feature targets
-          // — could send `consent: "client"` directly; that is not a bypass of this feature so much
-          // as a restatement of this codebase's existing trust boundary (docs/SECURITY.md: anything
-          // that can reach the socket already has full daemon control). "prompt" guards against a
-          // compliant MCP client silently auto-approving on the caller's behalf, not against a
-          // hostile process on the operator's own machine.
-          const grantedConsent: "client" | undefined =
-            policyDecision === "prompt" && consent === "client" ? "client" : undefined;
+          // "prompt" fails closed (ARCHITECTURE.md §12): it proceeds only when the caller carried
+          // `consent: "client"` (issue #14) or `consent: "elicitation"` (issue #10). Either value is
+          // trusted verbatim once present — the daemon does not and cannot re-derive whether an MCP
+          // client's `_meta` flag was actually honored or its elicitation reply actually came from a
+          // human, the same way it doesn't re-verify any other RPC param. `consent` is only ever
+          // justified when set by this codebase's own MCP server (mcp/server.ts), which sets
+          // `"client"` solely after confirming both that it emitted
+          // `_meta["anthropic/requiresUserInteraction"]` for this exact tool on this connection's
+          // most recent listing and that the connected client is known to enforce it, and sets
+          // `"elicitation"` solely after sending an `elicitation/create` request over this
+          // connection and receiving `action: "accept"` back. Any other local process with access to
+          // `daemon.sock` — including the CLI, or an agent with shell access, which is the typical
+          // setup this feature targets — could send either value directly; that is not a bypass of
+          // this feature so much as a restatement of this codebase's existing trust boundary
+          // (docs/SECURITY.md: anything that can reach the socket already has full daemon control).
+          // "prompt" guards against a compliant MCP client silently auto-approving on the caller's
+          // behalf, not against a hostile process on the operator's own machine.
+          const grantedConsent: "client" | "elicitation" | undefined =
+            policyDecision === "prompt" && (consent === "client" || consent === "elicitation") ? consent : undefined;
 
           if (policyDecision === "deny" || (policyDecision === "prompt" && grantedConsent === undefined)) {
             // Denied → no frame reaches the app, and the call never starts.
@@ -574,7 +577,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
                 -32000,
                 {
                   reason: "no_consent_channel",
-                  hint: `This caller did not confirm human consent for "${name}". Claude Code ≥ v2.1.199 confirms it automatically over MCP; every other caller (including the CLI) is denied by design until another consent channel is implemented. To change this tool's policy, edit "policy.tools[\"${resolved.alias}/${name}\"]" (or policy.default/policy.destructive) in ${paths.configPath}.`,
+                  hint: `This caller did not confirm human consent for "${name}". An MCP client that declares the "elicitation" capability confirms it via an elicitation/create prompt, and Claude Code ≥ v2.1.199 confirms it via the requiresUserInteraction flag, automatically over MCP; every other caller (including the CLI) is denied by design. To change this tool's policy, edit "policy.tools[\"${resolved.alias}/${name}\"]" (or policy.default/policy.destructive) in ${paths.configPath}.`,
                 },
               );
             }

@@ -44,12 +44,18 @@ export type AuditRecord = {
   caller: AuditCaller;
   /**
    * Set only when a `"prompt"`-policy call actually proceeded because the MCP server confirmed a
-   * client-side consent gate (ARCHITECTURE.md §12). Deliberately distinct from a plain `"ok"`:
-   * the daemon never observed the consent decision itself, only that the call arrived carrying
-   * this marker — this is the weakest form of evidence (issue #14), and the audit record should
-   * read as such rather than folding it into an ordinary allow.
+   * consent gate (ARCHITECTURE.md §12). Deliberately distinct from a plain `"ok"`: the daemon
+   * never observed either channel's client-side behavior itself, only that the call arrived
+   * carrying this marker. The value distinguishes which gate fired:
+   * - `"client"` (issue #14): the flag-based gate — the weaker of the two, evidence only that
+   *   `_meta["anthropic/requiresUserInteraction"]` was emitted and the client is one known to
+   *   enforce it, not that a human actually answered a prompt.
+   * - `"elicitation"` (issue #10): the client replied `action: "accept"` to a live
+   *   `elicitation/create` request sent for this call — an observed decision, not merely an armed
+   *   flag, though still not independently verifiable by the daemon (see the field-level trust
+   *   caveat on `ToolsCallParams.consent` in `@cordierite/shared`).
    */
-  consent?: "client";
+  consent?: "client" | "elicitation";
 };
 
 export type AuditLogger = {
