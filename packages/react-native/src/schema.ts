@@ -76,10 +76,15 @@ const nonObjectInputWarningsSeen = new Set<string>();
 /**
  * Issue #26: MCP's `Tool` wire shape requires both `inputSchema.type` and `outputSchema.type` to be
  * the literal `"object"`, so a schema exported as anything else (`z.array`, `z.string`, a
- * `z.union`'s `anyOf`, a `z.discriminatedUnion`'s `oneOf` — even when every branch is an object)
- * cannot be put on the wire as-is. The tool is still registered and still callable, and the
- * descriptor still carries the real schema for the CLI and the JS client; only the MCP surface
- * degrades. Warn at registration time so an app author learns it here rather than from an agent.
+ * `z.union`'s `anyOf`, a `z.discriminatedUnion`'s `oneOf` or a `z.intersection`'s `allOf` — the
+ * last two even when every branch is an object) cannot be put on the wire as-is. The tool is still
+ * registered and still callable, and the descriptor still carries the real schema for the CLI and
+ * the JS client; only the MCP surface degrades. Warn at registration time so an app author learns
+ * it here rather than from an agent.
+ *
+ * This is a best-effort dev-time hint, not the authority: the MCP server makes the real decision
+ * with the SDK's own `ToolSchema` and rejects a little more than this (see `isObjectRootedSchema`).
+ * Everything zod can export is covered here.
  */
 const warnNonObjectRootedSchema = (
   toolName: string,
@@ -98,10 +103,9 @@ const warnNonObjectRootedSchema = (
 
   const consequence =
     mode === "output"
-      ? "MCP drops it from tools/list and agents get the result as text only, without " +
-        "structuredContent."
-      : "MCP replaces it with a permissive empty object schema, and agents cannot call the tool " +
-        "with a non-object argument.";
+      ? "MCP drops it from tools/list, so agents get the result with no schema describing it."
+      : "MCP replaces it with a permissive empty object schema, so agents cannot see the tool's " +
+        "real arguments.";
 
   logger.devWarn(
     `Tool "${toolName}" exports a JSON Schema for its ${mode} that is not rooted at ` +

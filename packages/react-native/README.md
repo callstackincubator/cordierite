@@ -278,14 +278,25 @@ Because exportable schemas are compared by their *exported* JSON Schema, the reg
 
 **`deps` is an optional, advanced override.** Passing it replaces the derived key entirely with `useEffect`'s own semantics (`enabled` is still appended), which is occasionally useful — e.g. forcing a re-registration on something the descriptor does not capture. Most call sites should simply omit it. Pass it consistently if you pass it at all: alternating between passing `deps` and omitting it changes the dependency-array length between renders, which React warns about, exactly as it does for a hand-written `useEffect`.
 
-**Keep both schemas object-rooted.** MCP's tool wire shape requires `inputSchema.type` and `outputSchema.type` to be the literal `"object"`, so `z.object({ ... })` (also `.passthrough()` and `z.record(...)`) is the only shape that survives to an agent intact. Anything else — `z.array(...)`, `z.string()`/`z.number()`, a `z.union(...)` (`anyOf`), even a `z.discriminatedUnion(...)` whose every branch is an object (`oneOf`) — cannot be represented, and Cordierite degrades it rather than letting one tool break the whole list:
+**Keep both schemas object-rooted.** MCP's tool wire shape requires `inputSchema.type` and `outputSchema.type` to be the literal `"object"`, so `z.object({ ... })` (also `.passthrough()`/`z.looseObject(...)` and `z.record(...)`) is the only shape that survives to an agent intact. Anything else cannot be represented:
+
+| Construct | Exports as | Object-rooted? |
+| --- | --- | --- |
+| `z.object({ ... })`, `.passthrough()`, `z.record(...)` | `type: "object"` | yes |
+| `z.array(...)` | `type: "array"` | no |
+| `z.string()`, `z.number()`, `z.boolean()`, `z.null()` | `type: "string"` etc. | no |
+| `z.union([...])`, `z.object(...).nullable()` | `anyOf` | no — no root `type` at all |
+| `z.discriminatedUnion(...)` | `oneOf` | no, even when every branch is an object |
+| `z.intersection(a, b)` | `allOf` | no, even when both sides are objects |
+
+A client validates the *whole* `tools/list` result, so one such schema would otherwise leave the agent with zero tools from your app. Cordierite degrades it instead:
 
 | Schema | What Cordierite does |
 | --- | --- |
-| `outputSchema` not object-rooted | Drops it from `tools/list`; the tool stays listed and callable and its result arrives as JSON text, without `structuredContent`. |
-| `inputSchema` not object-rooted | Replaces it with a permissive empty object schema. MCP arguments are always an object, so the tool is not usefully callable this way ([#34](https://github.com/callstackincubator/cordierite/issues/34) tracks argument wrapping). |
+| `outputSchema` MCP cannot accept | Drops it from `tools/list`. The tool stays listed and callable; its result arrives as JSON text, with no schema describing it (agents still get `structuredContent` when the result happens to be a JSON object, they just have nothing to validate it against). |
+| `inputSchema` MCP cannot accept | Replaces it with a permissive empty object schema, so agents cannot see the tool's real arguments. MCP arguments are always an object, so the tool is not usefully callable this way ([#34](https://github.com/callstackincubator/cordierite/issues/34) tracks argument wrapping). |
 
-Both log a dev warning naming the tool when it registers. Wrap the value instead — `outputSchema: z.object({ todos: z.array(z.string()) })` rather than `z.array(z.string())` — and agents get the full shape as `structuredContent`. `cordierite invoke`, `--json` output, and the JS client are unaffected either way: they carry the real schema and the raw result.
+Both log a dev warning naming the tool when it registers. Wrap the value instead — `outputSchema: z.object({ todos: z.array(z.string()) })` rather than `z.array(z.string())` — and agents get the full shape, described and validated. `cordierite invoke`, `--json` output, and the JS client are unaffected either way: they carry the real schema and the raw result.
 
 **Cancellation:** `handler(args, context)`'s `context.signal` (an `AbortSignal`) aborts if the caller cancels the call, or if the session's connection is lost mid-call. Forward it into anything that accepts one (`fetch(url, { signal: context.signal })`) or check `context.signal.aborted`/listen for `"abort"` to stop early. Ignoring it is fine — the handler just keeps running and replies normally, as it always has.
 

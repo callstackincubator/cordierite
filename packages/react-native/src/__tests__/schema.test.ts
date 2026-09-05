@@ -817,7 +817,7 @@ describe("toToolDescriptor: schemas MCP cannot represent (issue #26)", () => {
     const relevant = warningsMentioning(warnings, "non-object-output");
     expect(relevant).toHaveLength(1);
     expect(relevant[0]!.join(" ")).toContain("output");
-    expect(relevant[0]!.join(" ")).toContain("structuredContent");
+    expect(relevant[0]!.join(" ")).toContain("no schema describing it");
   });
 
   test("warns once for a non-object-rooted input schema", () => {
@@ -839,22 +839,29 @@ describe("toToolDescriptor: schemas MCP cannot represent (issue #26)", () => {
     expect(relevant[0]!.join(" ")).toContain("input");
   });
 
-  test("a union export (anyOf, no root type) warns even though every branch is an object", () => {
-    const warnings = withWarningsCaptured(() => {
-      toToolDescriptor({
-        name: "union-output",
-        description: "d",
-        outputSchema: normalizeToolSchema(
-          withExportedShape(objectShape, {
-            anyOf: [{ type: "object" }, { type: "object" }],
-          }),
-          "l",
-        ),
+  test.each([
+    ["union-output", "anyOf"],
+    ["discriminated-union-output", "oneOf"],
+    ["intersection-output", "allOf"],
+  ])(
+    "a %s export (%s, no root type) warns even though every branch is an object",
+    (toolName, keyword) => {
+      const warnings = withWarningsCaptured(() => {
+        toToolDescriptor({
+          name: toolName,
+          description: "d",
+          outputSchema: normalizeToolSchema(
+            withExportedShape(objectShape, {
+              [keyword]: [{ type: "object" }, { type: "object" }],
+            }),
+            "l",
+          ),
+        });
       });
-    });
 
-    expect(warningsMentioning(warnings, "union-output")).toHaveLength(1);
-  });
+      expect(warningsMentioning(warnings, toolName)).toHaveLength(1);
+    },
+  );
 
   test("stays silent for object-rooted schemas on both sides", () => {
     const warnings = withWarningsCaptured(() => {

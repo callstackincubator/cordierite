@@ -1,86 +1,121 @@
 /**
- * `toMcpTool`'s schema gate (issue #26). MCP's `Tool` declares both `inputSchema.type` and
- * `outputSchema.type` as the literal `"object"` and clients validate the whole `tools/list`
- * result, so a single entry rooted at anything else takes the entire list down. The JSON Schema
- * literals below are what zod v4's exporter actually emits for the constructs named in each case.
+ * The MCP tool mapper's schema gate (issue #26). A client validates the whole `tools/list` result
+ * against the SDK's `ToolSchema`, so a single entry it rejects takes the entire list down. Every
+ * fixture below is asserted against that same `ToolSchema` in the first describe block, so these
+ * tests cannot quietly drift from what the SDK actually accepts if the pinned version changes.
  */
 
-import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
+import { describe, expect, test } from "vitest";
+
+import { ToolSchema } from "@modelcontextprotocol/sdk/types.js";
 
 import type { ToolDescriptor, ToolSchemaDescriptor } from "@cordierite/shared";
 
-import { resetToolMappingWarnings, toMcpTool } from "../mcp/tool-mapping.js";
+import { createMcpToolMapper, emitsMcpOutputSchema, type McpToolMapper } from "../mcp/tool-mapping.js";
 import type { NamespacedTool } from "../mcp/tool-namespace.js";
 
 const EMPTY_OBJECT_SCHEMA = { type: "object", additionalProperties: true };
 
-/** The notices go to the real stderr; capture them so the suite stays quiet and so the
- * dedup assertions below have something to count. */
-let stderr: MockInstance<(...args: unknown[]) => void>;
-
-beforeEach(() => {
-  stderr = vi.spyOn(console, "error").mockImplementation(() => {}) as unknown as typeof stderr;
-});
-
-afterEach(() => {
-  // Module-level dedup sets would otherwise leak the first case's warning into every later one.
-  resetToolMappingWarnings();
-  vi.restoreAllMocks();
-});
-
-const namespacedTool = (descriptor: Partial<ToolDescriptor>): NamespacedTool => ({
-  mcpName: descriptor.name ?? "tool",
-  selector: "pixel-8",
-  descriptor: { name: "tool", description: "A test tool.", ...descriptor },
-  policy: "allow",
-});
-
-const map = (descriptor: Partial<ToolDescriptor>) => toMcpTool(namespacedTool(descriptor), false);
-
-/** zod v4 exports, by construct. */
+/** What zod v4.4.3's exporter emits, verified against the real zod, by construct. */
 const OBJECT_SCHEMA: ToolSchemaDescriptor = {
   type: "object",
   properties: { echoed: { type: "string" } },
   required: ["echoed"],
   additionalProperties: false,
 };
-const PASSTHROUGH_SCHEMA: ToolSchemaDescriptor = { type: "object", properties: {}, additionalProperties: true };
-const RECORD_SCHEMA: ToolSchemaDescriptor = { type: "object", propertyNames: { type: "string" }, additionalProperties: { type: "number" } };
+/** `z.object({}).passthrough()` / `z.looseObject({})`. */
+const PASSTHROUGH_SCHEMA: ToolSchemaDescriptor = { type: "object", properties: {}, additionalProperties: {} };
+/** `z.record(z.string(), z.number())`. */
+const RECORD_SCHEMA: ToolSchemaDescriptor = {
+  type: "object",
+  propertyNames: { type: "string" },
+  additionalProperties: { type: "number" },
+};
 const ARRAY_SCHEMA: ToolSchemaDescriptor = { type: "array", items: { type: "string" } };
 const STRING_SCHEMA: ToolSchemaDescriptor = { type: "string" };
 const NUMBER_SCHEMA: ToolSchemaDescriptor = { type: "number" };
 const BOOLEAN_SCHEMA: ToolSchemaDescriptor = { type: "boolean" };
 const NULL_SCHEMA: ToolSchemaDescriptor = { type: "null" };
-/** `z.union([z.object(...), z.object(...)])` — `anyOf`, no root `type`. */
+/** `z.union([z.object(...), z.object(...)])`, and equally `z.object(...).nullable()` — `anyOf`,
+ * no root `type`. */
 const UNION_SCHEMA: ToolSchemaDescriptor = { anyOf: [{ type: "object" }, { type: "object" }] };
 /** `z.discriminatedUnion(...)` of objects — `oneOf`, still no root `type`. */
 const DISCRIMINATED_UNION_SCHEMA: ToolSchemaDescriptor = { oneOf: [{ type: "object" }, { type: "object" }] };
-/** A `type` that *includes* "object" is still not the literal MCP requires. */
-const NULLABLE_OBJECT_SCHEMA: ToolSchemaDescriptor = { type: ["object", "null"] };
+/** `z.intersection(z.object(...), z.object(...))` — `allOf`, still no root `type`. */
+const INTERSECTION_SCHEMA: ToolSchemaDescriptor = { allOf: [{ type: "object" }, { type: "object" }] };
 
-describe("toMcpTool: outputSchema is emitted only when object-rooted", () => {
-  test.each([
-    ["object", OBJECT_SCHEMA],
-    ["passthrough object", PASSTHROUGH_SCHEMA],
-    ["record", RECORD_SCHEMA],
-  ])("keeps an object-rooted %s output schema verbatim", (_label, schema) => {
-    expect(map({ output_schema: schema }).outputSchema).toEqual(schema);
+/** Not zod exports — hand-written or third-party-exporter shapes that are object-*rooted* yet
+ * still rejected, which is why the gate is the SDK schema rather than a `type === "object"`
+ * check. */
+const BOOLEAN_SUBSCHEMA: ToolSchemaDescriptor = { type: "object", properties: { a: true } };
+const STRING_SUBSCHEMA: ToolSchemaDescriptor = { type: "object", properties: { a: "string" } };
+const SCALAR_REQUIRED: ToolSchemaDescriptor = { type: "object", required: "name" };
+const NULLABLE_OBJECT_TYPE: ToolSchemaDescriptor = { type: ["object", "null"] };
+
+const ACCEPTED: Array<[string, ToolSchemaDescriptor]> = [
+  ["object", OBJECT_SCHEMA],
+  ["passthrough object", PASSTHROUGH_SCHEMA],
+  ["record", RECORD_SCHEMA],
+];
+
+const REJECTED: Array<[string, ToolSchemaDescriptor]> = [
+  ["array", ARRAY_SCHEMA],
+  ["string", STRING_SCHEMA],
+  ["number", NUMBER_SCHEMA],
+  ["boolean", BOOLEAN_SCHEMA],
+  ["null", NULL_SCHEMA],
+  ["union (anyOf)", UNION_SCHEMA],
+  ["discriminated union of objects (oneOf)", DISCRIMINATED_UNION_SCHEMA],
+  ["intersection of objects (allOf)", INTERSECTION_SCHEMA],
+  ["object with a boolean subschema", BOOLEAN_SUBSCHEMA],
+  ["object with a string subschema", STRING_SUBSCHEMA],
+  ["object with a scalar required", SCALAR_REQUIRED],
+  ['type ["object", "null"]', NULLABLE_OBJECT_TYPE],
+];
+
+const namespacedTool = (descriptor: Partial<ToolDescriptor>, selector = "pixel-8"): NamespacedTool => ({
+  mcpName: descriptor.name ?? "tool",
+  selector,
+  descriptor: { name: "tool", description: "A test tool.", ...descriptor },
+  policy: "allow",
+});
+
+/** A mapper whose notices are captured instead of printed — no console spying, no module state. */
+const mapperWithNotices = (): { map: McpToolMapper; notices: string[] } => {
+  const notices: string[] = [];
+  return { map: createMcpToolMapper((message) => notices.push(message)), notices };
+};
+
+const map = (descriptor: Partial<ToolDescriptor>) => mapperWithNotices().map(namespacedTool(descriptor), false);
+
+describe("the fixtures match what the pinned MCP SDK accepts", () => {
+  test.each(ACCEPTED)("ToolSchema accepts a %s schema in both slots", (_label, schema) => {
+    expect(ToolSchema.safeParse({ name: "probe", inputSchema: schema }).success).toBe(true);
+    expect(
+      ToolSchema.safeParse({ name: "probe", inputSchema: { type: "object" }, outputSchema: schema }).success,
+    ).toBe(true);
   });
 
-  test.each([
-    ["array", ARRAY_SCHEMA],
-    ["string", STRING_SCHEMA],
-    ["number", NUMBER_SCHEMA],
-    ["boolean", BOOLEAN_SCHEMA],
-    ["null", NULL_SCHEMA],
-    ["union", UNION_SCHEMA],
-    ["discriminated union of objects", DISCRIMINATED_UNION_SCHEMA],
-    ["nullable object", NULLABLE_OBJECT_SCHEMA],
-  ])("omits a non-object-rooted %s output schema", (_label, schema) => {
+  test.each(REJECTED)("ToolSchema rejects a %s schema in both slots", (_label, schema) => {
+    expect(ToolSchema.safeParse({ name: "probe", inputSchema: schema }).success).toBe(false);
+    expect(
+      ToolSchema.safeParse({ name: "probe", inputSchema: { type: "object" }, outputSchema: schema }).success,
+    ).toBe(false);
+  });
+});
+
+describe("outputSchema is emitted only when the SDK would accept it", () => {
+  test.each(ACCEPTED)("keeps a %s output schema verbatim", (_label, schema) => {
+    expect(map({ output_schema: schema }).outputSchema).toEqual(schema);
+    expect(emitsMcpOutputSchema(schema)).toBe(true);
+  });
+
+  test.each(REJECTED)("omits a %s output schema", (_label, schema) => {
     const mapped = map({ output_schema: schema });
 
     expect(mapped).not.toHaveProperty("outputSchema");
     expect(mapped.outputSchema).toBeUndefined();
+    expect(emitsMcpOutputSchema(schema)).toBe(false);
   });
 
   test("the tool itself stays listed, named and described when its output schema is dropped", () => {
@@ -93,19 +128,24 @@ describe("toMcpTool: outputSchema is emitted only when object-rooted", () => {
 
   test("omits outputSchema when the descriptor has none", () => {
     expect(map({}).outputSchema).toBeUndefined();
+    expect(emitsMcpOutputSchema(undefined)).toBe(false);
+  });
+
+  test("every emitted tool passes the SDK's own ToolSchema", () => {
+    for (const [, schema] of [...ACCEPTED, ...REJECTED]) {
+      const mapped = map({ name: "probe", input_schema: schema, output_schema: schema });
+
+      expect(ToolSchema.safeParse(mapped).success).toBe(true);
+    }
   });
 });
 
-describe("toMcpTool: inputSchema always ends up object-rooted", () => {
-  test("keeps an object-rooted input schema verbatim", () => {
-    expect(map({ input_schema: OBJECT_SCHEMA }).inputSchema).toEqual(OBJECT_SCHEMA);
+describe("inputSchema always ends up something MCP accepts", () => {
+  test.each(ACCEPTED)("keeps a %s input schema verbatim", (_label, schema) => {
+    expect(map({ input_schema: schema }).inputSchema).toEqual(schema);
   });
 
-  test.each([
-    ["array", ARRAY_SCHEMA],
-    ["string", STRING_SCHEMA],
-    ["union", UNION_SCHEMA],
-  ])("falls back to the permissive empty object schema for a %s input schema", (_label, schema) => {
+  test.each(REJECTED)("falls back to the permissive empty object schema for a %s input schema", (_label, schema) => {
     expect(map({ input_schema: schema }).inputSchema).toEqual(EMPTY_OBJECT_SCHEMA);
   });
 
@@ -114,36 +154,89 @@ describe("toMcpTool: inputSchema always ends up object-rooted", () => {
   });
 });
 
-describe("toMcpTool: stderr notices", () => {
-  test("warns once per tool name on stderr when an output schema is dropped, however often tools/list is answered", () => {
-    map({ name: "list-todos", output_schema: ARRAY_SCHEMA });
-    map({ name: "list-todos", output_schema: ARRAY_SCHEMA });
-    map({ name: "list-todos", output_schema: ARRAY_SCHEMA });
+describe("degradation notices", () => {
+  test("warns once per tool however often tools/list is answered", () => {
+    const { map: mapper, notices } = mapperWithNotices();
+    const tool = namespacedTool({ name: "list-todos", output_schema: ARRAY_SCHEMA });
 
-    expect(stderr).toHaveBeenCalledTimes(1);
-    expect(String(stderr.mock.calls[0]![0])).toContain("list-todos");
-    expect(String(stderr.mock.calls[0]![0])).toContain("output schema");
+    mapper(tool, false);
+    mapper(tool, false);
+    mapper(tool, false);
+
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain("list-todos");
+    expect(notices[0]).toContain("output schema");
   });
 
-  test("warns separately for a different tool, and separately for input and output on the same tool", () => {
-    map({ name: "a", output_schema: ARRAY_SCHEMA });
-    map({ name: "b", output_schema: ARRAY_SCHEMA });
-    map({ name: "a", input_schema: STRING_SCHEMA });
+  test("names the tool as the agent sees it, and says why MCP rejected the schema", () => {
+    const { map: mapper, notices } = mapperWithNotices();
 
-    expect(stderr).toHaveBeenCalledTimes(3);
+    mapper(
+      {
+        mcpName: "pixel-8__lies",
+        selector: "pixel-8",
+        descriptor: { name: "lies", description: "d", output_schema: SCALAR_REQUIRED },
+        policy: "allow",
+      },
+      false,
+    );
+
+    expect(notices[0]).toContain("pixel-8__lies");
+    expect(notices[0]).toContain("required");
   });
 
-  test("stays silent for object-rooted and absent schemas", () => {
-    map({ name: "quiet", input_schema: OBJECT_SCHEMA, output_schema: OBJECT_SCHEMA });
-    map({ name: "also-quiet" });
+  test("two sessions exposing the same broken tool each get a notice", () => {
+    const { map: mapper, notices } = mapperWithNotices();
 
-    expect(stderr).not.toHaveBeenCalled();
+    mapper(namespacedTool({ name: "list-todos", output_schema: ARRAY_SCHEMA }, "pixel-8"), false);
+    mapper(namespacedTool({ name: "list-todos", output_schema: ARRAY_SCHEMA }, "iphone-16"), false);
+
+    expect(notices).toHaveLength(2);
+  });
+
+  test("re-registering the same tool with a differently broken schema warns again", () => {
+    const { map: mapper, notices } = mapperWithNotices();
+
+    mapper(namespacedTool({ name: "list-todos", output_schema: ARRAY_SCHEMA }), false);
+    mapper(namespacedTool({ name: "list-todos", output_schema: STRING_SCHEMA }), false);
+
+    expect(notices).toHaveLength(2);
+  });
+
+  test("the single-to-multi session flip, which rewrites mcpName, does not re-warn", () => {
+    const { map: mapper, notices } = mapperWithNotices();
+    const descriptor = { name: "list-todos", description: "d", output_schema: ARRAY_SCHEMA };
+
+    mapper({ mcpName: "list-todos", selector: "pixel-8", descriptor, policy: "allow" }, false);
+    mapper({ mcpName: "pixel-8__list-todos", selector: "pixel-8", descriptor, policy: "allow" }, false);
+
+    expect(notices).toHaveLength(1);
+  });
+
+  test("warns separately for the input and the output side of one tool", () => {
+    const { map: mapper, notices } = mapperWithNotices();
+
+    mapper(namespacedTool({ name: "a", input_schema: STRING_SCHEMA, output_schema: ARRAY_SCHEMA }), false);
+
+    expect(notices).toHaveLength(2);
+    expect(notices.filter((notice) => notice.includes("input schema"))).toHaveLength(1);
+    expect(notices.filter((notice) => notice.includes("output schema"))).toHaveLength(1);
+  });
+
+  test("stays silent for accepted and absent schemas", () => {
+    const { map: mapper, notices } = mapperWithNotices();
+
+    mapper(namespacedTool({ name: "quiet", input_schema: OBJECT_SCHEMA, output_schema: RECORD_SCHEMA }), false);
+    mapper(namespacedTool({ name: "also-quiet" }), false);
+
+    expect(notices).toEqual([]);
   });
 });
 
-describe("toMcpTool: unrelated mapping is unchanged", () => {
+describe("unrelated mapping is unchanged", () => {
   test("annotations and the requiresUserInteraction meta still map alongside a dropped output schema", () => {
-    const mapped = toMcpTool(
+    const { map: mapper } = mapperWithNotices();
+    const mapped = mapper(
       {
         mcpName: "pixel-8__list-todos",
         selector: "pixel-8",

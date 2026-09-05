@@ -335,10 +335,28 @@ describe("mcp: tools/list and tools/call", () => {
         description: "Returns the todos.",
         output_schema: { type: "array", items: { type: "string" } },
       },
+      {
+        // `z.union([z.object(...), z.object(...)])`: `anyOf` with no root `type`, so MCP rejects
+        // it even though every branch — and every result — is an object.
+        name: "get-status",
+        description: "Returns one of two shapes.",
+        output_schema: {
+          anyOf: [
+            { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+            { type: "object", properties: { error: { type: "string" } }, required: ["error"] },
+          ],
+        },
+      },
     ]);
 
     const handle = await createMcpHandle(stateDir);
     const client = await connectInMemoryClient(handle);
+
+    const resultsByTool: Record<string, unknown> = {
+      "get-profile": { name: "Ada" },
+      "list-todos": ["write tests", "ship it"],
+      "get-status": { ok: true },
+    };
 
     app.socket.on("message", (data) => {
       const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
@@ -349,7 +367,7 @@ describe("mcp: tools/list and tools/call", () => {
             type: "tool_result",
             session_id: app.sessionId,
             id: msg.id,
-            result: msg.name === "get-profile" ? { name: "Ada" } : ["write tests", "ship it"],
+            result: resultsByTool[msg.name as string],
           }),
         );
       }
@@ -359,10 +377,11 @@ describe("mcp: tools/list and tools/call", () => {
     // the output schemas `callTool` below enforces — exactly what a real client does.
     const listed = await client.listTools();
     const proxiedTools = withoutBuiltinTools(listed.tools);
-    expect(proxiedTools.map((tool) => tool.name).sort()).toEqual(["get-profile", "list-todos"]);
+    expect(proxiedTools.map((tool) => tool.name).sort()).toEqual(["get-profile", "get-status", "list-todos"]);
 
     const objectTool = proxiedTools.find((tool) => tool.name === "get-profile")!;
     const arrayTool = proxiedTools.find((tool) => tool.name === "list-todos")!;
+    const unionTool = proxiedTools.find((tool) => tool.name === "get-status")!;
     expect(objectTool.outputSchema).toEqual({
       type: "object",
       properties: { name: { type: "string" } },
@@ -370,6 +389,7 @@ describe("mcp: tools/list and tools/call", () => {
       additionalProperties: false,
     });
     expect(arrayTool.outputSchema).toBeUndefined();
+    expect(unionTool.outputSchema).toBeUndefined();
 
     const profile = await client.callTool({ name: "get-profile", arguments: {} });
     expect(profile.isError).not.toBe(true);
@@ -381,6 +401,14 @@ describe("mcp: tools/list and tools/call", () => {
     expect(todos.isError).not.toBe(true);
     expect(todos.structuredContent).toBeUndefined();
     expect(todos.content).toEqual([{ type: "text", text: JSON.stringify(["write tests", "ship it"]) }]);
+
+    // A dropped schema never turns a good result into an error: the union tool's result *is* an
+    // object, so it still travels as `structuredContent` — the client just has no schema to
+    // validate it against, which is allowed.
+    const status = await client.callTool({ name: "get-status", arguments: {} });
+    expect(status.isError).not.toBe(true);
+    expect(status.structuredContent).toEqual({ ok: true });
+    expect(status.content).toEqual([{ type: "text", text: JSON.stringify({ ok: true }) }]);
 
     app.socket.close();
   });
