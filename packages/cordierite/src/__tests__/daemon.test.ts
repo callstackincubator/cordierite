@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { connect, type Socket } from "node:net";
+import { connect, createServer as createNetServer, type Socket } from "node:net";
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
+import { handleDaemonStatusCommand } from "../commands/daemon.js";
 import { AUDIT_PRUNE_INTERVAL_MS, startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { DaemonAlreadyRunningError } from "../daemon/pidfile.js";
 import { startRpcServer } from "../daemon/rpc-server.js";
@@ -323,6 +324,21 @@ describe("daemon: audit retention", () => {
     await writeFile(path.join(auditDir, `${stamp}.jsonl`), "{}\n", { mode: 0o600 });
   };
 
+  /** These tests are about the audit directory, not the wss listener, so they pin a free port
+   * rather than inheriting the default 8443 — nothing here should fail because something else on
+   * the machine happens to hold it. */
+  const pickFreePort = async (): Promise<number> => {
+    return new Promise((resolve, reject) => {
+      const server = createNetServer();
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        const port = address && typeof address !== "string" ? address.port : 0;
+        server.close(() => resolve(port));
+      });
+    });
+  };
+
   /** Both sweeps are fire-and-forget (`void auditLogger.prune()`), so the assertion polls rather
    * than sleeping on a guessed duration. */
   const waitForAuditDir = async (auditDir: string, expected: string[]): Promise<void> => {
@@ -345,7 +361,7 @@ describe("daemon: audit retention", () => {
     const paths = getStateDirPaths(stateDir);
     const { mkdir } = await import("node:fs/promises");
     await mkdir(paths.auditDir, { recursive: true });
-    await writeFile(paths.configPath, JSON.stringify({ auditRetentionDays: 7 }));
+    await writeFile(paths.configPath, JSON.stringify({ auditRetentionDays: 7, wssPort: await pickFreePort() }));
 
     await writeDayFile(paths.auditDir, "2026-09-05"); // today per the clock below
     await writeDayFile(paths.auditDir, "2026-08-01"); // stale at startup
@@ -378,10 +394,18 @@ describe("daemon: audit retention", () => {
     const paths = getStateDirPaths(stateDir);
     const { mkdir } = await import("node:fs/promises");
     await mkdir(paths.auditDir, { recursive: true });
-    await writeFile(paths.configPath, JSON.stringify({ auditRetentionDays: 45 }));
+    await writeFile(paths.configPath, JSON.stringify({ auditRetentionDays: 45, wssPort: await pickFreePort() }));
 
-    const daemon = await startTrackedDaemon(stateDir);
-    await writeFile(path.join(paths.auditDir, "2026-09-05.jsonl"), "x".repeat(120), { mode: 0o600 });
+    // Clock-injected, and the fixture's name is derived from it, for two reasons: the file must
+    // be dated relative to the daemon's own idea of "today" rather than the calendar the suite
+    // happens to run on, and naming it *today* makes it immune to the fire-and-forget startup
+    // sweep that may still be in flight — today's file is the one file pruning can never take.
+    const now = new Date("2026-09-05T12:00:00.000Z");
+    const daemon = await startDaemon({ stateDir, clock: { now: () => now } });
+    runningDaemons.push(daemon);
+
+    const todayFile = `${now.toISOString().slice(0, 10)}.jsonl`;
+    await writeFile(path.join(paths.auditDir, todayFile), "x".repeat(120), { mode: 0o600 });
 
     const socket = await connectRaw(daemon.paths.socketPath);
     const reader = createLineReader(socket);
@@ -398,6 +422,59 @@ describe("daemon: audit retention", () => {
     });
 
     socket.destroy();
+    await rm(stateDir, { force: true, recursive: true });
+  });
+
+  test("daemon status degrades cleanly against a daemon that predates retention", async () => {
+    const stateDir = await makeTempStateDir();
+    const paths = getStateDirPaths(stateDir);
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(stateDir, { recursive: true });
+
+    // A daemon.status exactly as a pre-retention daemon answers it. A running daemon outlives the
+    // CLI upgrade that would replace it, so this pairing is reachable in the field.
+    const legacyDaemon = await startRpcServer({
+      socketPath: paths.socketPath,
+      dispatch: {
+        "daemon.status": () => ({
+          version: "0.6.0",
+          pid: 4242,
+          startedAt: "2026-09-01T00:00:00.000Z",
+          wssPort: 8443,
+          pinnedKeys: ["sha256/legacy"],
+          sessions: [],
+          policy: { default: "allow", destructive: "allow" },
+          audit: { path: paths.auditDir, failedWrites: 3 },
+        }),
+      },
+    });
+
+    try {
+      const result = await handleDaemonStatusCommand({ stateDir });
+
+      if (!result.ok) {
+        throw new Error(`Expected a successful daemon status result, got ${JSON.stringify(result)}`);
+      }
+
+      // Reported as absent, not as zero: the CLI was never told, and "0 files retained" would be
+      // a different (and false) claim. `--json` drops the keys entirely.
+      expect(result.data.audit).toEqual({
+        path: paths.auditDir,
+        failed_writes: 3,
+        failed_prunes: undefined,
+        retention_days: undefined,
+        files: undefined,
+        bytes: undefined,
+      });
+      expect(JSON.parse(JSON.stringify(result.data.audit))).toEqual({
+        path: paths.auditDir,
+        failed_writes: 3,
+      });
+      expect(result.data.daemon.version).toBe("0.6.0");
+    } finally {
+      await legacyDaemon.close();
+    }
+
     await rm(stateDir, { force: true, recursive: true });
   });
 
