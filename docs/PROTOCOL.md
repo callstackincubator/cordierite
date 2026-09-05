@@ -55,8 +55,9 @@ endpoint and brackets IPv6 literals: `wss://[fd00::1]:8443` vs. `wss://192.168.1
    no human, fully scriptable.
 2. **Physical device on LAN**: printed deep link + QR (`cordierite link --qr`).
 3. **Physical iOS device, experimental** (`--open ios-device` / `target: "ios-device"`,
-   issue #31): `xcrun devicectl device process launch --device <udid> --payload-url <link>
-   <bundle-id>` hands the link to an installed, dev-signed app on a paired iOS 17+ device.
+   issue #31): `xcrun devicectl device process launch --device <udid> --terminate-existing
+   --payload-url <link> <bundle-id>` hands the link to an installed, dev-signed app on a
+   connected iOS 17+ device (the app is relaunched, which Cordierite copes with).
    This is path 2's addressing with path 1's automation: the link keeps the **detected LAN
    address** — there is no `adb reverse` equivalent on iOS, so `127.0.0.1` would point the
    phone at itself. Never auto-detected, and needs the app's bundle id.

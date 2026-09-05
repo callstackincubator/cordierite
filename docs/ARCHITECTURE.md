@@ -266,6 +266,17 @@ belong here:
   It is experimental: `devicectl`'s `--payload-url` is undocumented by Apple and cannot be
   exercised in CI, so all of it sits behind the injectable `ExecFn` seam. Prerequisites are in
   the [`cordierite` package README](../packages/cordierite/README.md).
+- Two `devicectl` details the enumeration has to defend against, since neither is documented:
+  `list devices` returns **every CoreDevice the Mac has ever paired**, across platforms and
+  regardless of whether it is connected — so entries are filtered on `hardwareProperties.platform`
+  and `connectionProperties` before the "exactly one device" rule counts them, or a phone in
+  someone's pocket turns the one connected iPhone into a spurious ambiguity error. Filtering is
+  client-side rather than via `devicectl --filter` so every rule is covered by the `ExecFn` tests
+  instead of by an NSPredicate no test can evaluate; each rule drops an entry only when the field is
+  present and disqualifying, so a `devicectl` that stops emitting one degrades to a loud launch
+  failure rather than to silently finding nothing. And the bundle id is the launch argv's only
+  trailing positional, so it is shape-validated at every entry point — a value starting with `-`
+  would be read by `devicectl` as an option.
 
 ## 9. MCP server
 

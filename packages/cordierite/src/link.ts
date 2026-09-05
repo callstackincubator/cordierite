@@ -21,6 +21,8 @@ import { RPC_METHODS, type AgentEndpoint, type LinkCreateResult } from "@cordier
 import {
   deliverToOpenTarget,
   isOpenTarget,
+  isValidBundleId,
+  invalidBundleIdMessage,
   usesLoopbackAddress,
   MISSING_BUNDLE_ID_MESSAGE,
   OPEN_TARGETS,
@@ -105,6 +107,10 @@ export const mintLink = async (options: MintLinkOptions): Promise<MintLinkResult
 
   if (options.target === "ios-device" && !bundleId) {
     throw usageError(MISSING_BUNDLE_ID_MESSAGE);
+  }
+
+  if (bundleId !== undefined && !isValidBundleId(bundleId)) {
+    throw usageError(invalidBundleIdMessage(bundleId));
   }
 
   const result = await callDaemon<LinkCreateResult>(

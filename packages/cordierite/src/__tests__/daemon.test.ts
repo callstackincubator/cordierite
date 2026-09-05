@@ -309,6 +309,16 @@ describe("daemon lifecycle", () => {
     await writeFile(paths.configPath, JSON.stringify({ iosBundleId: 42 }));
     await expect(loadConfig(paths)).rejects.toThrow(/iosBundleId/u);
 
+    // Shape-checked, not just non-empty: this value becomes a trailing positional in a `devicectl`
+    // argv, where a leading "-" would be read as an option rather than as the app to launch.
+    for (const bad of ["--console", "-x", "com.example app", "com.example;id"]) {
+      await writeFile(paths.configPath, JSON.stringify({ iosBundleId: bad }));
+      await expect(loadConfig(paths)).rejects.toThrow(/iosBundleId/u);
+    }
+
+    await writeFile(paths.configPath, JSON.stringify({ iosBundleId: "com.example.my-app2" }));
+    await expect(loadConfig(paths)).resolves.toMatchObject({ iosBundleId: "com.example.my-app2" });
+
     await rm(stateDir, { force: true, recursive: true });
   });
 });

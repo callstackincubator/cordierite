@@ -68,18 +68,47 @@ const devicectlExec = (
   };
 };
 
-const devicectlListing = (
-  devices: Array<{ udid?: string; identifier?: string; name?: string }>,
-): unknown => ({
+type DevicectlFixtureDevice = {
+  udid?: string;
+  identifier?: string;
+  name?: string;
+  /** Omitted entirely when `null`, so the "field absent ⇒ keep the device" rule is testable. */
+  platform?: string | null;
+  tunnelState?: string;
+  pairingState?: string;
+};
+
+const devicectlListing = (devices: DevicectlFixtureDevice[]): unknown => ({
   info: { outcome: "success" },
   result: {
     devices: devices.map((device) => ({
       ...(device.identifier === undefined ? {} : { identifier: device.identifier }),
       deviceProperties: { name: device.name },
-      hardwareProperties: device.udid === undefined ? {} : { udid: device.udid, platform: "iOS" },
+      connectionProperties: {
+        ...(device.tunnelState === undefined ? {} : { tunnelState: device.tunnelState }),
+        ...(device.pairingState === undefined ? {} : { pairingState: device.pairingState }),
+      },
+      hardwareProperties: {
+        ...(device.udid === undefined ? {} : { udid: device.udid }),
+        ...(device.platform === null ? {} : { platform: device.platform ?? "iOS" }),
+      },
     })),
   },
 });
+
+/** The launch argv for a device, so the expectations stay in one place as the flags evolve. */
+const launchArgs = (udid: string, deepLink: string, bundleId: string): string[] => [
+  "devicectl",
+  "device",
+  "process",
+  "launch",
+  "--device",
+  udid,
+  "--terminate-existing",
+  "--payload-url",
+  deepLink,
+  bundleId,
+];
 
 /** The directory `runDevicectlJson` creates and must remove; asserted gone after every call. */
 const devicectlTempDirs = (calls: Array<{ command: string; args: string[] }>): string[] => {
@@ -224,17 +253,7 @@ describe("deliverToOpenTarget: ios-device", () => {
     expect(calls[0]!.args[5]).toBe("--json-output");
     expect(calls[1]).toEqual({
       command: "xcrun",
-      args: [
-        "devicectl",
-        "device",
-        "process",
-        "launch",
-        "--device",
-        "00008030-AAAA",
-        "--payload-url",
-        DEEP_LINK,
-        BUNDLE_ID,
-      ],
+      args: launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID),
     });
 
     // The deep link is one argv element, unquoted: `execFile` never re-tokenizes and, unlike
@@ -294,20 +313,7 @@ describe("deliverToOpenTarget: ios-device", () => {
     });
 
     expect(calls).toEqual([
-      {
-        command: "xcrun",
-        args: [
-          "devicectl",
-          "device",
-          "process",
-          "launch",
-          "--device",
-          "00008030-BBBB",
-          "--payload-url",
-          DEEP_LINK,
-          BUNDLE_ID,
-        ],
-      },
+      { command: "xcrun", args: launchArgs("00008030-BBBB", DEEP_LINK, BUNDLE_ID) },
     ]);
   });
 
@@ -323,7 +329,7 @@ describe("deliverToOpenTarget: ios-device", () => {
         bundleId: BUNDLE_ID,
         exec,
       }),
-    ).rejects.toThrow(/no paired ios device was found/iu);
+    ).rejects.toThrow(/no connected ios device was found/iu);
 
     expect(calls).toHaveLength(1);
   });
@@ -428,7 +434,189 @@ describe("deliverToOpenTarget: ios-device", () => {
         bundleId: BUNDLE_ID,
         exec,
       }),
-    ).rejects.toThrow(/no paired ios device was found/iu);
+    ).rejects.toThrow(/no connected ios device was found/iu);
+  });
+
+  test("devicectl exiting 0 without writing the file at all reads as an empty listing", async () => {
+    // The ENOENT branch, distinct from "wrote something unparseable": `readFile` throws before
+    // `JSON.parse` is ever reached, and that must still degrade to "no device found".
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec: ExecFn = async (command, args) => {
+      calls.push({ command, args });
+      return { stdout: "", stderr: "" };
+    };
+
+    await expect(
+      deliverToOpenTarget({
+        target: "ios-device",
+        deepLink: DEEP_LINK,
+        wssPort: 8443,
+        bundleId: BUNDLE_ID,
+        exec,
+      }),
+    ).rejects.toThrow(/no connected ios device was found/iu);
+
+    expect(calls).toHaveLength(1);
+    expect(existsSync(devicectlTempDirs(calls)[0]!)).toBe(false);
+  });
+});
+
+describe("deliverToOpenTarget: ios-device listing hygiene", () => {
+  const deliverTo = async (
+    devices: DevicectlFixtureDevice[],
+    calls: Array<{ command: string; args: string[] }>,
+  ): Promise<void> => {
+    await deliverToOpenTarget({
+      target: "ios-device",
+      deepLink: DEEP_LINK,
+      wssPort: 8443,
+      bundleId: BUNDLE_ID,
+      exec: devicectlExec(calls, devicectlListing(devices)),
+    });
+  };
+
+  test("non-iOS CoreDevices are ignored, so a paired Watch/Vision Pro never creates ambiguity", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    // `devicectl list devices` returns every CoreDevice the Mac has paired, whatever the platform.
+    // Counting these would turn the one deliverable iPhone into "multiple devices, specify --device".
+    await deliverTo(
+      [
+        { udid: "WATCH-1", name: "My Watch", platform: "watchOS" },
+        { udid: "VISION-1", name: "My Vision Pro", platform: "xrOS" },
+        { udid: "MAC-1", name: "My Mac", platform: "macOS" },
+        { udid: "00008030-AAAA", name: "My iPhone", platform: "iOS" },
+      ],
+      calls,
+    );
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
+  });
+
+  test("disconnected and unpaired devices are ignored, leaving the one that is actually reachable", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    await deliverTo(
+      [
+        { udid: "OLD-1", name: "Someone's old iPhone", tunnelState: "disconnected" },
+        { udid: "OLD-2", name: "An iPad in a drawer", tunnelState: "unavailable" },
+        { udid: "OLD-3", name: "A phone that was never trusted", pairingState: "unpaired" },
+        { udid: "00008030-AAAA", name: "My iPhone", tunnelState: "connected", pairingState: "paired" },
+      ],
+      calls,
+    );
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
+  });
+
+  test("platform matching is case-insensitive, so an \"ios\" spelling is still deliverable", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    await deliverTo([{ udid: "00008030-AAAA", name: "My iPhone", platform: "ios" }], calls);
+
+    expect(calls[1]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
+  });
+
+  test("a listing with none of the filter fields keeps the device rather than silently finding nothing", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    // Every one of these fields is undocumented. If a future devicectl stops emitting them, the
+    // right failure is a loud launch error, not a silent "no device found" on a plugged-in phone.
+    await deliverTo([{ udid: "00008030-AAAA", name: "My iPhone", platform: null }], calls);
+
+    expect(calls[1]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
+  });
+
+  test("only disconnected/non-iOS entries: reports none found, and says what was ignored", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    await expect(
+      deliverTo(
+        [
+          { udid: "WATCH-1", name: "My Watch", platform: "watchOS" },
+          { udid: "OLD-1", name: "Someone's old iPhone", tunnelState: "disconnected" },
+        ],
+        calls,
+      ),
+    ).rejects.toThrow(/no connected ios device was found/iu);
+
+    // The wording has to explain the disappearance, or a user staring at a Watch in Xcode's device
+    // list has no idea why Cordierite says there is nothing there.
+    await expect(deliverTo([{ udid: "WATCH-1", platform: "watchOS" }], [])).rejects.toThrow(
+      /disconnected devices and non-iOS ones/iu,
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  test("two connected iOS devices are still ambiguous once filtering has run", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    await expect(
+      deliverTo(
+        [
+          { udid: "00008030-AAAA", name: "My iPhone", tunnelState: "connected" },
+          { udid: "00008030-BBBB", name: "Test iPad", tunnelState: "connected" },
+          { udid: "WATCH-1", name: "My Watch", platform: "watchOS" },
+        ],
+        calls,
+      ),
+    ).rejects.toThrow(/My iPhone \(00008030-AAAA\).*Test iPad \(00008030-BBBB\)/su);
+
+    // The Watch must not appear in the disambiguation list either — it is not a choice.
+    await expect(
+      deliverTo(
+        [
+          { udid: "00008030-AAAA", name: "My iPhone" },
+          { udid: "00008030-BBBB", name: "Test iPad" },
+          { udid: "WATCH-1", name: "My Watch", platform: "watchOS" },
+        ],
+        [],
+      ),
+    ).rejects.not.toThrow(/My Watch/u);
+  });
+});
+
+describe("deliverToOpenTarget: ios-device bundle id validation", () => {
+  const deliverWithBundleId = (bundleId: string, calls: Array<{ command: string; args: string[] }>) =>
+    deliverToOpenTarget({
+      target: "ios-device",
+      deepLink: DEEP_LINK,
+      wssPort: 8443,
+      device: "00008030-AAAA",
+      bundleId,
+      exec: devicectlExec(calls, devicectlListing([])),
+    });
+
+  test("a bundle id starting with a dash is rejected before it can be read as a devicectl option", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    // The bundle id is the launch argv's only trailing positional: `--console` here would not be
+    // "the app to launch", it would change what the command does.
+    await expect(deliverWithBundleId("--console", calls)).rejects.toThrow(/not a valid iOS bundle id/u);
+    await expect(deliverWithBundleId("-x", calls)).rejects.toThrow(/not a valid iOS bundle id/u);
+
+    expect(calls).toEqual([]);
+  });
+
+  test("bundle ids containing shell/argv metacharacters or whitespace are rejected", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    for (const bad of ["com.example app", "com.example;rm -rf /", "com.example/../x", "com.$(id)"]) {
+      await expect(deliverWithBundleId(bad, calls)).rejects.toThrow(/not a valid iOS bundle id/u);
+    }
+
+    expect(calls).toEqual([]);
+  });
+
+  test("ordinary reverse-DNS bundle ids, including digits and hyphens, are accepted", async () => {
+    for (const good of ["com.example.playground", "com.example.my-app", "com.example.App2"]) {
+      const calls: Array<{ command: string; args: string[] }> = [];
+      await deliverWithBundleId(good, calls);
+      expect(calls[0]!.args.at(-1)).toBe(good);
+    }
   });
 });
 

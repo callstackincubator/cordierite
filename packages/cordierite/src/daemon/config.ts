@@ -6,6 +6,7 @@
 
 import { readFile } from "node:fs/promises";
 
+import { isValidBundleId } from "../cli/open-target.js";
 import type { StateDirPaths } from "./state-dir.js";
 
 export type PolicyDecision = "allow" | "deny" | "prompt";
@@ -176,7 +177,18 @@ export const loadConfig = async (
   }
 
   if (parsed.iosBundleId !== undefined) {
-    config.iosBundleId = requireNonEmptyString(parsed.iosBundleId, "iosBundleId");
+    const iosBundleId = requireNonEmptyString(parsed.iosBundleId, "iosBundleId");
+
+    // Shape-checked here, not just where it is used: this value ends up as a trailing positional in
+    // a `devicectl` argv, and a config typo starting with "-" would be read there as an option.
+    if (!isValidBundleId(iosBundleId)) {
+      throw configError(
+        "iosBundleId",
+        'must be a bundle id (letters, digits, "." and "-", starting with a letter or digit).',
+      );
+    }
+
+    config.iosBundleId = iosBundleId;
   }
 
   if (parsed.graceSeconds !== undefined) {

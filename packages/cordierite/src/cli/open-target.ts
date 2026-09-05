@@ -165,7 +165,19 @@ const runDevicectlJson = async (
   exec: ExecFn,
   buildArgs: (file: string) => string[],
 ): Promise<unknown> => {
-  const dir = await mkdtemp(path.join(tmpdir(), "cordierite-devicectl-"));
+  let dir: string;
+
+  try {
+    dir = await mkdtemp(path.join(tmpdir(), "cordierite-devicectl-"));
+  } catch (error) {
+    // A read-only or missing TMPDIR would otherwise surface as a bare `EACCES`/`ENOENT` against a
+    // path the user never chose, with nothing saying which knob to turn.
+    throw connectionError(
+      `A temporary directory for devicectl's --json-output could not be created in "${tmpdir()}" ` +
+        `(${(error as Error).message}). Set TMPDIR to a writable directory and retry.`,
+    );
+  }
+
   const file = path.join(dir, "devicectl.json");
 
   try {
@@ -188,8 +200,9 @@ const runDevicectlJson = async (
 
 type DevicectlDeviceEntry = {
   identifier?: string;
+  connectionProperties?: { pairingState?: string; tunnelState?: string };
   deviceProperties?: { name?: string };
-  hardwareProperties?: { udid?: string };
+  hardwareProperties?: { udid?: string; platform?: string };
 };
 
 type DevicectlDeviceListing = {
@@ -198,6 +211,30 @@ type DevicectlDeviceListing = {
 
 export type PairedIosDevice = { udid: string; name: string };
 
+/** `hardwareProperties.platform` values `devicectl` reports for things that are not an iPhone or
+ * iPad. A paired Apple Watch or Vision Pro is a real CoreDevice and shows up in the same listing,
+ * but cannot run the app and must never make the device choice look ambiguous. */
+const DELIVERABLE_PLATFORM = "ios";
+
+/** `connectionProperties` values that mean the device is known to CoreDevice but not reachable
+ * right now — a phone that has been paired once and is sitting in someone's pocket. Launching on
+ * one fails, and counting one toward the "exactly one device" rule is worse: it turns the single
+ * connected iPhone into a spurious "multiple paired iOS devices" error. */
+const UNREACHABLE_TUNNEL_STATES: ReadonlySet<string> = new Set(["disconnected", "unavailable"]);
+const UNUSABLE_PAIRING_STATES: ReadonlySet<string> = new Set(["unpaired", "unknown"]);
+
+/**
+ * `devicectl list devices` lists **every CoreDevice the Mac has ever known**, across platforms and
+ * regardless of whether it is plugged in — so the listing has to be filtered, not trusted.
+ *
+ * Filtering happens here rather than through `devicectl --filter` (an NSPredicate over undocumented
+ * keys) so that every rule is exercised by the `ExecFn` tests instead of by a predicate string no
+ * test can evaluate.
+ *
+ * Each rule drops an entry only when the field is **present and disqualifying**; a missing field
+ * keeps the device. The field names are undocumented, so a `devicectl` that stops emitting one must
+ * degrade to "offer the device and let the launch fail loudly", never to "silently find nothing".
+ */
 const parsePairedIosDevices = (payload: unknown): PairedIosDevice[] => {
   const devices = (payload as DevicectlDeviceListing | undefined)?.result?.devices;
 
@@ -207,6 +244,24 @@ const parsePairedIosDevices = (payload: unknown): PairedIosDevice[] => {
 
   return devices
     .map((entry) => {
+      const platform = entry?.hardwareProperties?.platform;
+
+      if (typeof platform === "string" && platform.toLowerCase() !== DELIVERABLE_PLATFORM) {
+        return undefined;
+      }
+
+      const tunnelState = entry?.connectionProperties?.tunnelState;
+
+      if (typeof tunnelState === "string" && UNREACHABLE_TUNNEL_STATES.has(tunnelState.toLowerCase())) {
+        return undefined;
+      }
+
+      const pairingState = entry?.connectionProperties?.pairingState;
+
+      if (typeof pairingState === "string" && UNUSABLE_PAIRING_STATES.has(pairingState.toLowerCase())) {
+        return undefined;
+      }
+
       // `hardwareProperties.udid` is what `--device` wants; `identifier` (the CoreDevice UUID) is
       // also accepted by `devicectl`, so a listing that omits the udid is still usable rather than
       // silently dropped.
@@ -240,20 +295,40 @@ export const MISSING_BUNDLE_ID_MESSAGE =
   "Delivering to a physical iPhone needs the app's bundle id: pass \"--bundle-id <id>\" (or " +
   '"bundleId" over MCP), or set "iosBundleId" in config.json.';
 
+/**
+ * A bundle id is the **only trailing positional** in the `devicectl device process launch` argv, so
+ * a value beginning with `-` would be read by `devicectl` as an option rather than as the app to
+ * launch — `--console`, say, silently changing what the command does. Apple's own grammar for a
+ * bundle identifier is alphanumerics, `.` and `-`, which never legitimately starts with `-`, so
+ * enforcing exactly that shape closes the hole at every entry point.
+ *
+ * A `--` terminator is deliberately *not* used instead: `devicectl` takes launch arguments after
+ * the bundle id, its handling of `--` is undocumented, and none of it can be verified without
+ * hardware — whereas this check is exact and fully testable.
+ */
+const BUNDLE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.-]*$/u;
+
+export const isValidBundleId = (value: string): boolean => BUNDLE_ID_PATTERN.test(value);
+
+export const invalidBundleIdMessage = (value: string): string =>
+  `"${value}" is not a valid iOS bundle id (letters, digits, "." and "-", starting with a letter ` +
+  "or digit).";
+
 /** Same ambiguity rules as `deliverIosSim`: exactly one paired device, or the caller names one. */
 const resolveSingleIosDevice = async (exec: ExecFn): Promise<string> => {
   const paired = await listPairedIosDevices(exec);
 
   if (paired.length === 0) {
     throw usageError(
-      'No paired iOS device was found ("xcrun devicectl list devices" listed none). Connect the ' +
+      'No connected iOS device was found ("xcrun devicectl list devices" listed none, ignoring ' +
+        "disconnected devices and non-iOS ones such as a paired Watch or Vision Pro). Connect the " +
         "device, trust this Mac, and enable Developer Mode on it, then retry.",
     );
   }
 
   if (paired.length > 1) {
     throw usageError(
-      `Multiple paired iOS devices were found (${paired
+      `Multiple connected iOS devices were found (${paired
         .map(describeIosDevice)
         .join(", ")}); specify --device <udid>.`,
     );
@@ -283,6 +358,12 @@ const deliverIosDevice = async (
     throw usageError(MISSING_BUNDLE_ID_MESSAGE);
   }
 
+  // Last line of defence: every caller validates too, but this is the one place the value reaches
+  // an argv, so it is the one place that must not be bypassable.
+  if (!isValidBundleId(bundleId)) {
+    throw usageError(invalidBundleIdMessage(bundleId));
+  }
+
   // An explicit udid is honored without a preflight, mirroring the `ios-sim`/`android` passthrough.
   const udid = device ?? (await resolveSingleIosDevice(exec));
 
@@ -293,6 +374,12 @@ const deliverIosDevice = async (
     "launch",
     "--device",
     udid,
+    // Without this, `process launch` against an app that is already running can fail outright
+    // rather than deliver the URL. Both Flutter's and Expo's `devicectl` integrations pass it, and
+    // it makes the observable behaviour match what the docs promise: the app is relaunched, and
+    // Cordierite copes because a delivered link supersedes a held session. Unverifiable here — no
+    // hardware — so it is documented as part of the "may relaunch the app" contract.
+    "--terminate-existing",
     "--payload-url",
     deepLink,
     bundleId,

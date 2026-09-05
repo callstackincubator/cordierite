@@ -75,10 +75,11 @@ and always opt-in:
 cordierite link --scheme myapp --open ios-device --bundle-id com.example.myapp
 ```
 
-It goes through `xcrun devicectl`, so it needs iOS 17+, Xcode 15+, the device paired and
-trusted with Developer Mode on, a dev-signed build already installed, and the phone on the
-same network as this machine; it may relaunch the app. If it fails, fall back to the QR
-flow above — that is still the only option on iOS 16 and below.
+It goes through `xcrun devicectl`, so it needs iOS 17+, Xcode 15+, the device paired,
+trusted and **connected** with Developer Mode on, a dev-signed build already installed, and
+the phone on the same network as this machine (the address is on `link`'s `Endpoint` line).
+It relaunches the app. If it fails, fall back to the QR flow above — that is still the only
+option on iOS 16 and below.
 
 Then poll (or use `cordierite events <sessionId> --json` to avoid polling) until the
 session shows `state: "active"` in `cordierite ls --json` or

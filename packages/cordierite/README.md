@@ -50,9 +50,9 @@ Every command that targets a session accepts an optional `selector` (a session i
 | --- | --- | --- |
 | `android` | `adb reverse tcp:<port> tcp:<port>`, then `adb shell am start -a android.intent.action.VIEW -d '<link>'` | `127.0.0.1` (the port is forwarded onto the device) |
 | `ios-sim` | `xcrun simctl openurl <udid> <link>` | `127.0.0.1` (the simulator shares the host's network) |
-| `ios-device` **(experimental)** | `xcrun devicectl device process launch --device <udid> --payload-url <link> <bundle-id>` | the machine's detected LAN address — there is no `adb reverse` equivalent on iOS |
+| `ios-device` **(experimental)** | `xcrun devicectl device process launch --device <udid> --terminate-existing --payload-url <link> <bundle-id>` | the machine's detected LAN address — there is no `adb reverse` equivalent on iOS |
 
-With no `--device`, `android` and `ios-sim` require exactly one attached/booted device (`ANDROID_SERIAL` disambiguates the Android side); several is an error naming each one rather than an arbitrary pick.
+With no `--device`, every target requires exactly one device and errors naming each candidate rather than making an arbitrary pick: `android` counts attached devices (`ANDROID_SERIAL` disambiguates), `ios-sim` counts booted simulators, and `ios-device` counts *connected iOS* devices — `devicectl` lists every CoreDevice the Mac has ever paired, so disconnected phones and non-iOS ones (a paired Watch or Vision Pro) are filtered out before the count.
 
 #### `--open ios-device` (experimental)
 
@@ -63,14 +63,17 @@ It needs all of:
 - **iOS 17 or newer** on the device, and **Xcode 15 or newer** on the host (`devicectl` does not exist before that). For iOS 16 and below, use the QR/deep-link flow.
 - The device **paired and trusted** by this Mac, with **Developer Mode** enabled on it (Settings → Privacy & Security → Developer Mode).
 - A **development-signed build of your app already installed** — `devicectl` launches an installed app; it does not install one.
-- The phone and this machine **on the same network**, reachable at the daemon's advertised address (`cordierite daemon status` shows it; `advertisedIp` in `config.json` overrides the detection).
-- The app's **bundle id**, from `iosBundleId` in `config.json` or `--bundle-id <id>` on the command line. Without one the command fails with a usage error before minting anything.
+- The phone and this machine **on the same network**, reachable at the address the link advertises. `cordierite link` prints it on its `Endpoint` line (`--json`: `endpoint.address`); `advertisedIp` in `config.json` overrides the detection.
+- The app's **bundle id**, from `iosBundleId` in `config.json` or `--bundle-id <id>` on the command line. Without one the command fails with a usage error before minting anything. It must look like a bundle id — letters, digits, `.` and `-` — since it is passed to `devicectl` as a trailing positional, where a value starting with `-` would be read as an option instead.
 
 ```bash
 cordierite link --scheme myapp --open ios-device --bundle-id com.example.myapp
 ```
 
-Two behaviours worth knowing: delivery **may relaunch the app** rather than foreground it (Cordierite handles both — a delivered link supersedes a held session), and a paired iPhone is **never auto-detected**. `cordierite link` without `--open`, and `cordierite_connect` without a `target`, only ever consider booted simulators and attached Android devices; a physical iPhone is often someone's personal phone, so it has to be asked for explicitly.
+Two behaviours worth knowing:
+
+- **The app is relaunched, not foregrounded.** Cordierite passes `--terminate-existing`, because `process launch` against an already-running app can otherwise fail rather than deliver the URL. This matches what Flutter and Expo do with `devicectl`, and Cordierite copes with the restart — a delivered link supersedes a held session. Like the rest of this path, it is unverified against real hardware.
+- **A physical iPhone is never auto-detected.** `cordierite_connect` called without a `target` only ever considers booted simulators and attached Android devices; `cordierite link` without `--open` does not look for a device at all. A paired iPhone is often someone's personal phone, so it has to be asked for explicitly.
 
 `cordierite link`'s deep link is `<scheme>:///?cordierite=<payload>&pin=<sha256/...>`: the `cordierite` param is the existing binary v2 bootstrap payload (address, session id, token, expiry — unchanged), and `pin` is a separate, out-of-band query param carrying the daemon's current SPKI fingerprint for apps that want to pick it up. An app build with embedded `cliPins` ignores `pin` outright — embedded pins always win. A debug build with no embedded pins trusts it for that session only (see `docs/SECURITY.md`'s "Dev trust mode" section); a release build with the module enabled never accepts it, embedded pins only.
 
