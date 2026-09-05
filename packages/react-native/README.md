@@ -151,29 +151,46 @@ import { useCordieriteTool } from "@cordierite/react-native";
 import { z } from "zod";
 
 export function CordieriteBootstrap() {
-  useCordieriteTool(
-    {
-      name: "sum",
-      description: "Add two numeric values",
-      inputSchema: z.object({
-        a: z.number(),
-        b: z.number(),
-      }),
-      outputSchema: z.object({
-        total: z.number(),
-      }),
-      handler: async ({ a, b }) => ({
-        total: a + b,
-      }),
-    },
-    []
-  );
+  useCordieriteTool({
+    name: "sum",
+    description: "Add two numeric values",
+    inputSchema: z.object({
+      a: z.number(),
+      b: z.number(),
+    }),
+    outputSchema: z.object({
+      total: z.number(),
+    }),
+    handler: async ({ a, b }) => ({
+      total: a + b,
+    }),
+  });
 
   return null;
 }
 ```
 
 Mount that component near app startup, or register from another module that loads on startup. The host can only list and invoke tools that your app has already registered.
+
+**Registration is per mount, not per render.** The hook registers once when the component mounts and re-registers only when something the host can actually see changed: `name`, `description`, the exported input/output JSON Schemas, `annotations`, `timeoutMs`, or `enabled`. Re-rendering the component — including on every keystroke of some unrelated state — sends nothing over the wire and does not make agents re-fetch `tools/list`.
+
+**Your handler is always fresh.** The hook registers a stable wrapper that forwards to the handler from the latest render, so a handler that closes over component state sees the current value on the next call without being re-registered and without `useRef` workarounds:
+
+```ts
+const [cartId, setCartId] = useState<string | null>(null);
+
+useCordieriteTool({
+  name: "seed_cart",
+  description: "Fill the current cart with test items",
+  inputSchema: z.object({ items: z.number() }),
+  // Reads whatever `cartId` was on the most recent render, no re-registration involved.
+  handler: async ({ items }) => ({ cartId, added: items }),
+});
+```
+
+**Hoisting schemas is a small optimization, not a requirement.** Schemas are compared by object identity first, so a schema defined at module scope (or wrapped in `useMemo`) is never re-exported to JSON Schema. A schema built inline in the component body is re-exported once per render to compare its shape — the same cost the old unconditional re-registration already paid — and still does not re-register unless the shape actually changed.
+
+**`deps` is an optional, advanced override.** Passing it replaces the derived key entirely with `useEffect`'s own semantics (`enabled` is still appended), which is occasionally useful — e.g. forcing a re-registration on something the descriptor does not capture. Most call sites should simply omit it. Pass it consistently if you pass it at all: alternating between passing `deps` and omitting it changes the dependency-array length between renders, which React warns about, exactly as it does for a hand-written `useEffect`.
 
 **Cancellation:** `handler(args, context)`'s `context.signal` (an `AbortSignal`) aborts if the caller cancels the call, or if the session's connection is lost mid-call. Forward it into anything that accepts one (`fetch(url, { signal: context.signal })`) or check `context.signal.aborted`/listen for `"abort"` to stop early. Ignoring it is fine — the handler just keeps running and replies normally, as it always has.
 
@@ -193,7 +210,9 @@ useCordieriteTool(
     description: "Destructive: clears the local database",
     handler: async () => wipeLocalDb(),
   },
-  [],
+  // `options` is the third argument, so pass `undefined` for `deps` to keep the default
+  // (register once per mount, re-register only when the descriptor changes).
+  undefined,
   { enabled: process.env.EXPO_PUBLIC_CORDIERITE_TOOLS === "full" }
 );
 ```

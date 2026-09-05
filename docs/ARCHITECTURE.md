@@ -372,9 +372,20 @@ Client behavior:
   registration identity, not name). Duplicate name registration logs a dev warning and
   overwrites.
 - `useCordieriteTool(definition, deps?, { enabled? })` — `useEffect` wrapper around
-  `registerTool`/`remove`. `enabled` (default `true`) is the supported way to gate a tool by
-  build variant without breaking the rules of hooks; registration is the app-side allowlist,
-  and it is the only enforcement point inside the app's own trust boundary (§12).
+  `registerTool`/`remove`. It registers **once per mount**: the registered handler is a
+  stable wrapper forwarding to the latest render's `definition.handler`, so a handler
+  closing over component state is fresh on every call without re-registering. With `deps`
+  omitted (the documented default) the effect keys off a derived, fixed-length dependency
+  list of exactly what the daemon can observe — `name`, `description`, `timeoutMs`,
+  stringified `annotations`, the exported input/output JSON Schemas, and `enabled` — so a
+  re-render never emits a `tool_registry_delta` pair or an agent-side
+  `notifications/tools/list_changed`. Schemas are compared by identity first and re-exported
+  only when the identity changed (hoisted/memoized schemas never re-export; an inline
+  `z.object({…})` re-exports once per render and still matches by shape). A caller-supplied
+  `deps` is an explicit override with `useEffect`'s own semantics (`[...deps, enabled]`).
+  `enabled` (default `true`) is the supported way to gate a tool by build variant without
+  breaking the rules of hooks; registration is the app-side allowlist, and it is the only
+  enforcement point inside the app's own trust boundary (§12).
 - `postEvent(name, payload?)` — emits an `event` frame when active; silently drops (dev
   warning) otherwise.
 - Unified listener: `addCordieriteListener(kind, cb)` with kinds `stateChange`,

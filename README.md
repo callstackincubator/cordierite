@@ -21,6 +21,9 @@ Cordierite lets a terminal, a test runner, or an AI agent call functions inside 
 Register something you want reachable:
 
 ```ts
+import { useCordieriteTool } from "@cordierite/react-native";
+import { z } from "zod";
+
 useCordieriteTool({
   name: "seed_cart",
   description: "Fill the cart with test items.",
@@ -28,6 +31,9 @@ useCordieriteTool({
   handler: async ({ items }) => ({ added: items }),
 });
 ```
+
+The hook registers once per mount — re-rendering costs nothing, and the handler always sees the
+latest state it closes over.
 
 Call it from your terminal:
 
