@@ -5,6 +5,7 @@ import type {
   CordieriteClientState,
   CordieriteConnectInput,
   CordieriteListenerKind,
+  CordieriteRuntimeSchema,
   CordieriteToolRegistration,
   CordieriteUnifiedListenerMap,
 } from "./Cordierite.types";
@@ -38,10 +39,8 @@ export type { UseCordieriteToolOptions } from "./useCordieriteTool";
  * same tool name.
  */
 export function registerTool<
-  TInputSchema extends
-    import("@cordierite/shared").StandardSchemaV1 | undefined,
-  TOutputSchema extends
-    import("@cordierite/shared").StandardSchemaV1 | undefined,
+  TInputSchema extends CordieriteRuntimeSchema | undefined,
+  TOutputSchema extends CordieriteRuntimeSchema | undefined,
 >(registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>) {
   return noopIfNativeUnavailable(
     () => cordieriteClient.registerTool(registration),

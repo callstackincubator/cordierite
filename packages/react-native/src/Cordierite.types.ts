@@ -3,6 +3,7 @@ import type {
   SessionBoundMessage,
   SessionId,
   StandardSchemaV1,
+  StandardSchemaV1JsonSchema,
   ToolAnnotations,
   ToolCallMessage,
   ToolDescriptor,
@@ -247,18 +248,117 @@ export type CordieriteToolHandler<TArgs = unknown, TResult = unknown> = (
   context: CordieriteToolExecutionContext
 ) => TResult | Promise<TResult>;
 
-export type CordieriteRuntimeSchema<
-  Input = unknown,
-  Output = Input
-> = StandardSchemaV1<Input, Output>;
+/**
+ * A raw JSON Schema object handed straight to `inputSchema`/`outputSchema` (ARCHITECTURE.md §11).
+ *
+ * Recognised at runtime purely by the *absence* of `~standard`, so any plain object works — there
+ * is no wrapper to import. It is forwarded to the daemon verbatim and **never validated app-side**:
+ * a handler with a raw input schema receives `tool_call.args` exactly as the caller sent them.
+ *
+ * The type parameter is phantom (never present at runtime). It is set only by the `jsonSchema<T>()`
+ * helper below, which is how a raw schema still gets real handler argument/result types; a bare
+ * object literal infers `Record<string, unknown>` instead.
+ */
+export type CordieriteJsonSchemaObject<T = unknown> = Record<string, unknown> & {
+  /** Phantom marker; `jsonSchema<T>()` only casts, it never writes this property. */
+  readonly "~cordieriteJsonSchemaType"?: T;
+};
 
-export type InferToolArgs<TSchema> = TSchema extends CordieriteRuntimeSchema
-  ? StandardSchemaV1.InferOutput<TSchema>
-  : undefined;
+/**
+ * `{ input, output }` JSON Schema exporter — the same shape Standard JSON Schema puts on
+ * `~standard.jsonSchema`. Accepted as the `jsonSchema` half of a {@link CordieritePairedSchema} so
+ * one converter (e.g. a `zod-to-json-schema` wrapper) can serve both slots.
+ */
+export type CordieriteJsonSchemaConverter = StandardSchemaV1JsonSchema.Converter;
 
-export type InferToolResult<TSchema> = TSchema extends CordieriteRuntimeSchema
-  ? StandardSchemaV1.InferInput<TSchema>
-  : void;
+/**
+ * A Standard Schema paired with the JSON Schema to publish for it — the supported form for
+ * libraries that validate but cannot export JSON Schema themselves (zod 3, plain valibot, arktype
+ * without an adapter).
+ *
+ * `schema` still drives runtime validation (`~standard.validate`), so handler argument and result
+ * types are inferred exactly as they are for zod 4. `jsonSchema` is either a ready JSON Schema
+ * object or an `{ input, output }` converter; only the half matching the slot this pair is used in
+ * is ever called.
+ */
+export type CordieritePairedSchema<Input = unknown, Output = Input> = {
+  readonly schema: StandardSchemaV1<Input, Output>;
+  readonly jsonSchema: Record<string, unknown> | CordieriteJsonSchemaConverter;
+};
+
+/**
+ * Everything `inputSchema`/`outputSchema` accept (ARCHITECTURE.md §11): a Standard Schema (with or
+ * without a `~standard.jsonSchema` exporter), a `{ schema, jsonSchema }` pair, or a raw JSON Schema
+ * object.
+ */
+export type CordieriteRuntimeSchema<Input = unknown, Output = Input> =
+  | StandardSchemaV1<Input, Output>
+  | CordieritePairedSchema<Input, Output>
+  | CordieriteJsonSchemaObject;
+
+/**
+ * Tags a raw JSON Schema object with the argument/result type its handler should see. Purely a
+ * type-level cast — the object is returned unchanged, nothing is validated, and no runtime check
+ * ever confirms that `T` matches the schema.
+ *
+ * ```ts
+ * inputSchema: jsonSchema<{ city: string }>({
+ *   type: "object",
+ *   properties: { city: { type: "string" } },
+ *   required: ["city"],
+ * })
+ * ```
+ */
+export const jsonSchema = <T = Record<string, unknown>>(
+  schema: Record<string, unknown>
+): CordieriteJsonSchemaObject<T> => schema as CordieriteJsonSchemaObject<T>;
+
+/**
+ * Runtime shape an `inputSchema`/`outputSchema` takes once `normalizeToolSchema` (`schema.ts`) has
+ * classified it. Stored on {@link CordieriteRegisteredTool} so export and validation never re-sniff
+ * the user's value.
+ */
+export type CordieriteNormalizedToolSchema =
+  | { kind: "standard"; schema: StandardSchemaV1 }
+  | {
+      kind: "paired";
+      schema: StandardSchemaV1;
+      jsonSchema: Record<string, unknown> | CordieriteJsonSchemaConverter;
+    }
+  | { kind: "raw"; jsonSchema: Record<string, unknown> };
+
+/**
+ * Handler argument type for an `inputSchema`. Paired and plain Standard Schemas both infer the
+ * schema's *output* (post-validation) type; a raw JSON Schema infers whatever `jsonSchema<T>()`
+ * declared, or `Record<string, unknown>` for a bare object; no schema at all infers `undefined`.
+ */
+export type InferToolArgs<TSchema> = TSchema extends {
+  readonly schema: infer S extends StandardSchemaV1;
+}
+  ? StandardSchemaV1.InferOutput<S>
+  : TSchema extends StandardSchemaV1
+    ? StandardSchemaV1.InferOutput<TSchema>
+    : TSchema extends CordieriteJsonSchemaObject<infer T>
+      ? unknown extends T
+        ? Record<string, unknown>
+        : T
+      : undefined;
+
+/**
+ * Handler result type for an `outputSchema` — the mirror of {@link InferToolArgs}, using the
+ * schema's *input* (pre-validation) type so a handler may return whatever the schema accepts.
+ */
+export type InferToolResult<TSchema> = TSchema extends {
+  readonly schema: infer S extends StandardSchemaV1;
+}
+  ? StandardSchemaV1.InferInput<S>
+  : TSchema extends StandardSchemaV1
+    ? StandardSchemaV1.InferInput<TSchema>
+    : TSchema extends CordieriteJsonSchemaObject<infer T>
+      ? unknown extends T
+        ? Record<string, unknown>
+        : T
+      : void;
 
 export type CordieriteToolDefinition<
   TInputSchema extends CordieriteRuntimeSchema | undefined = undefined,
@@ -291,8 +391,9 @@ export type CordieriteRegisteredTool = {
   /** Registration identity: `remove()` disposers compare this, not the tool name (stale-disposer fix). */
   id: symbol;
   descriptor: ToolDescriptor;
-  inputSchema?: CordieriteRuntimeSchema;
-  outputSchema?: CordieriteRuntimeSchema;
+  /** Normalized at registration time (`schema.ts`'s `normalizeToolSchema`), never the raw user value. */
+  inputSchema?: CordieriteNormalizedToolSchema;
+  outputSchema?: CordieriteNormalizedToolSchema;
   handler: CordieriteToolHandler;
   timeoutMs: number;
 };

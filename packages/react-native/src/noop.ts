@@ -15,6 +15,7 @@ import type {
   CordieriteClientState,
   CordieriteConnectInput,
   CordieriteListenerKind,
+  CordieriteRuntimeSchema,
   CordieriteToolRegistration,
   CordieriteUnifiedListenerMap,
 } from "./Cordierite.types";
@@ -30,10 +31,8 @@ const noopSubscription: CordieriteSubscription = { remove() {} };
 
 /** Accepts any registration and returns a disposer; the tool is never actually registered anywhere. */
 export function registerTool<
-  TInputSchema extends
-    import("@cordierite/shared").StandardSchemaV1 | undefined,
-  TOutputSchema extends
-    import("@cordierite/shared").StandardSchemaV1 | undefined,
+  TInputSchema extends CordieriteRuntimeSchema | undefined,
+  TOutputSchema extends CordieriteRuntimeSchema | undefined,
 >(
   _registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>,
 ): CordieriteSubscription {
