@@ -27,8 +27,11 @@ export type LinkOptions = {
   target?: OpenTarget;
   /** `--device` equivalent; only valid with `target: "android"`. */
   device?: string;
-  /** Overrides `config.json`'s `scheme`. */
+  /** Highest-precedence scheme source, ahead of `CORDIERITE_SCHEME`, a project
+   * `.cordierite/config.json`, the state dir's `config.json` and `app.json` (see `scheme.ts`). */
   scheme?: string;
+  /** Where scheme discovery starts; defaults to `process.cwd()`. */
+  cwd?: string;
   exec?: ExecFn;
   env?: NodeJS.ProcessEnv;
 };
@@ -47,6 +50,7 @@ export const link = async (options: LinkOptions = {}): Promise<LinkResult> => {
       target: options.target,
       device: options.device,
       scheme: options.scheme,
+      cwd: options.cwd,
       exec: options.exec,
       env: options.env,
     });

@@ -316,10 +316,17 @@ export const resolveScheme = async (options: ResolveSchemeOptions = {}): Promise
  * `cordierite_connect`.
  */
 export const describeMissingScheme = (tried: string[]): string => {
+  const locations =
+    tried.length === 0
+      ? ""
+      : `Looked in, in order:\n${tried
+          .map((location, index) => `  ${index + 1}. ${location}`)
+          .join("\n")}\n`;
+
   return (
-    "A deep-link scheme is required to compose the link, and none was found. Looked in, in order:\n" +
-    tried.map((location, index) => `  ${index + 1}. ${location}`).join("\n") +
-    `\nSet one with --scheme <scheme>, ${SCHEME_ENV_VAR}=<scheme>, "expo.scheme" in ${APP_JSON_FILENAME}, ` +
+    "A deep-link scheme is required to compose the link, and none was found. " +
+    locations +
+    `Set one with --scheme <scheme>, ${SCHEME_ENV_VAR}=<scheme>, "expo.scheme" in ${APP_JSON_FILENAME}, ` +
     `or run \`cordierite init\` in your app root to write ${PROJECT_CONFIG_RELATIVE_PATH}.`
   );
 };

@@ -5,6 +5,10 @@
  * interrupted — and its stdout is reserved entirely for MCP protocol frames, so unlike every other
  * command it must never let `executeHostedCommand`'s default bootstrap render reach stdout (the
  * dispatcher wires an `"interactive"` reporter for exactly this reason, same as `events`).
+ *
+ * The deep-link scheme (`--scheme`, `CORDIERITE_SCHEME`, project/state config, `app.json` — see
+ * `scheme.ts`) is resolved once here at startup, and *not* finding one is not an error: see
+ * {@link resolveSchemeForServer}.
  */
 
 import type { Readable, Writable } from "node:stream";
@@ -17,12 +21,15 @@ import { getStateDirPaths } from "../daemon/state-dir.js";
 import type { ExecFn } from "../cli/open-target.js";
 import { createMcpServer, type McpServerHandle } from "../mcp/server.js";
 import type { SpawnFn } from "../rpc/client.js";
+import { resolveScheme } from "../scheme.js";
 
 export type McpCommandContext = {
   stateDir: string;
   spawn?: SpawnFn;
-  /** Overrides `config.json`'s `scheme` (there is no per-invocation flag for `mcp`, unlike `link`). */
+  /** `--scheme`, the highest-precedence source in `scheme.ts`'s order. */
   scheme?: string;
+  /** Where scheme discovery starts; defaults to `process.cwd()`. */
+  cwd?: string;
   exec?: ExecFn;
   env?: NodeJS.ProcessEnv;
   /** Test seam: defaults to the real process stdin/stdout. */
@@ -38,15 +45,45 @@ export type McpHostedResult = {
   handle: McpServerHandle;
 };
 
+/**
+ * Resolves the deep-link scheme for the server, *never* throwing.
+ *
+ * Unlike `cordierite link`, an unresolved (or unresolvable) scheme must not stop `cordierite mcp`
+ * from starting: the server is still fully useful for proxying an app's tools to a session that was
+ * paired some other way (a QR scan, `cordierite link` in another terminal), and an MCP client that
+ * cannot start its server gets a much worse failure than one whose `cordierite_connect` call
+ * returns a clear `invalid_request`. So a scheme problem here is downgraded to an extra entry in
+ * the `tried` list, which `cordierite_connect` renders if and when it is actually called.
+ */
+const resolveSchemeForServer = async (
+  context: McpCommandContext,
+  configScheme: string | undefined,
+  paths: ReturnType<typeof getStateDirPaths>,
+): Promise<{ scheme?: string; tried: string[] }> => {
+  try {
+    return await resolveScheme({
+      flagScheme: context.scheme,
+      env: context.env,
+      cwd: context.cwd,
+      configScheme,
+      stateConfigPath: paths.configPath,
+      stateDirRoot: paths.root,
+    });
+  } catch (error) {
+    return { tried: [`(scheme resolution failed: ${(error as Error).message})`] };
+  }
+};
+
 export const handleMcpCommand = async (context: McpCommandContext): Promise<McpHostedResult> => {
   const paths = getStateDirPaths(context.stateDir);
   const config = await loadConfig(paths);
-  const scheme = context.scheme ?? config.scheme;
+  const { scheme, tried } = await resolveSchemeForServer(context, config.scheme, paths);
 
   const handle = await createMcpServer({
     stateDir: context.stateDir,
     spawn: context.spawn,
     scheme,
+    schemeTried: tried,
     exec: context.exec,
     env: context.env,
   });
