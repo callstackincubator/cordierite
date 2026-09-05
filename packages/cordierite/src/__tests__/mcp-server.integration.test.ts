@@ -32,6 +32,8 @@ import { decodeBootstrap, type ToolDescriptor } from "@cordierite/shared";
 import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { createMcpServer, type McpServerHandle } from "../mcp/server.js";
 import type { ExecFn } from "../cli/open-target.js";
+import { DAEMON_VERSION_OVERRIDE_ENV, getPackageVersion } from "../package-version.js";
+import { resetDaemonVersionChecks, type SpawnFn } from "../rpc/client.js";
 import { writeTestHostKey } from "./fixtures.js";
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -41,6 +43,11 @@ const stateDirs: string[] = [];
 const mcpHandles: McpServerHandle[] = [];
 
 afterEach(async () => {
+  // Issue #30's daemon-version seam and per-process check cache are both process-global; leaking
+  // either would silently change what the next test's daemon reports, or skip its check entirely.
+  delete process.env[DAEMON_VERSION_OVERRIDE_ENV];
+  resetDaemonVersionChecks();
+
   while (mcpHandles.length > 0) {
     await mcpHandles.pop()?.close();
   }
@@ -1449,5 +1456,82 @@ describe("mcp: stdout purity", () => {
         expect(parsed.jsonrpc).toBe("2.0");
       }
     }
+  });
+});
+
+describe("mcp: daemon/CLI version drift (issue #30)", () => {
+  const STALE_VERSION = "0.0.1-stale";
+
+  /** Starts a test daemon that reports `STALE_VERSION` — the daemon reads the override on every
+   * `daemon.status`, so it stays stale until the variable is cleared for its replacement. */
+  const startStaleTestDaemon = async (): Promise<TestDaemon> => {
+    process.env[DAEMON_VERSION_OVERRIDE_ENV] = STALE_VERSION;
+    return startTestDaemon();
+  };
+
+  const readDaemonVersion = async (stateDir: string): Promise<string> => {
+    const status = (await rpcCall(path.join(stateDir, "daemon.sock"), "daemon.status")) as {
+      version: string;
+      sessions: unknown[];
+    };
+    return status.version;
+  };
+
+  test("startup against a mismatched idle daemon restarts it transparently", async () => {
+    const { daemon, stateDir } = await startStaleTestDaemon();
+    expect(await readDaemonVersion(stateDir)).toBe(STALE_VERSION);
+
+    let spawnCalls = 0;
+    const spawn: SpawnFn = async () => {
+      spawnCalls += 1;
+      // The replacement is this build, so it must not inherit the stale override.
+      delete process.env[DAEMON_VERSION_OVERRIDE_ENV];
+      const replacement = await startDaemon({ stateDir });
+      runningDaemons.push(replacement);
+    };
+
+    const handle = await createMcpServer({
+      stateDir,
+      spawn,
+      checkVersion: { clientVersion: getPackageVersion() },
+    });
+    mcpHandles.push(handle);
+
+    expect(spawnCalls).toBe(1);
+    expect(await readDaemonVersion(stateDir)).toBe(getPackageVersion());
+    await daemon.exited;
+
+    // The server is fully usable against the daemon it ended up connected to.
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await handle.connect(serverTransport);
+    const client = new Client({ name: "test-client", version: "0.0.0" });
+    await client.connect(clientTransport as never);
+
+    const tools = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
+    expect(tools.tools.length).toBeGreaterThan(0);
+  });
+
+  test("startup against a mismatched daemon with a live session fails with both versions", async () => {
+    const { daemon, stateDir, port } = await startStaleTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const spawn: SpawnFn = () => {
+      throw new Error("the daemon must not be replaced while a session is live");
+    };
+
+    await expect(
+      createMcpServer({ stateDir, spawn, checkVersion: { clientVersion: getPackageVersion() } }),
+    ).rejects.toThrow(new RegExp(`${STALE_VERSION}[\\s\\S]*${getPackageVersion()}`, "u"));
+
+    // The app's session survives the refused startup untouched.
+    const status = (await rpcCall(path.join(stateDir, "daemon.sock"), "daemon.status")) as {
+      version: string;
+      sessions: Array<{ sessionId: string }>;
+    };
+    expect(status.version).toBe(STALE_VERSION);
+    expect(status.sessions).toHaveLength(1);
+    expect(status.sessions[0]!.sessionId).toBe(app.sessionId);
+
+    app.socket.close();
   });
 });
