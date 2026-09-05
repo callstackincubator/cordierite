@@ -80,7 +80,9 @@ const failIfCalled = (): never => {
 const mint = async (stateDir: string, cwd: string, scheme?: string) => {
   return handleLinkCommand(
     { scheme },
-    { stateDir, cwd, spawn: failIfCalled, env: {} },
+    // `schemeEnv` (not `env`, which is the adb/simctl environment) is pinned empty so an exported
+    // CORDIERITE_SCHEME on the developer's machine cannot decide these assertions.
+    { stateDir, cwd, spawn: failIfCalled, schemeEnv: {} },
   );
 };
 

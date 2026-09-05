@@ -33,7 +33,11 @@ export type LinkOptions = {
   /** Where scheme discovery starts; defaults to `process.cwd()`. */
   cwd?: string;
   exec?: ExecFn;
+  /** The environment handed to `adb`/`simctl`, *not* the one `CORDIERITE_SCHEME` is read from
+   * (see {@link schemeEnv}) — narrowing this must not change scheme resolution. */
   env?: NodeJS.ProcessEnv;
+  /** The environment `CORDIERITE_SCHEME` is read from; defaults to `process.env`. */
+  schemeEnv?: NodeJS.ProcessEnv;
 };
 
 export type LinkResult = MintLinkResult;
@@ -53,6 +57,7 @@ export const link = async (options: LinkOptions = {}): Promise<LinkResult> => {
       cwd: options.cwd,
       exec: options.exec,
       env: options.env,
+      schemeEnv: options.schemeEnv,
     });
   } catch (error) {
     throw toCordieriteError(error);

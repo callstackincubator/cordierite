@@ -46,7 +46,13 @@ export type MintLinkOptions = {
    * Defaults to `process.cwd()`. */
   cwd?: string;
   exec?: ExecFn;
+  /** The environment handed to `adb`/`simctl` when delivering to a device. This is deliberately
+   * *not* where `CORDIERITE_SCHEME` is read from — callers narrow this env on purpose, and reading
+   * the scheme out of it would silently drop one the user really had exported. See {@link schemeEnv}. */
   env?: NodeJS.ProcessEnv;
+  /** The environment `CORDIERITE_SCHEME` is read from; defaults to `process.env`. Separate from
+   * {@link env} so a narrowed exec environment cannot change scheme resolution. */
+  schemeEnv?: NodeJS.ProcessEnv;
 };
 
 export type MintLinkResult = {
@@ -76,7 +82,7 @@ export const mintLink = async (options: MintLinkOptions): Promise<MintLinkResult
   const config = await loadConfig(paths);
   const scheme = await resolveSchemeOrThrow({
     flagScheme: options.scheme,
-    env: options.env,
+    env: options.schemeEnv,
     cwd: options.cwd,
     configScheme: config.scheme,
     stateConfigPath: paths.configPath,

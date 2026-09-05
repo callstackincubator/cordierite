@@ -54,8 +54,26 @@ const readExistingConfig = async (path: string): Promise<Record<string, unknown>
   try {
     text = await readFile(path, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    const code = (error as NodeJS.ErrnoException).code;
+
+    if (code === "ENOENT") {
       return undefined;
+    }
+
+    // `.cordierite` is a regular file (ENOTDIR), or `config.json` is a directory (EISDIR). Both
+    // are things a person did to their own project, so they get a usage error naming the path —
+    // not a raw errno from `readFile` rendered as an internal failure.
+    if (code === "ENOTDIR") {
+      throw usageError(
+        `Cannot write ${path}: a file already exists where the "${PROJECT_CONFIG_DIR}" directory ` +
+          "needs to go. Remove or rename it, then re-run `cordierite init`.",
+      );
+    }
+
+    if (code === "EISDIR") {
+      throw usageError(
+        `Cannot write ${path}: it is a directory, not a file. Remove it, then re-run \`cordierite init\`.`,
+      );
     }
 
     throw error;
@@ -80,6 +98,34 @@ const readExistingConfig = async (path: string): Promise<Record<string, unknown>
   return raw as Record<string, unknown>;
 };
 
+/**
+ * The `scheme` already recorded in the project config, validated.
+ *
+ * A hand-edited `"scheme": "myapp://"` must not be adopted and echoed back into `mcpServerEntry`
+ * as though it were usable — every consumer of that entry would compose an unopenable link, and
+ * `cordierite link` would reject the very value `init` just blessed.
+ */
+const readExistingScheme = (
+  existing: Record<string, unknown> | undefined,
+  path: string,
+): string | undefined => {
+  const scheme = existing?.scheme;
+
+  if (scheme === undefined) {
+    return undefined;
+  }
+
+  if (typeof scheme !== "string" || !isValidScheme(scheme)) {
+    throw usageError(
+      `${path} records an invalid deep-link scheme ${JSON.stringify(scheme)}: a scheme must start ` +
+        'with a letter and contain only letters, digits, "+", "-" or "." (for example "myapp") — ' +
+        'do not include "://". Fix it, or re-run with --scheme <scheme> --force.',
+    );
+  }
+
+  return scheme;
+};
+
 export const handleInitCommand = async (
   options: InitCommandOptions,
   context: InitCommandContext = {},
@@ -95,13 +141,34 @@ export const handleInitCommand = async (
     );
   }
 
-  // `--scheme` beats discovery so a project with a dynamic Expo config (`app.config.js`, which is
-  // never executed — see `scheme.ts`) can still be initialized in a single command.
-  const discovered = options.scheme ?? (await discoverExpoScheme(root));
-
   const existing = await readExistingConfig(configPath);
-  const existingScheme = typeof existing?.scheme === "string" ? existing.scheme : undefined;
-  const scheme = discovered ?? existingScheme;
+  const existingScheme = readExistingScheme(existing, configPath);
+  const appJsonScheme = await discoverExpoScheme(root);
+
+  /*
+   * Which scheme wins, and when that is an error, is the whole idempotency contract:
+   *
+   * - `--scheme` always wins, but replacing a *different* recorded scheme needs `--force`, since
+   *   that is a person asking for one thing while the file already says another.
+   * - A plain re-run keeps whatever is already recorded, even when `app.json` has since changed.
+   *   Erroring there would mean `cordierite init` — documented as safe to re-run — starts failing
+   *   because somebody renamed a scheme in `app.json`. The divergence is reported as a `note`
+   *   instead: visible, but not fatal.
+   * - `--force` on its own is the escape hatch that re-adopts discovery, replacing the recorded
+   *   scheme with `app.json`'s.
+   * - With nothing recorded, `app.json` decides.
+   */
+  const [scheme, source] = ((): [string | undefined, InitCommandData["source"]] => {
+    if (options.scheme !== undefined) {
+      return [options.scheme, "flag"];
+    }
+
+    if (options.force && appJsonScheme !== undefined) {
+      return [appJsonScheme, "app.json"];
+    }
+
+    return existingScheme === undefined ? [appJsonScheme, "app.json"] : [existingScheme, "project-config"];
+  })();
 
   if (scheme === undefined) {
     throw usageError(
@@ -112,16 +179,27 @@ export const handleInitCommand = async (
     );
   }
 
-  if (existingScheme !== undefined && existingScheme !== scheme && !options.force) {
+  if (
+    options.scheme !== undefined &&
+    existingScheme !== undefined &&
+    existingScheme !== options.scheme &&
+    !options.force
+  ) {
     throw usageError(
-      `${configPath} already records the scheme "${existingScheme}", but ${
-        options.scheme === undefined
-          ? `${join(root, APP_JSON_FILENAME)} now declares "${scheme}"`
-          : `--scheme asked for "${scheme}"`
-      }. Re-run with --force to replace it (every other key in the file is preserved), or leave ` +
-        "the project config as it is.",
+      `${configPath} already records the scheme "${existingScheme}", but --scheme asked for ` +
+        `"${options.scheme}". Re-run with --force to replace it (every other key in the file is ` +
+        "preserved), or drop --scheme to keep what is recorded.",
     );
   }
+
+  // Only when the recorded scheme is the one being kept *and* app.json disagrees. After `--force`
+  // (or an explicit `--scheme`) has resolved the divergence there is nothing left to report.
+  const note =
+    scheme === existingScheme && appJsonScheme !== undefined && appJsonScheme !== scheme
+      ? `${join(root, APP_JSON_FILENAME)} declares "${appJsonScheme}", but ${configPath} records ` +
+        `"${existingScheme}", which is what Cordierite uses. Run \`cordierite init --force\` to ` +
+        "adopt the app.json value instead."
+      : undefined;
 
   const alreadyCorrect = existingScheme === scheme;
 
@@ -129,8 +207,11 @@ export const handleInitCommand = async (
     // Merge rather than replace: `--force` changes the scheme, it does not reset the file.
     const next = { ...(existing ?? {}), scheme };
 
-    await mkdir(dirname(configPath), { recursive: true });
-    await writeFile(configPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+    // Mode 0700/0600, matching the state directory's conventions (ARCHITECTURE.md §3). This file
+    // holds no secret today, but a directory named `.cordierite` is exactly where a later key or
+    // token would land, and a world-readable default would be the wrong thing to have established.
+    await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
+    await writeFile(configPath, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   }
 
   return {
@@ -138,14 +219,10 @@ export const handleInitCommand = async (
     data: {
       path: configPath,
       scheme,
-      source:
-        options.scheme !== undefined
-          ? "flag"
-          : discovered !== undefined
-            ? "app.json"
-            : "project-config",
+      source,
       created: existing === undefined,
       changed: !alreadyCorrect,
+      ...(note === undefined ? {} : { note }),
       mcpServerEntry: {
         command: "cordierite",
         args: ["mcp", "--scheme", scheme],
@@ -156,6 +233,9 @@ export const handleInitCommand = async (
         `Add the Cordierite MCP server entry to your agent's MCP config. "--scheme ${scheme}" keeps it ` +
           `entry self-contained; ${SCHEME_ENV_VAR} and this ${PROJECT_CONFIG_RELATIVE_PATH} work too.`,
         "With the app running, pair a device: `cordierite link --open ios-sim` (or `--open android`).",
+        `This file is safe to commit — it holds only "scheme". Do not point --state-dir at this ` +
+          "directory: the state dir holds the daemon's private key and audit log, which must " +
+          "never be committed.",
       ],
     },
   };

@@ -74,12 +74,17 @@ export type InitCommandData = {
   /** Absolute path of the project config that was written (or already correct). */
   path: string;
   scheme: string;
-  /** Where `scheme` came from: `--scheme`, `app.json`'s `expo.scheme`, or the file's own prior value. */
+  /** Where `scheme` came from: `--scheme`, the file's own prior value, or `app.json`'s
+   * `expo.scheme`. A recorded scheme outranks `app.json` so a plain re-run stays idempotent. */
   source: "flag" | "app.json" | "project-config";
   /** The project config did not exist before this run. */
   created: boolean;
   /** This run wrote to the file. `false` on an idempotent re-run. */
   changed: boolean;
+  /** Present when the recorded scheme and `app.json`'s `expo.scheme` disagree. The recorded one
+   * still wins (a re-run must not start failing because `app.json` was edited); this says so and
+   * names the `--force` invocation that would adopt the other. */
+  note?: string;
   /** The MCP server entry to paste into an agent's config — self-contained (it carries `--scheme`)
    * so one machine can serve several apps without editing a global file. */
   mcpServerEntry: {

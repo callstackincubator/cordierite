@@ -227,6 +227,7 @@ const renderInitData = (colors: ColorPalette, data: InitCommandData): string[] =
       ["Source", data.source],
       ["Written", data.changed ? (data.created ? "created" : "updated") : "unchanged"],
     ]),
+    ...(data.note === undefined ? [] : ["", colors.yellow(`Note: ${data.note}`)]),
     "",
     "MCP server entry",
     ...snippet.split("\n").map((line) => `  ${line}`),

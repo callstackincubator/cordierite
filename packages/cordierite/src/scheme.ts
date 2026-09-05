@@ -11,8 +11,9 @@
  *
  *   1. an explicit flag/option (`--scheme`)
  *   2. the `CORDIERITE_SCHEME` environment variable
- *   3. the nearest `.cordierite/config.json`, walking up from the working directory (never
- *      `~/.cordierite` or the state dir in use — see {@link findProjectConfig})
+ *   3. the nearest `.cordierite/config.json` that declares a `scheme`, walking up from the working
+ *      directory (never `~/.cordierite` or the state dir in use — see {@link findProjectConfigs};
+ *      a project config without a `scheme` key does not stop the walk)
  *   4. `scheme` in the state directory's `config.json` (the pre-#29 behaviour)
  *   5. `<cwd>/app.json`'s `expo.scheme` (no walk-up — an app root is where you run these commands)
  *
@@ -148,30 +149,43 @@ export const discoverExpoScheme = async (dir: string): Promise<string | undefine
   return scheme === undefined ? undefined : requireValidScheme(scheme, `"expo.scheme" in ${path}`);
 };
 
+export type ProjectConfigLookupOptions = {
+  /** The state dir actually in use, so the walk can never mistake it for a project config. */
+  stateDirRoot?: string;
+  /** The home directory whose `.cordierite` is the *default* state dir. Injectable so tests can
+   * point it at a temp tree instead of the real `$HOME`; defaults to `os.homedir()`. */
+  homeDir?: string;
+};
+
 /**
- * Walks up from `startDir` looking for `<dir>/.cordierite/config.json`, returning the nearest one.
+ * Every `<dir>/.cordierite/config.json` on the path from `startDir` up to the filesystem root,
+ * nearest first.
  *
- * The walk terminates at the filesystem root (`dirname("/") === "/"`, and likewise for a Windows
- * drive root) — it cannot escape above it, and it never follows `..` out of a caller-supplied
- * path because every candidate is derived from the resolved absolute `startDir`.
+ * The walk terminates at the root (`dirname("/") === "/"`, and likewise for a Windows drive root)
+ * — it cannot escape above it, and it never follows `..` out of a caller-supplied path because
+ * every candidate is derived from the resolved absolute `startDir`.
  *
  * Two directories are never treated as a project root, because a hit there would silently apply a
  * *global* file at the project tier — one step above the state dir's own config, inverting the
  * documented precedence:
  *
- * - `~/.cordierite`, the default state dir. Essentially every project lives somewhere under the
- *   home directory, so without this a plain `cordierite link` in any repo would pick up the global
- *   `config.json` as if it were the project's — and with `--state-dir` pointing elsewhere it would
- *   shadow the state dir the operator explicitly chose.
+ * - `<homeDir>/.cordierite`, the default state dir. Essentially every project lives somewhere under
+ *   the home directory, so without this a plain `cordierite link` in any repo would pick up the
+ *   global `config.json` as if it were the project's — and with `--state-dir` pointing elsewhere it
+ *   would shadow the state dir the operator explicitly chose.
  * - `stateDirRoot`, the state dir actually in use, for the same reason when it is not the default.
  */
-export const findProjectConfig = (startDir: string, stateDirRoot?: string): string | undefined => {
-  const excluded = new Set([join(homedir(), PROJECT_CONFIG_DIR)]);
+export const findProjectConfigs = (
+  startDir: string,
+  options: ProjectConfigLookupOptions = {},
+): string[] => {
+  const excluded = new Set([join(options.homeDir ?? homedir(), PROJECT_CONFIG_DIR)]);
 
-  if (stateDirRoot !== undefined) {
-    excluded.add(resolve(stateDirRoot));
+  if (options.stateDirRoot !== undefined) {
+    excluded.add(resolve(options.stateDirRoot));
   }
 
+  const found: string[] = [];
   let dir = resolve(startDir);
 
   for (;;) {
@@ -181,18 +195,26 @@ export const findProjectConfig = (startDir: string, stateDirRoot?: string): stri
       const candidate = join(projectDir, PROJECT_CONFIG_FILENAME);
 
       if (existsSync(candidate)) {
-        return candidate;
+        found.push(candidate);
       }
     }
 
     const parent = dirname(dir);
 
     if (parent === dir) {
-      return undefined;
+      return found;
     }
 
     dir = parent;
   }
+};
+
+/** The nearest project config on the path from `startDir` upwards, if any. */
+export const findProjectConfig = (
+  startDir: string,
+  options: ProjectConfigLookupOptions = {},
+): string | undefined => {
+  return findProjectConfigs(startDir, options)[0];
 };
 
 /**
@@ -233,7 +255,13 @@ export const readProjectConfigScheme = async (path: string): Promise<string | un
 export type ResolveSchemeOptions = {
   /** `--scheme` (or a programmatic `scheme` option) — highest precedence. */
   flagScheme?: string;
-  /** Defaults to `process.env`; the `CORDIERITE_SCHEME` entry is what is read. */
+  /**
+   * The environment `CORDIERITE_SCHEME` is read from. Defaults to `process.env`.
+   *
+   * Deliberately separate from the environment callers hand to `adb`/`simctl`: those callers
+   * narrow that env on purpose, and reusing it here would silently drop a `CORDIERITE_SCHEME` the
+   * user really had exported.
+   */
   env?: NodeJS.ProcessEnv;
   /** Where the project walk-up and `app.json` discovery start. Defaults to `process.cwd()`. */
   cwd?: string;
@@ -243,6 +271,9 @@ export type ResolveSchemeOptions = {
   stateConfigPath?: string;
   /** The state directory root, so the walk-up never mistakes it for a project config. */
   stateDirRoot?: string;
+  /** Overrides the home directory whose `.cordierite` the walk-up skips (tests point this at a
+   * temp tree rather than the real `$HOME`). */
+  homeDir?: string;
 };
 
 /**
@@ -276,15 +307,21 @@ export const resolveScheme = async (options: ResolveSchemeOptions = {}): Promise
     };
   }
 
-  const projectConfigPath = findProjectConfig(cwd, options.stateDirRoot);
+  // Every project config on the way up, not just the nearest: one that exists but declares no
+  // `scheme` (a future version's file holding some other client-side key, say) is not an answer,
+  // so the walk continues past it rather than treating its silence as "no project scheme".
+  const projectConfigPaths = findProjectConfigs(cwd, {
+    stateDirRoot: options.stateDirRoot,
+    homeDir: options.homeDir,
+  });
 
   tried.push(
-    projectConfigPath === undefined
+    projectConfigPaths.length === 0
       ? `${PROJECT_CONFIG_RELATIVE_PATH} (searched upwards from ${cwd})`
-      : projectConfigPath,
+      : projectConfigPaths.join(", "),
   );
 
-  if (projectConfigPath !== undefined) {
+  for (const projectConfigPath of projectConfigPaths) {
     const projectScheme = await readProjectConfigScheme(projectConfigPath);
 
     if (projectScheme !== undefined) {

@@ -29,7 +29,10 @@ export const createCli = () => {
     .command("link", "Mint a pending session and print its deep link.")
     .option("--ttl <seconds>", "Link time-to-live in seconds (default: from config.json).")
     .option("--qr", "Also render the deep link as a terminal QR code.")
-    .option("--scheme <scheme>", "Deep-link URI scheme (default: discovered — see `cordierite init`).")
+    .option(
+      "--scheme <scheme>",
+      "Deep-link URI scheme (also: CORDIERITE_SCHEME; default: app.json's \"expo.scheme\").",
+    )
     .option("--open <target>", "Deliver the link automatically via adb/simctl (android|ios-sim).")
     .option("--device <id>", "adb serial or simulator udid to target when --open is ambiguous.");
 

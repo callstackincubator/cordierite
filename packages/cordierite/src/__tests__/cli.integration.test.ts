@@ -104,7 +104,9 @@ describe("CLI integration", () => {
     const doctorHelp = helpFor("doctor");
     expect(doctorHelp).toContain("--assert-present");
     expect(doctorHelp).toContain("--assert-absent");
-  });
+    // Each `helpFor` spawns the real CLI binary, so this one test carries ~10 process starts and
+    // runs close to the 5s default on a loaded machine (issue #29 added two more commands to it).
+  }, 30_000);
 
   test("version is available from the binary entrypoint", () => {
     const command = runCliBinary(["--version"]);

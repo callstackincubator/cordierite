@@ -49,14 +49,22 @@ Every command that targets a session accepts an optional `selector` (a session i
 
 1. `--scheme <s>`
 2. the `CORDIERITE_SCHEME` environment variable
-3. the nearest `.cordierite/config.json` (its `scheme` key), walking up from the working directory — the walk skips `~/.cordierite` and the state dir in use, so global config is never mistaken for a project's
+3. the nearest `.cordierite/config.json` that declares a `scheme`, walking up from the working directory — one without that key does not stop the walk, and the walk skips `~/.cordierite` and the state dir in use so global config is never mistaken for a project's
 4. `scheme` in `<state-dir>/config.json`
 5. `<cwd>/app.json`'s `expo.scheme` — a string, or the first entry of an array
 6. otherwise an error naming every location above
 
 So in an Expo app root, none of it needs configuring. `app.config.js` / `app.config.ts` are never executed to read a scheme, so dynamic-config projects should use `--scheme`, `CORDIERITE_SCHEME`, or `cordierite init --scheme <s>`.
 
-`cordierite init`, run in an app root, writes `.cordierite/config.json` with the discovered scheme and prints the MCP server entry to paste plus the `import "@cordierite/react-native/auto"` reminder. It never generates keys or touches daemon state. It is idempotent: the same scheme is a no-op, a different one needs `--force`, and `--force` merges rather than truncating. A project `.cordierite/config.json` holds client-side settings only — it can never redirect the state directory, key or policy (`--state-dir` / `CORDIERITE_STATE_DIR` do that).
+`cordierite init`, run in an app root, writes `.cordierite/config.json` (mode `0600`, in a `0700` directory) with the discovered scheme and prints the MCP server entry to paste plus the `import "@cordierite/react-native/auto"` reminder. It never generates keys or touches daemon state.
+
+It is idempotent, and safe to re-run:
+
+- A plain re-run keeps whatever scheme is already recorded. If `app.json` has since changed, the result carries a `note` saying so rather than failing — a command documented as safe to re-run must not start erroring because somebody renamed a scheme.
+- `--scheme <different>` needs `--force` to replace a recorded scheme; `--force` on its own re-adopts `app.json`'s value.
+- `--force` merges into the existing JSON rather than truncating it.
+
+A project `.cordierite/config.json` holds client-side settings only — it can never redirect the state directory, key or policy (`--state-dir` / `CORDIERITE_STATE_DIR` do that). The reverse is worth stating too: **do not point `--state-dir` at a project `.cordierite/` directory you commit.** The state dir is where the daemon keeps `key.pem` and its audit log, and a committed one would publish a private key. The two directories share a name and nothing else; the walk-up that finds a project config deliberately skips `~/.cordierite` and whatever state dir is in use, so neither can be mistaken for the other.
 
 `cordierite mcp` is the one exception to step 6: it starts even with no scheme, because it is still useful for proxying tools to a session paired another way. Only `cordierite_connect` fails, and its error names every location tried.
 

@@ -33,13 +33,17 @@ is for builds that leave your machine — do not do it as part of a first-time s
 
 1. Add `@cordierite/react-native` to the app dependencies.
 2. Add the Cordierite Expo config plugin to the Expo config. Every option is optional for
-   a dev build: `cliPins` and `trust` are hardening (below), `allowPrivateLanOnly`
-   defaults to `true` (fail-closed), and `deepLinkScheme` defaults to `expo.scheme`.
+   a dev build: `cliPins` and `trust` are hardening (below) and `allowPrivateLanOnly`
+   defaults to `true` (fail-closed). `deepLinkScheme` is only *validated* against
+   `expo.scheme` (the plugin warns when it names a scheme the app does not declare) — it
+   is not what the CLI reads, and leaving it out changes nothing.
 3. Make sure `expo.scheme` is set — it is both what registers the app for deep links and
    what `cordierite link` discovers automatically from `app.json`.
 4. Run `cordierite init` in the app root. It records the scheme in
    `.cordierite/config.json` and prints the MCP server entry to paste into an agent's
-   config. It is idempotent, so re-running it is safe.
+   config. Re-running it is always safe: it keeps the scheme already recorded, and only
+   notes it if `app.json` has since come to declare a different one. Use
+   `cordierite init --force` to adopt the new `app.json` value.
 5. Run prebuild or rebuild the native project so the native config is applied.
 6. Use a development build. Expo Go is not enough — this library ships native code.
 

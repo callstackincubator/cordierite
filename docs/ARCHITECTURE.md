@@ -300,9 +300,10 @@ they cannot drift. First match wins:
 
 1. the `--scheme` flag (or the equivalent programmatic option)
 2. the `CORDIERITE_SCHEME` environment variable
-3. the nearest `.cordierite/config.json`, walking up from the working directory (the walk skips
-   `~/.cordierite` and the state directory in use — those are *global* config, and matching them
-   here would apply them one tier above their own)
+3. the nearest `.cordierite/config.json` that declares a `scheme`, walking up from the working
+   directory (one without that key does not stop the walk; the walk also skips `~/.cordierite` and
+   the state directory in use — those are *global* config, and matching them here would apply them
+   one tier above their own)
 4. `scheme` in the state directory's `config.json`
 5. `<cwd>/app.json`'s `expo.scheme` (a string, or the first entry of an array — the same
    normalization `app.plugin.js` applies; no walk-up)
@@ -319,12 +320,21 @@ use `--scheme`, `CORDIERITE_SCHEME`, or `cordierite init --scheme <s>`.
 
 `cordierite init`, run in an app root, writes that project `.cordierite/config.json` (scheme only)
 and prints the MCP server entry to paste plus the `import "@cordierite/react-native/auto"`
-reminder. It is idempotent, never generates keys (the daemon auto-generates `key.pem` — §3), and
-`--force` merges rather than truncating.
+reminder. It never generates keys (the daemon auto-generates `key.pem` — §3), and writes the file
+`0600` inside a `0700` directory, matching §3's conventions.
+
+Re-running it is always safe: it keeps the scheme already recorded and only *notes* it when
+`app.json` has come to declare a different one — a command documented as safe to re-run must not
+start failing because a scheme was renamed. `--scheme <different>` needs `--force` to replace a
+recorded value, `--force` alone re-adopts `app.json`'s, and `--force` merges rather than
+truncating. Note the inverse of the rule above: a project `.cordierite/` is committed, so
+`--state-dir` must never point at one — that directory would then hold `key.pem`.
 
 Unlike every other consumer, `cordierite mcp` does **not** fail when no scheme resolves: the
 server is still useful for proxying tools to a session paired some other way, so the failure is
-deferred to `cordierite_connect`, which reports `invalid_request` naming every location tried.
+deferred to `cordierite_connect`, which reports `invalid_request` naming every location tried. A
+resolution *error* (an invalid `--scheme`, a malformed `app.json`) is additionally written to
+stderr at startup — never stdout, which carries MCP protocol frames only.
 
 `cordierite invoke`: a SIGINT while the call is still pending cancels it (§5's
 `tools.cancel`, via the RPC connection dropping) rather than leaving the app-side handler

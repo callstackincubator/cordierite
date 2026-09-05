@@ -93,7 +93,9 @@ Android `<application>` meta-data:
 | `com.callstackincubator.cordierite.TRUST` | `"link"` \| `"pin"` — any other value is a hard error at connect time |
 | `com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY` | Boolean meta-data value (a `"true"`/`"false"` String is also accepted); defaults to `true` (fail-closed) when absent |
 
-None of the above is required for a zero-config app — see step 2. Wire **deep links** so the OS can open your app with the host's bootstrap URL, and make sure the app scheme matches the one `cordierite link` (or the `deepLinkScheme` plugin option, or `config.json`) uses to compose that link.
+None of the above is required for a zero-config app — see step 2. Wire **deep links** so the OS can open your app with the host's bootstrap URL, and make sure the app scheme matches the one `cordierite link` uses to compose that link.
+
+For an Expo app that is automatic: `cordierite link` reads `expo.scheme` straight out of `app.json`, so declaring the scheme once for deep links is all it takes. Otherwise (a dynamic `app.config.js`, which Cordierite never executes, or bare React Native) name it with `cordierite init --scheme <s>`, `--scheme`, or `CORDIERITE_SCHEME` — see the [`cordierite` package README](../cordierite/README.md#the-deep-link-scheme) for the full resolution order.
 
 ### 4. Import Cordierite in the JS entry point
 

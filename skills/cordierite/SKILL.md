@@ -48,8 +48,9 @@ Pass `--scheme myapp` only when the scheme cannot be discovered — you are not 
 directory, or the project uses a dynamic `app.config.js` (which is never executed).
 `CORDIERITE_SCHEME=myapp` does the same for a whole shell, and `cordierite init` records
 it once in the project (see **Setup** below). Full order: `--scheme` → `CORDIERITE_SCHEME`
-→ the nearest `.cordierite/config.json` walking up → `~/.cordierite/config.json` →
-`<cwd>/app.json`. If none of them has one, the error names every location it tried.
+→ the nearest `.cordierite/config.json` walking up from the working directory → the state
+dir's `config.json` → `<cwd>/app.json`. If none of them has one, the error names every
+location it tried.
 
 From `link`'s JSON output, use:
 
@@ -129,8 +130,9 @@ registerTool({
 - Use **`--json`** for structured CLI output in agent flows; runtime failures in
   `--json` mode are JSON on stderr, not bare text.
 - `cordierite init`, run once in an app root, records the scheme in
-  `.cordierite/config.json` and prints the MCP server entry to paste. It is idempotent,
-  never generates keys, and never touches daemon state.
+  `.cordierite/config.json` and prints the MCP server entry to paste. Re-running it is
+  always safe (it keeps the recorded scheme; `--force` re-adopts `app.json`'s), it never
+  generates keys, and it never touches daemon state.
 - `cordierite keygen` is only for **hardening** (rotating the host key, or provisioning
   one in CI ahead of a release build) — the daemon auto-generates a key on first start,
   so a normal dev loop never needs it. It is non-interactive when given `--out`.

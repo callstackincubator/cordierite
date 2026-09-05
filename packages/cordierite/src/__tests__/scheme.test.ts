@@ -4,9 +4,8 @@
  * `cordierite/client`'s `link()` and `cordierite_connect`.
  */
 
-import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
@@ -15,6 +14,7 @@ import {
   describeMissingScheme,
   discoverExpoScheme,
   findProjectConfig,
+  findProjectConfigs,
   isValidScheme,
   readProjectConfigScheme,
   resolveScheme,
@@ -194,35 +194,41 @@ describe("findProjectConfig", () => {
     await mkdir(projectDir, { recursive: true });
 
     expect(findProjectConfig(projectDir)).toBe(path.join(stateDir, "config.json"));
-    expect(findProjectConfig(projectDir, stateDir)).toBeUndefined();
+    expect(findProjectConfig(projectDir, { stateDirRoot: stateDir })).toBeUndefined();
   });
 
-  // `~/.cordierite` is the *default state dir*, and essentially every project lives under the home
-  // directory. Finding it during the walk-up would apply the global config one precedence tier
+  // `<home>/.cordierite` is the *default state dir*, and essentially every project lives under the
+  // home directory. Finding it during the walk-up would apply the global config one precedence tier
   // above the state dir's own — and with `--state-dir` elsewhere, would shadow the operator's
   // explicit choice with an unrelated file.
-  test("never treats ~/.cordierite as a project config, even with an unrelated state dir", async () => {
-    const home = homedir();
-    const globalConfig = path.join(home, ".cordierite", "config.json");
-    const existedBefore = existsSync(globalConfig);
+  //
+  // `homeDir` is injected rather than read from `os.homedir()` precisely so this test never reads
+  // or writes the real `$HOME`.
+  test("never treats <home>/.cordierite as a project config, even with an unrelated state dir", async () => {
+    const home = await makeDir();
+    await writeProjectConfig(home, { scheme: "global" });
+    const projectDir = path.join(home, "projects", "app");
+    await mkdir(projectDir, { recursive: true });
 
-    if (!existedBefore) {
-      await mkdir(path.dirname(globalConfig), { recursive: true });
-      await writeFile(globalConfig, JSON.stringify({ scheme: "global" }), "utf8");
-    }
+    expect(
+      findProjectConfig(projectDir, {
+        homeDir: home,
+        stateDirRoot: path.join(await makeDir(), "unrelated-state"),
+      }),
+    ).toBeUndefined();
 
-    try {
-      const projectDir = path.join(home, "cordierite-scheme-test-project");
-      await mkdir(projectDir, { recursive: true });
-      directories.push(projectDir);
+    // Control: without the exclusion it *would* have been found, so the assertion above is real.
+    expect(findProjectConfig(projectDir)).toBe(path.join(home, ".cordierite", "config.json"));
+  });
 
-      // An unrelated state dir: the guard must not depend on it pointing at ~/.cordierite.
-      expect(findProjectConfig(projectDir, path.join(await makeDir(), "state"))).toBeUndefined();
-    } finally {
-      if (!existedBefore) {
-        await rm(path.join(home, ".cordierite"), { force: true, recursive: true });
-      }
-    }
+  test("collects every config on the path, nearest first", async () => {
+    const root = await makeDir();
+    const outer = await writeProjectConfig(root, { scheme: "outer" });
+    const innerDir = path.join(root, "packages", "app");
+    await mkdir(innerDir, { recursive: true });
+    const inner = await writeProjectConfig(innerDir, { scheme: "inner" });
+
+    expect(findProjectConfigs(innerDir)).toEqual([inner, outer]);
   });
 });
 
@@ -396,7 +402,33 @@ describe("resolveScheme precedence", () => {
 
     const { tried } = await resolveScheme({ cwd: dir, env: {} });
 
-    expect(tried).toContain(configPath);
+    expect(tried.join("\n")).toContain(configPath);
+  });
+
+  // A project config that exists but declares no `scheme` is not an answer, so it must not stop
+  // the walk — otherwise a file holding only some other client-side key would mask a real scheme
+  // recorded higher up.
+  test("walks past a project config that declares no scheme", async () => {
+    const root = await makeDir();
+    await writeProjectConfig(root, { scheme: "outer" });
+    const innerDir = path.join(root, "packages", "app");
+    await mkdir(innerDir, { recursive: true });
+    await writeProjectConfig(innerDir, { somethingElse: true });
+
+    expect(await resolveScheme({ cwd: innerDir, env: {} })).toMatchObject({
+      scheme: "outer",
+      source: "project-config",
+    });
+  });
+
+  test("a nearer project config with a scheme still wins over a further one", async () => {
+    const root = await makeDir();
+    await writeProjectConfig(root, { scheme: "outer" });
+    const innerDir = path.join(root, "packages", "app");
+    await mkdir(innerDir, { recursive: true });
+    await writeProjectConfig(innerDir, { scheme: "inner" });
+
+    expect(await resolveScheme({ cwd: innerDir, env: {} })).toMatchObject({ scheme: "inner" });
   });
 });
 

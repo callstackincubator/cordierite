@@ -122,7 +122,10 @@ describe("init command", () => {
     expect(await readProjectConfig(root)).toEqual({ scheme: "myapp" });
   });
 
-  test("also refuses when app.json changed underneath an existing project config", async () => {
+  // A plain re-run must stay idempotent even after `app.json` is edited: `cordierite init` is
+  // documented as safe to re-run, so renaming a scheme in `app.json` must not start breaking it.
+  // The divergence is surfaced as a note, not an error.
+  test("keeps the recorded scheme and notes the divergence when app.json changed underneath", async () => {
     const root = await makeAppRoot("myapp");
     await handleInitCommand({}, { cwd: root });
 
@@ -132,7 +135,83 @@ describe("init command", () => {
       "utf8",
     );
 
-    await expect(handleInitCommand({}, { cwd: root })).rejects.toThrow(/now declares "renamed"/u);
+    const result = await handleInitCommand({}, { cwd: root });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { scheme: "myapp", source: "project-config", changed: false },
+    });
+    expect(result.ok && result.data.note).toMatch(/renamed[\s\S]*myapp/u);
+    expect(await readProjectConfig(root)).toEqual({ scheme: "myapp" });
+  });
+
+  test("--scheme --force adopts the new app.json value the note points at", async () => {
+    const root = await makeAppRoot("myapp");
+    await handleInitCommand({}, { cwd: root });
+
+    const result = await handleInitCommand({ scheme: "renamed", force: true }, { cwd: root });
+
+    expect(result).toMatchObject({ ok: true, data: { scheme: "renamed", changed: true } });
+    expect(result.ok && result.data.note).toBeUndefined();
+  });
+
+  // `--force` on its own is the escape hatch the note tells you to run, so it must both adopt the
+  // app.json value and stop reporting a divergence that no longer exists.
+  test("--force alone re-adopts app.json and clears the note", async () => {
+    const root = await makeAppRoot("myapp");
+    await handleInitCommand({}, { cwd: root });
+
+    await writeFile(
+      path.join(root, "app.json"),
+      JSON.stringify({ expo: { scheme: "renamed" } }),
+      "utf8",
+    );
+
+    const result = await handleInitCommand({ force: true }, { cwd: root });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { scheme: "renamed", source: "app.json", changed: true },
+    });
+    expect(result.ok && result.data.note).toBeUndefined();
+    expect(await readProjectConfig(root)).toEqual({ scheme: "renamed" });
+  });
+
+  test("rejects an invalid scheme recorded by hand instead of echoing it into the MCP entry", async () => {
+    const root = await makeAppRoot("myapp");
+    await mkdir(path.dirname(projectConfigPath(root)), { recursive: true });
+    await writeFile(projectConfigPath(root), JSON.stringify({ scheme: "myapp://" }), "utf8");
+
+    await expect(handleInitCommand({}, { cwd: root })).rejects.toThrow(
+      /records an invalid deep-link scheme/u,
+    );
+  });
+
+  test("reports a usage error when .cordierite is a file, not a directory", async () => {
+    const root = await makeAppRoot("myapp");
+    await writeFile(path.join(root, ".cordierite"), "not a directory", "utf8");
+
+    await expect(handleInitCommand({}, { cwd: root })).rejects.toThrow(
+      /a file already exists where the "\.cordierite" directory needs to go/u,
+    );
+  });
+
+  test("reports a usage error when config.json is a directory", async () => {
+    const root = await makeAppRoot("myapp");
+    await mkdir(projectConfigPath(root), { recursive: true });
+
+    await expect(handleInitCommand({}, { cwd: root })).rejects.toThrow(
+      /it is a directory, not a file/u,
+    );
+  });
+
+  test("writes the project config 0600 inside a 0700 directory", async () => {
+    const root = await makeAppRoot("myapp");
+
+    await handleInitCommand({}, { cwd: root });
+
+    expect((await stat(projectConfigPath(root))).mode & 0o777).toBe(0o600);
+    expect((await stat(path.dirname(projectConfigPath(root)))).mode & 0o777).toBe(0o700);
   });
 
   test("--force replaces the scheme and preserves every other key", async () => {

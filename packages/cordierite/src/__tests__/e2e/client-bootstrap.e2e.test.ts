@@ -78,6 +78,8 @@ describe("e2e: cordierite/client bootstrap", () => {
     // `cwd` is pinned to the temp state dir so "no scheme available" is literally true: scheme
     // discovery walks up from the working directory and reads its `app.json` (issue #29), which
     // would otherwise make this assertion depend on where the suite happens to be run from.
-    await expect(link({ stateDir, cwd: stateDir })).rejects.toMatchObject({ type: "client_error" });
+    await expect(link({ stateDir, cwd: stateDir, schemeEnv: {} })).rejects.toMatchObject({
+      type: "client_error",
+    });
   });
 });

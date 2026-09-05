@@ -31,10 +31,16 @@ export type McpCommandContext = {
   /** Where scheme discovery starts; defaults to `process.cwd()`. */
   cwd?: string;
   exec?: ExecFn;
+  /** Environment for `adb`/`simctl`, not for `CORDIERITE_SCHEME` (see `schemeEnv`). */
   env?: NodeJS.ProcessEnv;
+  /** The environment `CORDIERITE_SCHEME` is read from; defaults to `process.env`. */
+  schemeEnv?: NodeJS.ProcessEnv;
   /** Test seam: defaults to the real process stdin/stdout. */
   stdin?: Readable;
   stdout?: Writable;
+  /** Where startup diagnostics go. Defaults to `process.stderr` — never stdout, which carries only
+   * MCP protocol frames. */
+  stderr?: Pick<NodeJS.WriteStream, "write">;
 };
 
 export type McpHostedResult = {
@@ -54,6 +60,11 @@ export type McpHostedResult = {
  * cannot start its server gets a much worse failure than one whose `cordierite_connect` call
  * returns a clear `invalid_request`. So a scheme problem here is downgraded to an extra entry in
  * the `tried` list, which `cordierite_connect` renders if and when it is actually called.
+ *
+ * It is *also* reported on stderr at startup, because an explicitly wrong `--scheme myapp://` or
+ * `CORDIERITE_SCHEME` is a typo the operator wants to hear about immediately, not only if and when
+ * some agent happens to call `cordierite_connect`. Stderr, never stdout: stdout carries MCP
+ * protocol frames exclusively, and MCP clients surface a server's stderr in their logs.
  */
 const resolveSchemeForServer = async (
   context: McpCommandContext,
@@ -63,14 +74,21 @@ const resolveSchemeForServer = async (
   try {
     return await resolveScheme({
       flagScheme: context.scheme,
-      env: context.env,
+      env: context.schemeEnv,
       cwd: context.cwd,
       configScheme,
       stateConfigPath: paths.configPath,
       stateDirRoot: paths.root,
     });
   } catch (error) {
-    return { tried: [`(scheme resolution failed: ${(error as Error).message})`] };
+    const message = (error as Error).message;
+
+    (context.stderr ?? process.stderr).write(
+      `cordierite mcp: could not resolve a deep-link scheme: ${message}\n` +
+        "The server is starting anyway; cordierite_connect will fail until this is fixed.\n",
+    );
+
+    return { tried: [`(scheme resolution failed: ${message})`] };
   }
 };
 

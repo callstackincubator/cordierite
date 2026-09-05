@@ -308,6 +308,16 @@ describe("output rendering", () => {
     expect(rendered.stdout).toContain("unchanged");
   });
 
+  test("init output surfaces the app.json divergence note when there is one", () => {
+    const base = initResult(false);
+    const rendered = renderResult(
+      { ...base, data: { ...base.data, note: 'app.json declares "renamed"' } },
+      { command: "init", json: false, color: false },
+    );
+
+    expect(rendered.stdout).toContain('Note: app.json declares "renamed"');
+  });
+
   test("init --json exposes the MCP entry structurally rather than as a pre-rendered string", () => {
     const rendered = renderResult(initResult(true), { command: "init", json: true, color: false });
 
