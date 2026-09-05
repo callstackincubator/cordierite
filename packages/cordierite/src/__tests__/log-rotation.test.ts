@@ -99,6 +99,72 @@ describe("daemon.log rotation", () => {
     expect(await exists(`${backupPath}.1`)).toBe(false);
   });
 
+  test("refuses to rotate an over-cap log a live daemon still holds", async () => {
+    const stateDir = await makeStateDir();
+    const { logFilePath, pidFilePath } = getStateDirPaths(stateDir);
+    const warnings: string[] = [];
+    const contents = "held by a running daemon\n".repeat(100);
+    await writeFile(logFilePath, contents, { mode: 0o600 });
+
+    // This test process is unambiguously alive, so it stands in for a daemon that is booting,
+    // wedged, or shutting down: socket unreachable, log fd very much still open.
+    await writeFile(pidFilePath, String(process.pid), { mode: 0o600 });
+
+    await expect(
+      rotateDaemonLogIfNeeded({
+        logFilePath,
+        maxBytes: 10,
+        pidFilePath,
+        warn: (message) => warnings.push(message),
+      }),
+    ).resolves.toEqual({ rotated: false, skipped: "daemon_running" });
+
+    // Nothing moved: the daemon's fd still points at the file the operator will go looking in.
+    expect(await readFile(logFilePath, "utf8")).toBe(contents);
+    expect(await exists(daemonLogBackupPath(logFilePath))).toBe(false);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain(logFilePath);
+  });
+
+  test("rotates when the pidfile names a dead process, or names nothing at all", async () => {
+    const stateDir = await makeStateDir();
+    const { logFilePath, pidFilePath } = getStateDirPaths(stateDir);
+
+    // No pidfile: nothing can be holding the log.
+    await writeFile(logFilePath, "a".repeat(64), { mode: 0o600 });
+    await expect(rotateDaemonLogIfNeeded({ logFilePath, maxBytes: 10, pidFilePath })).resolves.toMatchObject({
+      rotated: true,
+    });
+
+    // A pidfile left behind by a daemon that died without releasing it — the stale case the
+    // auto-spawn path already recovers from elsewhere.
+    await writeFile(pidFilePath, "999999999", { mode: 0o600 });
+    await writeFile(logFilePath, "b".repeat(64), { mode: 0o600 });
+    await expect(rotateDaemonLogIfNeeded({ logFilePath, maxBytes: 10, pidFilePath })).resolves.toMatchObject({
+      rotated: true,
+    });
+    expect((await readFile(daemonLogBackupPath(logFilePath), "utf8")).startsWith("b")).toBe(true);
+
+    // An unparseable pidfile reads the same way every other consumer reads it: nothing running.
+    await writeFile(pidFilePath, "not-a-pid", { mode: 0o600 });
+    await writeFile(logFilePath, "c".repeat(64), { mode: 0o600 });
+    await expect(rotateDaemonLogIfNeeded({ logFilePath, maxBytes: 10, pidFilePath })).resolves.toMatchObject({
+      rotated: true,
+    });
+  });
+
+  test("a live pidfile does not stop a within-cap log from being left alone", async () => {
+    const stateDir = await makeStateDir();
+    const { logFilePath, pidFilePath } = getStateDirPaths(stateDir);
+    await writeFile(logFilePath, "small\n", { mode: 0o600 });
+    await writeFile(pidFilePath, String(process.pid), { mode: 0o600 });
+
+    // No `skipped` marker: the log was never a rotation candidate in the first place.
+    await expect(rotateDaemonLogIfNeeded({ logFilePath, maxBytes: 1024, pidFilePath })).resolves.toEqual({
+      rotated: false,
+    });
+  });
+
   test("a rotation failure is warned and swallowed, never thrown", async () => {
     const stateDir = await makeStateDir();
     const { logFilePath } = getStateDirPaths(stateDir);

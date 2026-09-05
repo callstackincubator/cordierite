@@ -4,12 +4,15 @@
  * truncate it — the only safe moment is just before a *new* daemon is spawned, while no writer
  * holds the file open. {@link rotateDaemonLogIfNeeded} is therefore called from the spawn path
  * (`rpc/client.ts`'s `defaultSpawn`, which is also what `cordierite daemon start` spawns through),
- * never from the daemon itself. The spawn path is reached only when no daemon answered the socket
- * and this process won the exclusive spawn lock, so in practice nothing is holding the log. The
- * one gap is the pre-existing double-spawn window (the lock is released once the child is
- * spawned, before its socket is up): a second spawner there could rename the log of a daemon that
- * is still booting, which keeps writing into `daemon.log.1` through its inherited fd. Bounded and
- * benign — no lines are lost, and a just-booted daemon's log is far below any sane cap anyway.
+ * never from the daemon itself.
+ *
+ * "Nothing answered the socket" is not by itself proof that nothing is writing the log: a daemon
+ * that is still booting, wedged, or mid-shutdown holds its log fd while its socket is unreachable,
+ * and the spawn lock is released as soon as the child is spawned rather than when it is ready. A
+ * rename under such a process would send its output to `daemon.log.1`, and the *next* rotation
+ * would then unlink the inode it is still writing to — output lost, with nothing on disk to show
+ * for it. So rotation additionally requires the pidfile to name a process that is gone, using the
+ * same liveness probe the pidfile takeover and the stale-socket unlink use.
  *
  * One backup is enough (`daemon.log.1`): the point is a bounded footprint, not a full history. A
  * rotation failure is warned and swallowed — a daemon that cannot rotate its log must still start.
@@ -18,6 +21,7 @@
 import { chmod, rename, stat } from "node:fs/promises";
 
 import { DEFAULT_DAEMON_LOG_MAX_BYTES, loadConfig } from "./config.js";
+import { isProcessAlive, readPidFromFile } from "./pidfile.js";
 import { getStateDirPaths } from "./state-dir.js";
 
 /** Mode every file under the state dir is held at (ARCHITECTURE.md §3). */
@@ -29,6 +33,10 @@ export type RotateDaemonLogOptions = {
   logFilePath: string;
   /** Rotate once the log is strictly larger than this. */
   maxBytes: number;
+  /** When given, an over-cap log is left alone if this pidfile names a live process — see the
+   * module doc comment. Omit only when the caller has already established that nothing holds the
+   * log open. */
+  pidFilePath?: string;
   /** Sink for rotation-failure diagnostics; defaults to `process.stderr`. Injectable for tests. */
   warn?: (message: string) => void;
 };
@@ -37,11 +45,26 @@ export type RotateDaemonLogResult = {
   rotated: boolean;
   /** Size of the log that was moved aside; only set when `rotated` is `true`. */
   rotatedBytes?: number;
+  /** Why an over-cap log was deliberately left in place. */
+  skipped?: "daemon_running";
+};
+
+/** True when `pidFilePath` names a process that is still around. A missing/garbage pidfile, or an
+ * unreadable one, reads as "nothing is running" — the same conclusion the pidfile takeover and the
+ * stale-socket unlink draw from it. */
+const isDaemonHoldingLog = async (pidFilePath: string): Promise<boolean> => {
+  try {
+    const pid = await readPidFromFile(pidFilePath);
+    return pid !== undefined && isProcessAlive(pid);
+  } catch {
+    return false;
+  }
 };
 
 /**
  * Moves `daemon.log` to `daemon.log.1` when it exceeds `maxBytes`, replacing any previous backup.
- * A missing log, a log within the cap, or any failure is a no-op — never throws.
+ * A missing log, a log within the cap, a log a live daemon still holds, or any failure is a no-op
+ * — never throws.
  */
 export const rotateDaemonLogIfNeeded = async (
   options: RotateDaemonLogOptions,
@@ -57,6 +80,16 @@ export const rotateDaemonLogIfNeeded = async (
 
     if (!stats.isFile() || stats.size <= options.maxBytes) {
       return { rotated: false };
+    }
+
+    // Checked only once rotation is actually on the table, so the overwhelmingly common
+    // within-cap spawn stays two syscalls.
+    if (options.pidFilePath !== undefined && (await isDaemonHoldingLog(options.pidFilePath))) {
+      warn(
+        `cordierite: "${options.logFilePath}" is over its size cap but a daemon still holds it; leaving it in place.`,
+      );
+
+      return { rotated: false, skipped: "daemon_running" };
     }
 
     const backupPath = daemonLogBackupPath(options.logFilePath);

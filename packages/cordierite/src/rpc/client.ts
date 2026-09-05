@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import type { RpcErrorData } from "@cordierite/shared";
 
 import { rotateDaemonLogIfNeeded, resolveDaemonLogMaxBytes } from "../daemon/log-rotation.js";
+import { isProcessAlive } from "../daemon/pidfile.js";
 import { getStateDirPaths, type StateDirPaths } from "../daemon/state-dir.js";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -194,15 +195,6 @@ const pollForSocket = async (
   return isSocketConnectable(socketPath);
 };
 
-const isPidAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-};
-
 const unlinkStaleSocketIfDaemonDead = async (paths: StateDirPaths): Promise<void> => {
   let pid: number | undefined;
 
@@ -212,19 +204,21 @@ const unlinkStaleSocketIfDaemonDead = async (paths: StateDirPaths): Promise<void
     pid = undefined;
   }
 
-  if (pid === undefined || Number.isNaN(pid) || !isPidAlive(pid)) {
+  if (pid === undefined || Number.isNaN(pid) || !isProcessAlive(pid)) {
     await rm(paths.socketPath, { force: true });
   }
 };
 
 const defaultSpawn: SpawnFn = async (args, context) => {
   // Rotate before the new daemon's log fd is opened (issue #32). This is the only safe moment:
-  // afterwards the daemon holds the fd for its whole life, and we only get here when no daemon was
-  // reachable, so no live writer is about to have the file renamed out from under it. `cordierite
-  // daemon start` spawns through this same path, so it rotates too.
+  // afterwards the daemon holds the fd for its whole life. `cordierite daemon start` spawns
+  // through this same path, so it rotates too. Reaching here means nothing answered the socket,
+  // which is *usually* but not always the same as "no daemon is writing this log" — hence the
+  // pidfile guard inside, which declines to rotate under a process that is still alive.
   await rotateDaemonLogIfNeeded({
     logFilePath: context.logFilePath,
     maxBytes: await resolveDaemonLogMaxBytes(context.stateDir),
+    pidFilePath: getStateDirPaths(context.stateDir).pidFilePath,
   });
 
   const logFd = await open(context.logFilePath, "a", 0o600);
