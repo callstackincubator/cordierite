@@ -1,3 +1,4 @@
+import type { ToolSchemaDescriptor } from "@cordierite/shared";
 import { useEffect, useRef, type DependencyList } from "react";
 
 import type {
@@ -8,7 +9,6 @@ import type {
   InferToolResult,
 } from "./Cordierite.types";
 import type { CordieriteSubscription } from "./public-api";
-import { exportToolSchema } from "./schema";
 
 type ToolRegistrar = <
   TInputSchema extends CordieriteRuntimeSchema | undefined,
@@ -31,44 +31,84 @@ export type UseCordieriteToolOptions = {
   enabled?: boolean;
 };
 
+/** Shape of `schema.ts`'s `exportToolSchema`, injected rather than imported (see below). */
+type ToolSchemaExporter = (
+  schema: CordieriteRuntimeSchema,
+  mode: "input" | "output",
+) => ToolSchemaDescriptor | undefined;
+
+/** Options for `createUseCordieriteTool` (library-internal, not part of the public API). */
+export type CreateUseCordieriteToolOptions = {
+  /**
+   * JSON Schema exporter used to derive the registration key when the caller omits `deps`.
+   * Injected by the real (`.`) entry and deliberately omitted by the inert (`./noop`) one: with a
+   * registrar that registers nothing, deriving a key would export JSON Schema on every render to
+   * decide how often to re-run a no-op, and a static import would pull `schema.ts` into a bundle
+   * whose whole purpose is to carry no Cordierite work. Without it the effect keys off `enabled`
+   * alone; the returned hook's signature, arity and observable behavior are identical either way
+   * (ARCHITECTURE.md §11).
+   */
+  exportSchema?: ToolSchemaExporter;
+};
+
 /**
  * Per-hook, per-slot memo for the derived registration key: the schema object last seen and the
- * JSON Schema string it exported to. Identity is checked first, so a hoisted or memoized schema
- * never re-exports; a schema rebuilt inline on every render exports once per render (what an
- * unconditional re-registration already cost) but only changes the key when its *shape* changed.
+ * key it produced. Identity is checked first, so a hoisted or memoized schema never re-exports; a
+ * schema rebuilt inline on every render exports once per render (what an unconditional
+ * re-registration already cost) but only changes the key when its *shape* changed.
  */
 type SchemaKeyMemo = {
   schema: CordieriteRuntimeSchema | undefined;
-  exported: string | undefined;
+  key: string | undefined;
+  /** Bumped for each new *unexportable* schema object, which has no shape to compare by value. */
+  shapelessSeq: number;
 };
 
 const createSchemaKeyMemo = (): SchemaKeyMemo => ({
   schema: undefined,
-  exported: undefined,
+  key: undefined,
+  shapelessSeq: 0,
 });
 
 const schemaKey = (
   schema: CordieriteRuntimeSchema | undefined,
   mode: "input" | "output",
+  exportSchema: ToolSchemaExporter,
   memo: SchemaKeyMemo,
 ): string | undefined => {
   if (schema === memo.schema) {
-    return memo.exported;
+    return memo.key;
   }
 
-  // `exportToolSchema` already returns `undefined` for a schema without a JSON Schema exporter
-  // (zod 3, plain valibot), which is exactly what the daemon would observe for it. The tool name
-  // is deliberately not passed: this runs during render, and the "shapeless tool" dev warning
-  // belongs to the registration path, not to key derivation.
-  const exported =
-    schema === undefined
-      ? undefined
-      : JSON.stringify(exportToolSchema(schema, mode));
+  let key: string | undefined;
+  if (schema === undefined) {
+    key = undefined;
+  } else {
+    // `exportToolSchema` returns `undefined` for a schema that does not export JSON Schema (zod 3,
+    // plain valibot). The tool name is deliberately not passed: this runs during render, and the
+    // "shapeless tool" dev warning belongs to the registration path, not to key derivation.
+    const exported = exportSchema(schema, mode);
+    if (exported === undefined) {
+      // No shape to compare by value, and "exports nothing" must not collide with "no schema at
+      // all" -- the registry entry still holds the object and validates against it, and
+      // `tool-invocation.ts` keys its "must not return a result when outputSchema is omitted" rule
+      // on the entry's `outputSchema` being present. So fall back to identity: a new unexportable
+      // schema object always produces a new key, which does mean an unexportable schema rebuilt
+      // inline every render re-registers every render (exactly what it did before). Hoist it, or
+      // move to zod v4, whose built-in exporter puts it back on the by-shape path.
+      memo.shapelessSeq += 1;
+      // Cannot collide with the branch below: `JSON.stringify` of an exported schema is always a
+      // JSON object literal, so it always starts with `{`.
+      key = `shapeless:${memo.shapelessSeq}`;
+    } else {
+      key = JSON.stringify(exported);
+    }
+  }
 
   memo.schema = schema;
-  memo.exported = exported;
+  memo.key = key;
 
-  return exported;
+  return key;
 };
 
 /**
@@ -76,13 +116,18 @@ const schemaKey = (
  * inert (`./noop`) entries call this with their own `registerTool`, so the hook's remount/dependency
  * behavior can never drift between the two (ARCHITECTURE.md §11).
  */
-export function createUseCordieriteTool(registerTool: ToolRegistrar) {
+export function createUseCordieriteTool(
+  registerTool: ToolRegistrar,
+  { exportSchema }: CreateUseCordieriteToolOptions = {},
+) {
   /**
    * `useEffect` wrapper around `registerTool` that registers **once per mount** and re-registers
-   * only when something the daemon can actually observe changed — `name`, `description`, the
+   * only when something that changes the registry entry changed — `name`, `description`, the
    * exported input/output JSON Schemas, `annotations`, `timeoutMs`, or `options.enabled`. Omitting
    * `deps` is therefore the correct, cheap default: re-rendering the hosting component does not
    * produce `tool_registry_delta` traffic or agent-side `tools/list_changed` notifications.
+   * (`timeoutMs` is app-side only — the daemon never sees it — but it is part of the entry, so a
+   * change to it has to reach the registry.)
    *
    * Handler freshness: the registered handler is a stable wrapper that forwards to
    * `definitionRef.current.handler`, so a handler closing over component state always sees the
@@ -93,11 +138,17 @@ export function createUseCordieriteTool(registerTool: ToolRegistrar) {
    * between passing `deps` and omitting it changes the dependency-array length between renders,
    * which React warns about, exactly as it does for a hand-written `useEffect`.
    *
-   * Consequence of keying on the *exported* schema: the registry keeps the schema objects from the
-   * most recent registration, so a schema replaced by an identity-different one that exports the
-   * same JSON Schema keeps validating against the earlier object. That only matters for a
-   * validation rule the JSON Schema cannot express *and* that closes over changing state (a
-   * `.refine()` over component state, say) — pass `deps` for that case.
+   * Two consequences of registering once, both of which `deps` opts out of:
+   *
+   * - The registry keeps the schema objects from the most recent registration, so a schema
+   *   replaced by an identity-different one that exports the *same* JSON Schema keeps validating
+   *   against the earlier object. That only matters for a validation rule JSON Schema cannot
+   *   express *and* that closes over changing state (a `.refine()` over component state, say).
+   * - Two mounted hooks registering the same tool name: the later registration wins (with the
+   *   registry's dev warning), and when it unmounts the earlier hook no longer re-claims the name
+   *   on its next render — the name stays unregistered until that hook re-registers for its own
+   *   reasons. Duplicate names were never a supported configuration; this makes the existing dev
+   *   warning the thing to fix rather than a race to lose.
    *
    * Re-registration relies on the registry's identity-safe disposer, so remount / Fast Refresh
    * churn — and toggling `enabled` — never leaks a stale registration or clobbers a newer one
@@ -132,13 +183,19 @@ export function createUseCordieriteTool(registerTool: ToolRegistrar) {
 
     const enabled = options?.enabled ?? true;
 
-    // Only derived when `deps` is omitted: a caller who passed `deps` opted out of the derived key
+    // `null` is not a legal `DependencyList`, but untyped JS callers pass it, and the previous
+    // truthiness check treated it exactly like an omitted argument. Keep doing that rather than
+    // spreading it.
+    const hasDeps = deps !== undefined && deps !== null;
+
+    // The key is only derived when `deps` is omitted: a caller who passed `deps` opted out of it
     // entirely and should not pay for a JSON Schema export they did not ask for.
-    const derivesKey = deps === undefined;
+    const derivesKey = !hasDeps && exportSchema !== undefined;
     const inputSchemaKey = derivesKey
       ? schemaKey(
           definition.inputSchema,
           "input",
+          exportSchema,
           schemaKeyMemosRef.current.input,
         )
       : undefined;
@@ -146,6 +203,7 @@ export function createUseCordieriteTool(registerTool: ToolRegistrar) {
       ? schemaKey(
           definition.outputSchema,
           "output",
+          exportSchema,
           schemaKeyMemosRef.current.output,
         )
       : undefined;
@@ -170,22 +228,24 @@ export function createUseCordieriteTool(registerTool: ToolRegistrar) {
         return () => {
           registration.remove();
         };
-        // The derived branch has a fixed length (7). `deps`, when provided, is caller-controlled
-        // (mirrors `useEffect`'s own contract); `enabled` is appended explicitly in both branches
-        // so toggling it re-runs the effect.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
       },
-      deps === undefined
-        ? [
-            definition.name,
-            definition.description,
-            definition.timeoutMs,
-            annotationsKey,
-            inputSchemaKey,
-            outputSchemaKey,
-            enabled,
-          ]
-        : [...deps, enabled],
+      // Each branch has a fixed length across renders (caller-supplied `deps` mirrors
+      // `useEffect`'s own contract); `enabled` is appended explicitly in all three so toggling it
+      // re-runs the effect. The dependency list is built by hand on purpose, so do not let an
+      // `exhaustive-deps` autofix "complete" it.
+      hasDeps
+        ? [...deps, enabled]
+        : derivesKey
+          ? [
+              definition.name,
+              definition.description,
+              definition.timeoutMs,
+              annotationsKey,
+              inputSchemaKey,
+              outputSchemaKey,
+              enabled,
+            ]
+          : [enabled],
     );
   };
 }

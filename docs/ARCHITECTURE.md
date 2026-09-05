@@ -376,16 +376,24 @@ Client behavior:
   stable wrapper forwarding to the latest render's `definition.handler`, so a handler
   closing over component state is fresh on every call without re-registering. With `deps`
   omitted (the documented default) the effect keys off a derived, fixed-length dependency
-  list of exactly what the daemon can observe — `name`, `description`, `timeoutMs`,
-  stringified `annotations`, the exported input/output JSON Schemas, and `enabled` — so a
-  re-render never emits a `tool_registry_delta` pair or an agent-side
-  `notifications/tools/list_changed`. Schemas are compared by identity first and re-exported
-  only when the identity changed (hoisted/memoized schemas never re-export; an inline
-  `z.object({…})` re-exports once per render and still matches by shape). A caller-supplied
-  `deps` is an explicit override with `useEffect`'s own semantics (`[...deps, enabled]`).
+  list of everything that changes the registry entry — `name`, `description`,
+  `timeoutMs` (app-side only, but part of the entry), stringified `annotations`, the
+  exported input/output JSON Schemas, and `enabled` — so a re-render never emits a
+  `tool_registry_delta` pair or an agent-side `notifications/tools/list_changed`. Schemas
+  are compared by identity first and re-exported only when the identity changed
+  (hoisted/memoized schemas never re-export; an inline `z.object({…})` re-exports once per
+  render and still matches by shape). A schema that exports no JSON Schema (zod 3, plain
+  valibot) has no shape to compare, so it falls back to identity — "exports nothing" must
+  not collapse into "no schema at all", which is what the entry's `outputSchema` presence
+  and §7's optional `input_schema`/`output_schema` are keyed on. A caller-supplied `deps`
+  is an explicit override with `useEffect`'s own semantics (`[...deps, enabled]`).
   `enabled` (default `true`) is the supported way to gate a tool by build variant without
   breaking the rules of hooks; registration is the app-side allowlist, and it is the only
-  enforcement point inside the app's own trust boundary (§12).
+  enforcement point inside the app's own trust boundary (§12). The JSON Schema exporter is
+  injected into `createUseCordieriteTool` by the `.` entry and deliberately omitted by
+  `./noop`, whose registrar registers nothing: the inert entry keys the effect off
+  `enabled` alone and never imports schema export at all. Signature, arity and observable
+  behavior stay identical, which is what `__tests__/noop-parity.test.ts` pins.
 - `postEvent(name, payload?)` — emits an `event` frame when active; silently drops (dev
   warning) otherwise.
 - Unified listener: `addCordieriteListener(kind, cb)` with kinds `stateChange`,

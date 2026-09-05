@@ -43,9 +43,9 @@ export default function ToolsScreen() {
   const [callCount, setCallCount] = useState(0);
   const [tools, setTools] = useState<RegisteredTool[]>([]);
 
-  // Plain state: `useCordieriteTool` registers a stable wrapper that forwards to the latest
-  // render's handler, so these handlers read the current `callCount` without a ref workaround
-  // and without being re-registered on every increment.
+  // Plain state, no ref: `useCordieriteTool` registers a stable wrapper that forwards to the
+  // latest render's handler, so `call_count` below reads the current `callCount` on every call
+  // without being re-registered on each increment.
   const bumpCallCount = () => {
     setCallCount((count) => count + 1);
   };
@@ -64,6 +64,18 @@ export default function ToolsScreen() {
       bumpCallCount();
       return { total: args.a + args.b };
     },
+  });
+
+  useCordieriteTool({
+    name: "call_count",
+    description: "Reports how many times the playground's counted tools have run.",
+    annotations: { readOnlyHint: true },
+    outputSchema: z.object({
+      count: z.number(),
+    }),
+    // Closes directly over `callCount` state. Registered once on mount, yet every call sees the
+    // value from the most recent render -- that is the freshness guarantee, demonstrated.
+    handler: () => ({ count: callCount }),
   });
 
   useCordieriteTool({
@@ -168,8 +180,9 @@ export default function ToolsScreen() {
             <ThemedText type="subtitle">{callCount}</ThemedText>
           </View>
           <ThemedText type="caption" style={styles.cardHint}>
-            Bumped by sum/slow_task; reset_counter (destructive) sets it back to zero. Try denying
-            destructive tools in the daemon config to see it get rejected instead.
+            Bumped by sum/slow_task; call_count reads it back (a handler closing over state, never
+            re-registered); reset_counter (destructive) sets it to zero. Try denying destructive
+            tools in the daemon config to see it get rejected instead.
           </ThemedText>
         </View>
       </ScrollView>

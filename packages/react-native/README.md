@@ -172,7 +172,7 @@ export function CordieriteBootstrap() {
 
 Mount that component near app startup, or register from another module that loads on startup. The host can only list and invoke tools that your app has already registered.
 
-**Registration is per mount, not per render.** The hook registers once when the component mounts and re-registers only when something the host can actually see changed: `name`, `description`, the exported input/output JSON Schemas, `annotations`, `timeoutMs`, or `enabled`. Re-rendering the component — including on every keystroke of some unrelated state — sends nothing over the wire and does not make agents re-fetch `tools/list`.
+**Registration is per mount, not per render.** The hook registers once when the component mounts and re-registers only when something that changes the registration itself changed: `name`, `description`, the exported input/output JSON Schemas, `annotations`, `timeoutMs`, or `enabled`. Re-rendering the component — including on every keystroke of some unrelated state — sends nothing over the wire and does not make agents re-fetch `tools/list`.
 
 **Your handler is always fresh.** The hook registers a stable wrapper that forwards to the handler from the latest render, so a handler that closes over component state sees the current value on the next call without being re-registered and without `useRef` workarounds:
 
@@ -188,9 +188,13 @@ useCordieriteTool({
 });
 ```
 
-**Hoisting schemas is a small optimization, not a requirement.** Schemas are compared by object identity first, so a schema defined at module scope (or wrapped in `useMemo`) is never re-exported to JSON Schema. A schema built inline in the component body is re-exported once per render to compare its shape — the same cost the old unconditional re-registration already paid — and still does not re-register unless the shape actually changed. Hoisting is worth a moment's thought for a hot component, and in builds that swap in the inert `./noop` entry, where that export buys nothing.
+**Hoisting schemas is a small optimization, not a requirement.** Schemas are compared by object identity first, so a schema defined at module scope (or wrapped in `useMemo`) is never re-exported to JSON Schema. A schema built inline in the component body is re-exported once per render to compare its shape — the same cost the old unconditional re-registration already paid — and still does not re-register unless the shape actually changed. Hoisting is worth a moment's thought for a hot component. (Builds that swap in the inert `./noop` entry never do any of this: that entry has no exporter at all, so it neither runs nor bundles JSON Schema export.)
 
-Because the comparison is on the *exported* JSON Schema, the registry keeps the schema objects from the most recent registration: replacing a schema with an identity-different one that exports the same JSON Schema keeps validating against the earlier object. That only matters for a validation rule JSON Schema cannot express *and* that closes over changing state (a `.refine()` reading component state, say) — pass `deps` for that case.
+A schema that does **not** export JSON Schema (zod 3, plain valibot — the same ones that get the "shapeless tool" dev warning) has no shape to compare, so it falls back to object identity: adding, swapping or removing one always re-registers, and one rebuilt inline on every render therefore re-registers on every render, exactly as it did before. Hoist it, or move to zod v4, whose built-in exporter puts it back on the cheap by-shape path.
+
+Because exportable schemas are compared by their *exported* JSON Schema, the registry keeps the schema objects from the most recent registration: replacing one with an identity-different schema that exports the same JSON Schema keeps validating against the earlier object. That only matters for a validation rule JSON Schema cannot express *and* that closes over changing state (a `.refine()` reading component state, say) — pass `deps` for that case.
+
+**Two mounted hooks registering the same tool name** were never a supported configuration (the registry dev-warns and the later registration overwrites the earlier). One consequence is worth knowing: when the later hook unmounts, the earlier one no longer re-claims the name on its next render, so the tool stays unregistered until that hook re-registers for its own reasons. Give each tool one owner.
 
 **`deps` is an optional, advanced override.** Passing it replaces the derived key entirely with `useEffect`'s own semantics (`enabled` is still appended), which is occasionally useful — e.g. forcing a re-registration on something the descriptor does not capture. Most call sites should simply omit it. Pass it consistently if you pass it at all: alternating between passing `deps` and omitting it changes the dependency-array length between renders, which React warns about, exactly as it does for a hand-written `useEffect`.
 

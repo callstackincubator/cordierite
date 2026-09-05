@@ -60,6 +60,7 @@ The **Status** tab should flip to `active` with an alias once the app claims the
 pnpm run playground:cordierite -- ls
 pnpm run playground:cordierite -- tools
 pnpm run playground:cordierite -- invoke sum --input '{"a":1,"b":2}'
+pnpm run playground:cordierite -- invoke call_count --input '{}'      # reads state a handler closes over
 pnpm run playground:cordierite -- invoke reset_counter --input '{}'   # destructive; denied if policy.destructive=deny
 pnpm run playground:cordierite -- invoke slow_task --input '{}'       # watch progress with events --follow
 pnpm run playground:cordierite -- invoke throwing_tool --input '{}'   # exercises tool_execution_error
