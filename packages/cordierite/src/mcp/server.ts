@@ -205,6 +205,14 @@ const proxiedToolResultContent = (tool: NamespacedTool, result: unknown): CallTo
 export type CreateMcpServerOptions = {
   stateDir: string;
   spawn?: SpawnFn;
+  /**
+   * Daemon/CLI version check (issue #30), applied to the startup stream only — never to the
+   * short-lived progress streams below, which must never restart the daemon out from under a call
+   * that is already in flight. A mismatch that cannot be resolved therefore fails server startup,
+   * with the same message the CLI prints. Drift introduced *after* this server started is out of
+   * scope: nothing re-checks a connection that is already established.
+   */
+  checkVersion?: VersionCheckOptions;
   /** The scheme composing `cordierite_connect`'s deep link; same source as `cli/link.ts`'s
    * `config.json`'s `scheme` (there is no per-call MCP flag equivalent). */
   scheme?: string;
@@ -219,7 +227,11 @@ export type McpServerHandle = {
 };
 
 export const createMcpServer = async (options: CreateMcpServerOptions): Promise<McpServerHandle> => {
-  const stream = await openDaemonStream({ stateDir: options.stateDir, spawn: options.spawn });
+  const stream = await openDaemonStream({
+    stateDir: options.stateDir,
+    spawn: options.spawn,
+    checkVersion: options.checkVersion,
+  });
 
   const server = new Server(
     { name: "cordierite", version: packageVersion },

@@ -1,6 +1,6 @@
 import type { ErrorType } from "@cordierite/shared";
 
-import { DaemonRpcError, isDaemonUnreachableError } from "./rpc/client.js";
+import { DaemonRpcError, DaemonVersionMismatchError, isDaemonUnreachableError } from "./rpc/client.js";
 import type { CliError, CliErrorType } from "./cli/result-types.js";
 
 const EXIT_CODE_BY_ERROR_TYPE: Record<CliErrorType, number> = {
@@ -121,6 +121,22 @@ export const toCliError = (error: unknown): CliError => {
     };
   }
 
+  // Daemon/CLI version drift that could not be resolved automatically (issue #30). Rendered as a
+  // `connection_error` — the daemon is reachable, but not one this client can safely talk to —
+  // with both versions and the live-session count in `details` so `--json` consumers can act on it
+  // without parsing the message.
+  if (error instanceof DaemonVersionMismatchError) {
+    return {
+      type: "connection_error",
+      message: error.message,
+      details: {
+        daemon_version: error.daemonVersion,
+        client_version: error.clientVersion,
+        session_count: error.sessionCount,
+      },
+    };
+  }
+
   if (error instanceof DaemonRpcError && error.data?.type) {
     return {
       type: error.data.type,
@@ -155,6 +171,10 @@ export const toCliError = (error: unknown): CliError => {
 export const getExitCodeForError = (error: unknown): number => {
   if (isCordieriteCliError(error)) {
     return EXIT_CODE_BY_ERROR_TYPE[error.type];
+  }
+
+  if (error instanceof DaemonVersionMismatchError) {
+    return EXIT_CODE_BY_ERROR_TYPE.connection_error;
   }
 
   if (error instanceof DaemonRpcError) {

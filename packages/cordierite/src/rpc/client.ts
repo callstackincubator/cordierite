@@ -391,8 +391,14 @@ type VersionCheckContext = {
   check: VersionCheckOptions;
 };
 
-/** `daemon.status`, auto-spawning a daemon first when nothing is listening. */
-const readStatusSpawningIfNeeded = async (context: VersionCheckContext): Promise<DaemonStatusResult> => {
+/**
+ * `daemon.status`, auto-spawning a daemon first when nothing is listening. Returns `undefined`
+ * when nothing is listening and auto-spawn is off — there is no daemon to drift from, and any
+ * daemon this process spawns later is by definition this process's own build.
+ */
+const readStatusSpawningIfNeeded = async (
+  context: VersionCheckContext,
+): Promise<DaemonStatusResult | undefined> => {
   try {
     return await sendRequest<DaemonStatusResult>(
       context.paths.socketPath,
@@ -401,8 +407,12 @@ const readStatusSpawningIfNeeded = async (context: VersionCheckContext): Promise
       context.requestTimeoutMs,
     );
   } catch (error) {
-    if (!context.autoSpawn || !isConnectionMissingError(error)) {
+    if (!isConnectionMissingError(error)) {
       throw error;
+    }
+
+    if (!context.autoSpawn) {
+      return undefined;
     }
 
     await spawnDaemonAndWait(context.paths, context.spawn, context.waitTimeoutMs, context.pollIntervalMs);
@@ -545,6 +555,11 @@ const runVersionCheck = async (context: VersionCheckContext): Promise<void> => {
 
   for (let attempt = 0; attempt < MAX_VERSION_CHECK_ATTEMPTS; attempt += 1) {
     const status = await readStatusSpawningIfNeeded(context);
+
+    if (status === undefined) {
+      return;
+    }
+
     lastStatus = status;
 
     if (status.version === context.check.clientVersion) {
@@ -610,6 +625,23 @@ const ensureDaemonVersion = async (
   versionChecks.set(paths.socketPath, pending);
 
   return pending;
+};
+
+/**
+ * Runs the version check on its own, without issuing a command RPC — the CLI dispatcher's seam
+ * (issue #30). Pass `autoSpawn: false` (the default here) when the caller does not want a daemon
+ * started just to be checked: nothing listening means nothing to drift from.
+ */
+export const ensureDaemonVersionMatches = async (
+  options: Omit<CallDaemonOptions, "checkVersion"> & { checkVersion: VersionCheckOptions },
+): Promise<void> => {
+  const paths = getStateDirPaths(options.stateDir);
+
+  await ensureDaemonVersion(
+    paths,
+    { ...options, autoSpawn: options.autoSpawn ?? false },
+    options.spawn ?? defaultSpawn,
+  );
 };
 
 /** Calls a daemon RPC method, auto-spawning the daemon on a missing/refused connection. */

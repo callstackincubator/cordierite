@@ -12,6 +12,7 @@ import { startDaemon } from "../daemon/daemon.js";
 import { DaemonAlreadyRunningError, readPidFromFile } from "../daemon/pidfile.js";
 import { getStateDirPaths } from "../daemon/state-dir.js";
 import { connectionError } from "../errors.js";
+import { getPackageVersion } from "../package-version.js";
 import { callDaemon, isDaemonUnreachableError, type SpawnFn } from "../rpc/client.js";
 
 export type DaemonCommandContext = {
@@ -19,6 +20,9 @@ export type DaemonCommandContext = {
   clock?: Clock;
   spawn?: SpawnFn;
   warn?: (message: string) => void;
+  /** Test seam: the version `daemon status` compares the daemon against; defaults to this
+   * package's own version. */
+  clientVersion?: string;
 };
 
 export type DaemonRunHostedResult = {
@@ -123,9 +127,18 @@ export const handleDaemonStatusCommand = async (
     { stateDir: context.stateDir, autoSpawn: true, spawn: context.spawn },
   );
 
+  const clientVersion = context.clientVersion ?? getPackageVersion();
+  const warning =
+    status.version === clientVersion
+      ? undefined
+      : `Version drift: this daemon is ${status.version} but the CLI is ${clientVersion}. ` +
+        `Newer RPC methods will fail against it — run "cordierite daemon stop" (this drops ${status.sessions.length} session(s)) ` +
+        `and the next command will start a matching daemon.`;
+
   return {
     ok: true,
     data: {
+      warning,
       daemon: {
         version: status.version,
         pid: status.pid,
