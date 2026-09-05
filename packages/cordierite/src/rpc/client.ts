@@ -6,12 +6,13 @@
 
 import { connect, type Socket } from "node:net";
 import { spawn as spawnChildProcess } from "node:child_process";
-import { open, readFile, rm } from "node:fs/promises";
+import { chmod, open, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { RpcErrorData } from "@cordierite/shared";
 
+import { rotateDaemonLogIfNeeded, resolveDaemonLogMaxBytes } from "../daemon/log-rotation.js";
 import { getStateDirPaths, type StateDirPaths } from "../daemon/state-dir.js";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -217,9 +218,22 @@ const unlinkStaleSocketIfDaemonDead = async (paths: StateDirPaths): Promise<void
 };
 
 const defaultSpawn: SpawnFn = async (args, context) => {
+  // Rotate before the new daemon's log fd is opened (issue #32). This is the only safe moment:
+  // afterwards the daemon holds the fd for its whole life, and we only get here when no daemon was
+  // reachable, so no live writer is about to have the file renamed out from under it. `cordierite
+  // daemon start` spawns through this same path, so it rotates too.
+  await rotateDaemonLogIfNeeded({
+    logFilePath: context.logFilePath,
+    maxBytes: await resolveDaemonLogMaxBytes(context.stateDir),
+  });
+
   const logFd = await open(context.logFilePath, "a", 0o600);
 
   try {
+    // `open`'s mode applies only at creation and is subject to the umask; chmod explicitly so the
+    // freshly rotated-in log lands at the ARCHITECTURE.md §3 mode like every other state file.
+    await chmod(context.logFilePath, 0o600);
+
     const child = spawnChildProcess(process.execPath, [defaultBinPath, ...args], {
       detached: true,
       stdio: ["ignore", logFd.fd, logFd.fd],
