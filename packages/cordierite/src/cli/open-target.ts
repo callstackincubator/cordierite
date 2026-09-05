@@ -180,7 +180,9 @@ const runDevicectlJson = async (
       return undefined;
     }
   } finally {
-    await rm(dir, { force: true, recursive: true });
+    // Swallowed deliberately: a failure to clean up a temp directory must not replace the
+    // devicectl error the caller actually needs to read (a `finally` that throws wins).
+    await rm(dir, { force: true, recursive: true }).catch(() => {});
   }
 };
 
