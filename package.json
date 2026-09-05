@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "build": "turbo run build",
+    "check:links": "node scripts/check-md-links.mjs",
     "clean": "turbo run clean",
     "lint": "turbo run lint",
     "test": "turbo run test",
