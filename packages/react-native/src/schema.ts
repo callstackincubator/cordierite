@@ -82,9 +82,10 @@ const nonObjectInputWarningsSeen = new Set<string>();
  * the JS client; only the MCP surface degrades. Warn at registration time so an app author learns
  * it here rather than from an agent.
  *
- * This is a best-effort dev-time hint, not the authority: the MCP server makes the real decision
- * with the SDK's own `ToolSchema` and rejects a little more than this (see `isObjectRootedSchema`).
- * Everything zod can export is covered here.
+ * This is a best-effort dev-time hint, not the authority. The MCP server makes the real decision
+ * by parsing the composed tool with the SDK's own `ToolSchema` (`mcp/tool-mapping.ts`), which
+ * rejects a little more than the root-type check available here — this package cannot depend on
+ * the MCP SDK. Every shape zod itself can export is covered by the check below.
  */
 const warnNonObjectRootedSchema = (
   toolName: string,
