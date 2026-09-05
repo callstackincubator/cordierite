@@ -24,7 +24,14 @@ import {
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { RPC_METHODS, type EventKind, type EventNotification, type SessionsListResult, type ToolsCallResult } from "@cordierite/shared";
+import {
+  isObjectRootedSchema,
+  RPC_METHODS,
+  type EventKind,
+  type EventNotification,
+  type SessionsListResult,
+  type ToolsCallResult,
+} from "@cordierite/shared";
 
 import type { ExecFn } from "../cli/open-target.js";
 import { DaemonRpcError, openDaemonStream, type SpawnFn } from "../rpc/client.js";
@@ -68,6 +75,20 @@ const LIST_CHANGE_EVENT_KINDS: readonly EventKind[] = [
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+};
+
+/** The *shape* of a rejected tool result, for the error message only — never the value itself,
+ * which may be large or carry app data that does not belong in an agent-visible error string. */
+const describeJsonValue = (value: unknown): string => {
+  if (value === null) {
+    return "null";
+  }
+
+  if (Array.isArray(value)) {
+    return "an array";
+  }
+
+  return `a ${typeof value}`;
 };
 
 /** The minimum Claude Code version documented (ARCHITECTURE.md §12 / issue #14) to enforce
@@ -157,6 +178,31 @@ const toolErrorContentFromError = (error: unknown): CallToolResult => {
   }
 
   return toolErrorContent("tool_execution_error", "An unexpected error occurred.");
+};
+
+/**
+ * The success path for a *proxied* device tool (issue #26). An MCP client requires
+ * `structuredContent` on every successful call to a tool whose `tools/list` entry carried an
+ * `outputSchema`, and `toMcpTool` emits that entry exactly when the descriptor's `output_schema`
+ * is object-rooted — so the two decisions have to agree here. When they cannot (an object-rooted
+ * schema whose validator nonetheless let a non-object through app-side, `tool-invocation.ts`),
+ * the call fails as `tool_output_validation_error` rather than as an opaque client-side protocol
+ * error. A tool whose schema was dropped, or that has none, keeps the opportunistic behaviour:
+ * `structuredContent` when the result happens to be an object, text content either way.
+ */
+const proxiedToolResultContent = (tool: NamespacedTool, result: unknown): CallToolResult => {
+  if (!isObjectRootedSchema(tool.descriptor.output_schema)) {
+    return toolSuccessContent(result);
+  }
+
+  if (!isPlainObject(result)) {
+    return toolErrorContent(
+      "tool_output_validation_error",
+      `Tool "${tool.mcpName}" declares an object output schema but returned ${describeJsonValue(result)}.`,
+    );
+  }
+
+  return toolSuccessContent(result);
 };
 
 export type CreateMcpServerOptions = {
@@ -370,7 +416,8 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
         return toolErrorContent("tool_not_found", `Tool "${name}" is not registered.`);
       }
 
-      return toolSuccessContent(
+      return proxiedToolResultContent(
+        tool,
         await callProxiedTool(
           tool,
           args,

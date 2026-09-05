@@ -85,3 +85,16 @@ export const isToolDescriptor = (value: unknown): value is ToolDescriptor => {
 
   return true;
 };
+
+/**
+ * Whether an exported JSON Schema is rooted at the literal `type: "object"`.
+ *
+ * MCP's `Tool` wire shape (`@modelcontextprotocol/sdk`) declares both `inputSchema.type` and
+ * `outputSchema.type` as `z.literal("object")` and clients validate the whole `tools/list` result,
+ * so a single schema rooted at anything else (`z.array`, `z.string`, a `z.union`'s `anyOf`, a
+ * `z.discriminatedUnion`'s `oneOf` — even when every branch is an object) makes the client reject
+ * the *entire* list. Callers use this to keep such a schema off the wire.
+ */
+export const isObjectRootedSchema = (schema: ToolSchemaDescriptor | undefined): boolean => {
+  return schema !== undefined && schema.type === "object";
+};
