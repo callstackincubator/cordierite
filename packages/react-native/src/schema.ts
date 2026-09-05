@@ -512,5 +512,11 @@ export const toToolDescriptor = (
     ...(definition.annotations !== undefined
       ? { annotations: definition.annotations }
       : {}),
+    // Only the tool's *explicit* `timeoutMs` travels on the wire — never the app-wide
+    // `defaultToolTimeoutMs`, which stays a purely app-side fallback. Omitted entirely (no
+    // `timeoutMs: undefined` key) when the tool declares none, so the daemon keeps its own default.
+    ...(definition.timeoutMs !== undefined
+      ? { timeoutMs: definition.timeoutMs }
+      : {}),
   };
 };

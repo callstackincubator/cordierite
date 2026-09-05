@@ -63,6 +63,7 @@ export const createToolRegistry = (deps: ToolRegistryDeps): ToolRegistry => {
       inputSchema,
       outputSchema,
       annotations: registration.annotations,
+      timeoutMs: registration.timeoutMs,
     });
 
     if (entries.has(registration.name)) {

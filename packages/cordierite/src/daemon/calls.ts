@@ -96,12 +96,25 @@ type PendingCall = {
 
 const generateCallId = (): string => `call_${randomBytes(16).toString("base64url")}`;
 
-const clampTimeout = (timeoutMs: number | undefined): number => {
+/** Extra headroom added on top of the daemon-side deadline so a caller's transport timeout never
+ * beats the daemon's own `tool_timeout` — mirrored (deliberately duplicated) in
+ * `client/app-client.ts`, which must not import daemon-internal modules. */
+export const CALL_TRANSPORT_TIMEOUT_SLACK_MS = 5_000;
+
+/** The deadline the daemon will actually enforce for a `tools.call` with this `timeoutMs`. */
+export const clampTimeout = (timeoutMs: number | undefined): number => {
   if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) {
     return DEFAULT_CALL_TIMEOUT_MS;
   }
 
   return Math.min(Math.max(Math.trunc(timeoutMs), MIN_CALL_TIMEOUT_MS), MAX_CALL_TIMEOUT_MS);
+};
+
+/** Transport timeout a caller should use for a `tools.call` that will be given `timeoutMs`
+ * daemon-side. Always clamps first: adding slack to an unclamped value could overflow Node's
+ * 32-bit timer range (~24.8 days), which silently fires the timer immediately. */
+export const deriveCallTransportTimeoutMs = (timeoutMs: number | undefined): number => {
+  return clampTimeout(timeoutMs) + CALL_TRANSPORT_TIMEOUT_SLACK_MS;
 };
 
 /** Event kinds that terminate every pending call for a session (ARCHITECTURE.md §6/§5: "On

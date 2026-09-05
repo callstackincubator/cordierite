@@ -7,6 +7,7 @@
 import { RPC_METHODS, type ToolsCallResult } from "@cordierite/shared";
 
 import type { CliResult, InvokeCommandData } from "../cli/result-types.js";
+import { deriveCallTransportTimeoutMs } from "../daemon/calls.js";
 import { DaemonRpcError, openDaemonStream, type SpawnFn } from "../rpc/client.js";
 
 export type InvokeCommandOptions = {
@@ -31,12 +32,18 @@ export const handleInvokeCommand = async (
   const stream = await openDaemonStream({ stateDir: context.stateDir, spawn: context.spawn });
 
   try {
-    const callPromise = stream.call<ToolsCallResult>(RPC_METHODS.toolsCall, {
-      selector: options.selector,
-      name: options.tool,
-      args: options.args,
-      timeoutMs: options.timeoutMs,
-    });
+    const callPromise = stream.call<ToolsCallResult>(
+      RPC_METHODS.toolsCall,
+      {
+        selector: options.selector,
+        name: options.tool,
+        args: options.args,
+        timeoutMs: options.timeoutMs,
+      },
+      // Without this the socket watchdog defaults to 10 s and `--timeout 60000` still dies at 10 s
+      // with a generic transport error instead of the daemon's own `tool_timeout` (issue #25).
+      deriveCallTransportTimeoutMs(options.timeoutMs),
+    );
 
     if (!signal) {
       const result = await callPromise;

@@ -27,6 +27,7 @@ import {
 import { RPC_METHODS, type EventKind, type EventNotification, type SessionsListResult, type ToolsCallResult } from "@cordierite/shared";
 
 import type { ExecFn } from "../cli/open-target.js";
+import { deriveCallTransportTimeoutMs } from "../daemon/calls.js";
 import { DaemonRpcError, openDaemonStream, type SpawnFn } from "../rpc/client.js";
 import {
   CONNECT_TOOL_DESCRIPTOR,
@@ -265,13 +266,20 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
         : undefined;
 
     if (progressToken === undefined) {
-      const result = await stream.call<ToolsCallResult>(RPC_METHODS.toolsCall, {
-        selector: tool.selector,
-        name: tool.descriptor.name,
-        args,
-        caller: "mcp",
-        ...(consent ? { consent } : {}),
-      });
+      const result = await stream.call<ToolsCallResult>(
+        RPC_METHODS.toolsCall,
+        {
+          selector: tool.selector,
+          name: tool.descriptor.name,
+          args,
+          caller: "mcp",
+          ...(consent ? { consent } : {}),
+        },
+        // Sized off the deadline the daemon will actually enforce for this tool, so its
+        // `tool_timeout` always arrives before this transport watchdog fires and the agent sees the
+        // real error type instead of a generic transport failure (issue #25).
+        deriveCallTransportTimeoutMs(tool.descriptor.timeoutMs),
+      );
 
       return result.result;
     }
@@ -339,13 +347,17 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
       });
 
       try {
-        const result = await progressStream.call<ToolsCallResult>(RPC_METHODS.toolsCall, {
-          selector: tool.selector,
-          name: tool.descriptor.name,
-          args,
-          caller: "mcp",
-          ...(consent ? { consent } : {}),
-        });
+        const result = await progressStream.call<ToolsCallResult>(
+          RPC_METHODS.toolsCall,
+          {
+            selector: tool.selector,
+            name: tool.descriptor.name,
+            args,
+            caller: "mcp",
+            ...(consent ? { consent } : {}),
+          },
+          deriveCallTransportTimeoutMs(tool.descriptor.timeoutMs),
+        );
 
         return result.result;
       } finally {

@@ -49,6 +49,7 @@ export const buildNamespacedTools = (
         input_schema: entry.input_schema,
         output_schema: entry.output_schema,
         annotations: entry.annotations,
+        timeoutMs: entry.timeoutMs,
       };
 
       tools.push({

@@ -21,6 +21,12 @@ export type ToolDescriptor = {
   input_schema?: ToolSchemaDescriptor;
   output_schema?: ToolSchemaDescriptor;
   annotations?: ToolAnnotations;
+  /**
+   * The app-declared per-call deadline for this tool, in milliseconds (a positive integer). The
+   * daemon uses it as the default `tools.call` timeout when the caller passes none; an explicit
+   * caller `timeoutMs` still wins. Optional — older apps omit it and keep the daemon's default.
+   */
+  timeoutMs?: number;
 };
 
 const isJsonObject = (value: unknown): value is Record<string, unknown> => {
@@ -80,6 +86,10 @@ export const isToolDescriptor = (value: unknown): value is ToolDescriptor => {
   }
 
   if (!isValidAnnotations(value.annotations)) {
+    return false;
+  }
+
+  if (value.timeoutMs !== undefined && (!Number.isInteger(value.timeoutMs) || (value.timeoutMs as number) <= 0)) {
     return false;
   }
 
