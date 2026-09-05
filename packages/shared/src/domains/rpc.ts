@@ -80,10 +80,11 @@ export type DaemonStatusResult = {
     failedPrunes: number;
     /** Effective `config.auditRetentionDays`. */
     retentionDays: number;
-    /** `<YYYY-MM-DD>.jsonl` day files currently retained. */
-    files: number;
-    /** Total bytes across those files. */
-    bytes: number;
+    /** `<YYYY-MM-DD>.jsonl` day files currently retained. Absent when the daemon could not read
+     * the audit directory at all — distinct from `0`, which asserts it is empty. */
+    files?: number;
+    /** Total bytes across those files; absent under the same conditions as `files`. */
+    bytes?: number;
   };
 };
 

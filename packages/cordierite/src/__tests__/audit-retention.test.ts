@@ -9,7 +9,7 @@
  * case); every other call falls through to the real implementation.
  */
 
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -195,18 +195,72 @@ describe("audit retention: pruning", () => {
     expect(logger.failedPrunes()).toBe(0);
   });
 
-  test("an empty or missing audit directory prunes to a no-op", async () => {
+  test("an empty audit directory prunes to a no-op", async () => {
     const auditDir = await makeAuditDir();
     const clock = createTestClock("2026-09-05T12:00:00.000Z");
+    const logger = createLogger(auditDir, clock, 30);
 
-    await expect(createLogger(auditDir, clock, 30).prune()).resolves.toEqual({ deleted: 0, failed: 0 });
+    await expect(logger.prune()).resolves.toEqual({ deleted: 0, failed: 0 });
+    await expect(logger.stats()).resolves.toEqual({ files: 0, bytes: 0 });
+    expect(logger.failedPrunes()).toBe(0);
+  });
 
-    const missing = path.join(auditDir, "does-not-exist");
-    const missingLogger = createLogger(missing, clock, 30);
+  test("an unreadable audit directory is a counted prune failure, not a quiet success", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cordierite-audit-unreadable-"));
+    auditDirs.push(root);
+    const clock = createTestClock("2026-09-05T12:00:00.000Z");
+    const warnings: string[] = [];
 
-    await expect(missingLogger.prune()).resolves.toEqual({ deleted: 0, failed: 0 });
-    await expect(missingLogger.stats()).resolves.toEqual({ files: 0, bytes: 0 });
-    expect(missingLogger.failedPrunes()).toBe(0);
+    // A plain file where `audit/` should be: `readdir` fails ENOTDIR. Deterministic for any user,
+    // unlike a mode-based denial, which root ignores.
+    const auditDir = path.join(root, "audit");
+    await writeFile(auditDir, "not a directory", { mode: 0o600 });
+
+    const logger = createLogger(auditDir, clock, 30, warnings);
+
+    await expect(logger.prune()).resolves.toEqual({ deleted: 0, failed: 1 });
+    expect(logger.failedPrunes()).toBe(1);
+    expect(warnings.some((message) => message.includes("audit directory"))).toBe(true);
+
+    // And the footprint is reported as unmeasured rather than as an empty directory — the
+    // difference an operator needs at exactly this moment.
+    await expect(logger.stats()).resolves.toEqual({});
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "a permission-denied audit directory is reported the same way",
+    async () => {
+      const auditDir = await makeAuditDir();
+      const clock = createTestClock("2026-09-05T12:00:00.000Z");
+      const warnings: string[] = [];
+
+      await writeDayFile(auditDir, "2020-01-01.jsonl");
+      await chmod(auditDir, 0o000);
+
+      try {
+        const logger = createLogger(auditDir, clock, 30, warnings);
+
+        await expect(logger.prune()).resolves.toEqual({ deleted: 0, failed: 1 });
+        expect(logger.failedPrunes()).toBe(1);
+        await expect(logger.stats()).resolves.toEqual({});
+      } finally {
+        await chmod(auditDir, 0o700);
+      }
+    },
+  );
+
+  test("a missing audit directory is empty, not unreadable", async () => {
+    const auditDir = await makeAuditDir();
+    const clock = createTestClock("2026-09-05T12:00:00.000Z");
+    const warnings: string[] = [];
+    const logger = createLogger(path.join(auditDir, "not-created-yet"), clock, 30, warnings);
+
+    // The daemon creates `audit/` lazily, so ENOENT is a real answer of zero — no failure counted,
+    // nothing warned, and a footprint of zero rather than "unmeasured".
+    await expect(logger.prune()).resolves.toEqual({ deleted: 0, failed: 0 });
+    await expect(logger.stats()).resolves.toEqual({ files: 0, bytes: 0 });
+    expect(logger.failedPrunes()).toBe(0);
+    expect(warnings).toEqual([]);
   });
 
   test("a delete failure is counted and warned, never thrown", async () => {

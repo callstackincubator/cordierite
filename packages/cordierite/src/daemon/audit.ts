@@ -59,12 +59,16 @@ export type AuditRecord = {
   consent?: "client";
 };
 
-/** Audit directory footprint, surfaced by `daemon.status` so the growth is visible (issue #32). */
+/**
+ * Audit directory footprint, surfaced by `daemon.status` so the growth is visible (issue #32).
+ * Both fields are absent — not zero — when the directory could not be read at all; "we could not
+ * measure it" and "it is empty" are different facts and `daemon.status` reports them differently.
+ */
 export type AuditStats = {
   /** Number of `<YYYY-MM-DD>.jsonl` day files currently on disk. */
-  files: number;
+  files?: number;
   /** Total bytes across those files. */
-  bytes: number;
+  bytes?: number;
 };
 
 export type AuditPruneResult = {
@@ -202,14 +206,24 @@ export const createAuditLogger = (options: AuditLoggerOptions): AuditLogger => {
   let failedPrunes = 0;
   let queue: Promise<void> = Promise.resolve();
 
-  /** Lists the day files in the audit directory; an unreadable/missing directory yields `[]`. */
-  const listDayFiles = async (): Promise<{ name: string; stamp: string }[]> => {
+  /**
+   * Lists the day files in the audit directory. A *missing* directory is genuinely empty — the
+   * daemon creates it lazily — and reports `failed: false`. Any other error (EACCES on a
+   * tightened-up directory, ENOTDIR where a file now sits, EIO on a failing disk) is a refusal to
+   * answer, not an answer of zero, and is reported as such: callers must not turn "we could not
+   * look" into "there is nothing there".
+   */
+  const listDayFiles = async (): Promise<{ files: { name: string; stamp: string }[]; failed: boolean; error?: Error }> => {
     let entries;
 
     try {
       entries = await readdir(options.auditDir, { withFileTypes: true });
-    } catch {
-      return [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { files: [], failed: false };
+      }
+
+      return { files: [], failed: true, error: error as Error };
     }
 
     const files: { name: string; stamp: string }[] = [];
@@ -226,7 +240,7 @@ export const createAuditLogger = (options: AuditLoggerOptions): AuditLogger => {
       }
     }
 
-    return files;
+    return { files, failed: false };
   };
 
   const pruneOnce = async (): Promise<AuditPruneResult> => {
@@ -236,7 +250,19 @@ export const createAuditLogger = (options: AuditLoggerOptions): AuditLogger => {
     let deleted = 0;
     let failed = 0;
 
-    for (const file of await listDayFiles()) {
+    const listing = await listDayFiles();
+
+    if (listing.failed) {
+      // A sweep that could not read the directory did not prune anything and cannot know whether
+      // it needed to — counted and warned like any other prune failure, so a permanently
+      // unreadable `audit/` shows up in `daemon.status` instead of looking like a tidy one.
+      failedPrunes += 1;
+      warn(`cordierite daemon: failed to read the audit directory to prune it: ${listing.error?.message}`);
+
+      return { deleted: 0, failed: 1 };
+    }
+
+    for (const file of listing.files) {
       // Belt and braces: `cutoff` is already strictly behind `today` for every valid
       // `retentionDays`, but today's file is the one file that must never disappear from under an
       // open append, so it is excluded explicitly (issue #32).
@@ -305,10 +331,19 @@ export const createAuditLogger = (options: AuditLoggerOptions): AuditLogger => {
   };
 
   const stats = async (): Promise<AuditStats> => {
+    const listing = await listDayFiles();
+
+    if (listing.failed) {
+      // Reported as "not measured", never as an empty directory: `daemon.status` would otherwise
+      // tell an operator that `audit/` holds nothing at exactly the moment it has become
+      // unreadable — the moment they most need to know otherwise.
+      return {};
+    }
+
     let files = 0;
     let bytes = 0;
 
-    for (const file of await listDayFiles()) {
+    for (const file of listing.files) {
       try {
         bytes += (await stat(join(options.auditDir, file.name))).size;
         files += 1;
