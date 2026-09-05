@@ -43,7 +43,7 @@ Wire your deep-link scheme so the OS can open the app with that link, and you ar
 import "@cordierite/react-native/auto";
 ```
 
-`/auto` is the only entry that installs anything: the deep-link bootstrap listener plus recovery from the native process lease. To control *when* that happens — in `__DEV__`, behind a QA toggle, after other startup work — `require()` it there instead. Metro resolves it lazily; importing twice installs once:
+`/auto` is the only entry that installs anything: the deep-link bootstrap listener and native-lease recovery. To control *when* that happens — in `__DEV__`, behind a QA toggle, after other startup work — `require()` it there instead. Metro resolves it lazily; importing twice installs once:
 
 ```ts
 if (__DEV__) {
@@ -128,7 +128,7 @@ Omit the session selector when only one session is active; pass an alias or sess
 | --- | --- |
 | `registerTool` | `({ name, description, inputSchema?, outputSchema?, annotations?, handler })` → `{ remove() }`. The disposer removes only its own registration. |
 | `useCordieriteTool` | `(definition, deps?, { enabled? })`. `enabled` defaults to `true`; `false` never registers, and removes an existing registration owned by that hook. |
-| `handler` | `(args, context)`. `context.signal` is an `AbortSignal`, aborted when the caller cancels or the connection is lost mid-call. Forward it (`fetch(url, { signal })`) or ignore it — an ignoring handler replies normally. |
+| `handler` | `(args, context)`. `context.signal` is an `AbortSignal`, aborted when the caller cancels or the connection is lost mid-call. Forward it (`fetch(url, { signal })`), check `signal.aborted`, or listen for `"abort"`; ignoring it is fine — the handler just replies normally. |
 | `postEvent` | `(name, payload?)` — pushes an app event, read by `cordierite events` and the MCP event tools. |
 | `addCordieriteListener` | `(kind, callback)` → `{ remove() }`. Kinds `"stateChange"`, `"sessionChange"`, `"error"` — the last one unified channel for bootstrap-parse, connect, socket, and tool-handler failures. |
 | `getRegisteredTools` | → `ToolDescriptor[]`, the current registry. |
