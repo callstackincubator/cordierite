@@ -4,6 +4,8 @@ import type {
   StandardSchemaV1JsonSchema,
 } from "@cordierite/shared";
 import { describe, expect, test } from "vitest";
+import { z as z3 } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 
 import type {
   CordieriteConnectionState,
@@ -280,6 +282,77 @@ describe("createCordieriteClient: claim handshake", () => {
         ],
       })
     );
+  });
+
+  test("a raw JSON Schema and a zod 3 pair both reach tool_registry_snapshot with a real shape (issue #27)", async () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    const rawInput = {
+      type: "object",
+      properties: { city: { type: "string" } },
+      required: ["city"],
+      additionalProperties: false,
+    };
+
+    client.registerTool({
+      name: "weather",
+      description: "Raw JSON Schema tool",
+      inputSchema: rawInput,
+      handler: () => undefined,
+    });
+
+    const zod3Input = z3.object({ a: z3.number() });
+    client.registerTool({
+      name: "sum",
+      description: "zod 3 paired tool",
+      inputSchema: {
+        schema: zod3Input,
+        jsonSchema: zodToJsonSchema(zod3Input, {
+          target: "jsonSchema2019-09",
+        }) as Record<string, unknown>,
+      },
+      handler: () => undefined,
+    });
+
+    const connectPromise = client.connect(validBootstrap());
+    fireMessage(nativeModule, buildAck());
+    await connectPromise;
+    await flushMicrotasks();
+
+    const snapshot = nativeModule.sentMessages
+      .map((json) => JSON.parse(json) as Record<string, unknown>)
+      .find((message) => message.type === "tool_registry_snapshot");
+
+    expect(snapshot).toBeDefined();
+    const tools = snapshot?.tools as { name: string; input_schema?: unknown }[];
+
+    expect(tools.find((tool) => tool.name === "weather")?.input_schema).toEqual(
+      rawInput
+    );
+    expect(
+      tools.find((tool) => tool.name === "sum")?.input_schema
+    ).toMatchObject({
+      type: "object",
+      properties: { a: { type: "number" } },
+      required: ["a"],
+    });
+  });
+
+  test("registering a bare zod 3 schema throws in dev, naming the supported forms (issue #27)", async () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    expect(() =>
+      client.registerTool({
+        name: "shapeless",
+        description: "zod 3 without an exporter",
+        inputSchema: z3.object({ a: z3.number() }),
+        handler: () => undefined,
+      })
+    ).toThrow(/schema, jsonSchema/);
+
+    expect(client.getRegisteredTools()).toEqual([]);
   });
 
   test("connect surfaces native connect() rejection on the unified error channel and rethrows", async () => {
