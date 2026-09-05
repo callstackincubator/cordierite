@@ -199,7 +199,12 @@ const claimApp = async (daemon: RunningDaemon, port: number, deviceModel = "Pixe
 const snapshotTools = async (
   daemon: RunningDaemon,
   app: ClaimedApp,
-  tools: Array<{ name: string; description?: string; input_schema?: Record<string, unknown> }>,
+  tools: Array<{
+    name: string;
+    description?: string;
+    input_schema?: Record<string, unknown>;
+    output_schema?: Record<string, unknown>;
+  }>,
 ): Promise<void> => {
   const toolsChanged = waitForEvent(daemon, "tools_changed");
   app.socket.send(
@@ -305,6 +310,111 @@ describe("mcp: tools/list and tools/call", () => {
 
     expect(called.isError).not.toBe(true);
     expect(called.structuredContent).toEqual({ echoed: "hello" });
+
+    app.socket.close();
+  });
+
+  test("a non-object output schema does not break tools/list: both tools list and both stay callable", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    await snapshotTools(daemon, app, [
+      {
+        name: "get-profile",
+        description: "Returns the profile.",
+        output_schema: {
+          type: "object",
+          properties: { name: { type: "string" } },
+          required: ["name"],
+          additionalProperties: false,
+        },
+      },
+      {
+        // `z.array(z.string())`: MCP's `Tool.outputSchema.type` is the literal `"object"`, so
+        // before issue #26 this single entry made the client reject the whole list.
+        name: "list-todos",
+        description: "Returns the todos.",
+        output_schema: { type: "array", items: { type: "string" } },
+      },
+    ]);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+
+      if (msg.type === "tool_call") {
+        app.socket.send(
+          JSON.stringify({
+            type: "tool_result",
+            session_id: app.sessionId,
+            id: msg.id,
+            result: msg.name === "get-profile" ? { name: "Ada" } : ["write tests", "ship it"],
+          }),
+        );
+      }
+    });
+
+    // The SDK's own `listTools`, so the result goes through `ListToolsResultSchema` *and* caches
+    // the output schemas `callTool` below enforces — exactly what a real client does.
+    const listed = await client.listTools();
+    const proxiedTools = withoutBuiltinTools(listed.tools);
+    expect(proxiedTools.map((tool) => tool.name).sort()).toEqual(["get-profile", "list-todos"]);
+
+    const objectTool = proxiedTools.find((tool) => tool.name === "get-profile")!;
+    const arrayTool = proxiedTools.find((tool) => tool.name === "list-todos")!;
+    expect(objectTool.outputSchema).toEqual({
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+      additionalProperties: false,
+    });
+    expect(arrayTool.outputSchema).toBeUndefined();
+
+    const profile = await client.callTool({ name: "get-profile", arguments: {} });
+    expect(profile.isError).not.toBe(true);
+    expect(profile.structuredContent).toEqual({ name: "Ada" });
+
+    // The dropped schema means no `structuredContent` is required or expected; the value still
+    // reaches the agent as JSON text.
+    const todos = await client.callTool({ name: "list-todos", arguments: {} });
+    expect(todos.isError).not.toBe(true);
+    expect(todos.structuredContent).toBeUndefined();
+    expect(todos.content).toEqual([{ type: "text", text: JSON.stringify(["write tests", "ship it"]) }]);
+
+    app.socket.close();
+  });
+
+  test("an object output schema paired with a non-object result is a tool_output_validation_error, not a client protocol error", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    await snapshotTools(daemon, app, [
+      { name: "lies", description: "Claims an object, returns a number.", output_schema: { type: "object" } },
+    ]);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+
+      if (msg.type === "tool_call") {
+        app.socket.send(
+          JSON.stringify({ type: "tool_result", session_id: app.sessionId, id: msg.id, result: 42 }),
+        );
+      }
+    });
+
+    await client.listTools();
+
+    // `callTool` (not raw `request`) so the SDK's "has an output schema but did not return
+    // structured content" guard is live: an `isError` result is the one shape it accepts.
+    const result = await client.callTool({ name: "lies", arguments: {} });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toBeUndefined();
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("tool_output_validation_error");
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("a number");
 
     app.socket.close();
   });

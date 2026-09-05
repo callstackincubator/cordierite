@@ -84,10 +84,12 @@ const nonObjectInputWarningsSeen = new Set<string>();
 const warnNonObjectRootedSchema = (
   toolName: string,
   mode: "input" | "output",
-  schema: ToolSchemaDescriptor
+  schema: ToolSchemaDescriptor,
 ): void => {
   const seen =
-    mode === "output" ? nonObjectOutputWarningsSeen : nonObjectInputWarningsSeen;
+    mode === "output"
+      ? nonObjectOutputWarningsSeen
+      : nonObjectInputWarningsSeen;
 
   if (seen.has(toolName)) {
     return;
@@ -105,7 +107,7 @@ const warnNonObjectRootedSchema = (
     `Tool "${toolName}" exports a JSON Schema for its ${mode} that is not rooted at ` +
       `type "object" (got ${JSON.stringify(schema.type ?? null)}). ${consequence} ` +
       `Wrap the ${mode} in an object schema (for example z.object({ result: ... })) to keep the ` +
-      "full shape over MCP."
+      "full shape over MCP.",
   );
 };
 
