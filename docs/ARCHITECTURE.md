@@ -113,16 +113,23 @@ when `--scheme` is not passed (§10) — set it once here instead of on every in
   and neither is anything else in the directory.
   Pruning shares the audit write queue, so it cannot race an append; a failure is counted
   and warned like a failed write, never thrown. `daemon status` reports the retained file
-  count, total size, and both failure counters.
+  count, total size, and both failure counters — and reports the count and size as
+  *absent* rather than zero when the directory could not be read at all, since "empty" and
+  "we could not look" are different answers. A directory that does not exist yet is
+  genuinely empty (it is created lazily) and reports zero.
 - `daemonLogMaxBytes` (positive integer, default 10 MiB) bounds `daemon.log`. When a
   daemon is spawned — auto-spawn, or `cordierite daemon start`, which spawns through the
   same path (§4) — an over-cap `daemon.log` is renamed to `daemon.log.1` (mode `0600`,
   single backup, previous backup replaced) before the new log is opened. A running daemon
-  never rotates its own log, and rotation is additionally skipped when `daemon.pid` names
-  a live process: an unreachable socket does not prove the log is unheld (a booting,
-  wedged, or shutting-down daemon still owns its fd), and rotating under one would send
-  its output to a backup the next rotation then unlinks. A rotation failure never blocks
-  the spawn.
+  never rotates its own log. An unreachable socket does not by itself prove the log is
+  unheld — a booting, wedged, or shutting-down daemon still owns its fd, and rotating
+  under one sends its output to a backup the next rotation then unlinks — so rotation
+  also declines when `daemon.pid` names a live process or when `daemon.sock` accepts a
+  connection, re-checked immediately before the rename. That narrows the window without
+  closing it: a daemon spawned microseconds ago has neither yet, and closing it properly
+  needs a lock held across spawn-and-ready rather than released at spawn. A rotation
+  failure never blocks the spawn, and neither does a `daemon.log` mode that the
+  filesystem refuses to set.
 
 ## 4. Daemon lifecycle
 

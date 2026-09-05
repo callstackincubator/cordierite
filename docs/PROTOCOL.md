@@ -351,9 +351,11 @@ types also establish these details:
 - `daemon.status`'s result additionally reports the effective `policy` config and
   `audit: { path, failedWrites, failedPrunes, retentionDays, files, bytes }`
   (ARCHITECTURE.md §12's audit surfacing, plus §3's retention footprint: how many
-  `<YYYY-MM-DD>.jsonl` day files are retained and their total size). A daemon predating
-  retention answers with only `path`/`failedWrites`, so a caller that may be talking to one
-  should treat the rest as optional.
+  `<YYYY-MM-DD>.jsonl` day files are retained and their total size). `files`/`bytes` are
+  omitted when the daemon could not read the audit directory at all — absent means "not
+  measured", never "empty". A daemon predating retention answers with only
+  `path`/`failedWrites`, so a caller that may be talking to one should treat the rest as
+  optional too.
 - `events.subscribe` includes `link_expired` (a pending link's TTL elapsed with no
   claim) and `tool_call_progress` (mirroring the wire message in §4).
 - `events.since` (issue #6) is the pull counterpart: it drains a per-session ring buffer
