@@ -34,35 +34,34 @@ There is no `--session-id` flag in v2 — use the positional selector instead.
 
 ## Establish a session
 
-If no session is active yet, mint a bootstrap link. Requires a deep-link scheme; pass
-`--scheme` or make sure `~/.cordierite/config.json` already has one set:
+If no session is active yet, mint a bootstrap link. **Run this from the app's root
+directory and it needs no configuration at all** — the deep-link scheme is read from
+`app.json`'s `expo.scheme`:
 
 ```bash
-cordierite link --scheme myapp --json
+cordierite link --json
 ```
 
-If the project has no daemon key yet, generate one first — this is non-interactive and
-safe to run from an agent or script:
+No key setup is needed either: the daemon generates its host key on first start.
 
-```bash
-cordierite keygen --out ~/.cordierite/key.pem
-```
-
-Add the printed `sha256/...` fingerprint to the app's `cliPins` (see **Setup** below if
-you are wiring Cordierite into an app for the first time — that step needs a native
-rebuild, so it isn't a fast in-session action).
+Pass `--scheme myapp` only when the scheme cannot be discovered — you are not in the app
+directory, or the project uses a dynamic `app.config.js` (which is never executed).
+`CORDIERITE_SCHEME=myapp` does the same for a whole shell, and `cordierite init` records
+it once in the project (see **Setup** below). Full order: `--scheme` → `CORDIERITE_SCHEME`
+→ the nearest `.cordierite/config.json` walking up → `~/.cordierite/config.json` →
+`<cwd>/app.json`. If none of them has one, the error names every location it tried.
 
 From `link`'s JSON output, use:
 
 - **`data.deepLinkPayload`** to compose the full URL yourself, or just print/relay
   **`data`**'s rendered deep link (`<scheme>:///?cordierite=<deepLinkPayload>`) for a
-  human to open, or scan the QR from `cordierite link --scheme myapp --qr` on a TTY.
+  human to open, or scan the QR from `cordierite link --qr` on a TTY.
 - **`data.sessionId`** — the selector to poll with in the next step.
 
 For a simulator/emulator you control directly, skip the deep link entirely:
 
 ```bash
-cordierite link --scheme myapp --open ios-sim     # or: --open android
+cordierite link --open ios-sim     # or: --open android
 ```
 
 With more than one simulator booted (or several devices attached) this errors and lists
@@ -129,7 +128,12 @@ registerTool({
 
 - Use **`--json`** for structured CLI output in agent flows; runtime failures in
   `--json` mode are JSON on stderr, not bare text.
-- `cordierite keygen` is non-interactive when given `--out`; safe to run unattended.
+- `cordierite init`, run once in an app root, records the scheme in
+  `.cordierite/config.json` and prints the MCP server entry to paste. It is idempotent,
+  never generates keys, and never touches daemon state.
+- `cordierite keygen` is only for **hardening** (rotating the host key, or provisioning
+  one in CI ahead of a release build) — the daemon auto-generates a key on first start,
+  so a normal dev loop never needs it. It is non-interactive when given `--out`.
 - Selectors (session id or alias), not `--session-id`, target a specific session; omit
   the selector when only one session is live.
 - If `cordierite ls` is empty or `tools`/`invoke` fail with `no_session` or

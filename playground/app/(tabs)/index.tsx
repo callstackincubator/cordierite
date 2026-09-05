@@ -12,9 +12,10 @@ import { ThemedView } from "@/components/themed-view";
 import { Layout, Radius } from "@/constants/theme";
 import { useThemeColor } from "@/hooks/use-theme-color";
 
+// No keygen, no pins: the daemon generates its own key and `cordierite link` reads the scheme
+// straight out of app.json's `expo.scheme`. To harden a build that leaves your machine, run
+// `cordierite keygen` and paste the printed sha256/... pin into app.json's `cliPins`.
 const CONNECT_COMMANDS = [
-  "cordierite keygen",
-  "# paste the printed sha256/... pin into app.json's cliPins, then:",
   "pnpm exec expo run:ios   # or: pnpm exec expo run:android",
   "cordierite link --open ios-sim   # or: --open android / --qr",
 ].join("\n");

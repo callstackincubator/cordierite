@@ -45,6 +45,8 @@ Or hand it to an agent:
 }
 ```
 
+Both read your app's deep-link scheme from `app.json`'s `expo.scheme`, so there is nothing to configure. On a machine with several apps, pin it per entry with `--scheme myapp` (or `CORDIERITE_SCHEME`, or run `cordierite init` once in the app root — it writes `.cordierite/config.json` and prints the snippet above with the scheme filled in).
+
 That's the whole idea. Everything else is about which builds include it and what they trust.
 
 ## Is this safe to ship?
