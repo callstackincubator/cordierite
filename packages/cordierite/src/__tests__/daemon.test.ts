@@ -1,15 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { connect, type Socket } from "node:net";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
-import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
+import { AUDIT_PRUNE_INTERVAL_MS, startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { DaemonAlreadyRunningError } from "../daemon/pidfile.js";
 import { startRpcServer } from "../daemon/rpc-server.js";
 import { getStateDirPaths } from "../daemon/state-dir.js";
+import { systemTimers, type IntervalHandle, type TimerFns } from "../daemon/timers.js";
 import { writeTestHostKey } from "./fixtures.js";
 
 const runningDaemons: RunningDaemon[] = [];
@@ -282,6 +283,135 @@ describe("daemon lifecycle", () => {
 
     expect(config.wssPort).toBe(9000);
     expect(warnings.some((message) => message.includes("totallyUnknownKey"))).toBe(true);
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
+});
+
+/**
+ * Retention wiring (ARCHITECTURE.md §3, issue #32). The audit *policy* — which files are stale, how
+ * the day boundary is computed — is covered by `audit-retention.test.ts`; what matters here is that
+ * a real daemon actually runs it at startup, keeps running it on the daily seam, reports the
+ * footprint over RPC, and does not leave the timer behind on shutdown.
+ */
+describe("daemon: audit retention", () => {
+  /** Interval-only fake: `startDaemon` uses its `timers` seam solely for the daily audit sweep, so
+   * everything else (session grace/keepalive, listener pre-claim) keeps running on real timers. */
+  const createIntervalRecorder = (): {
+    timers: TimerFns;
+    intervals: Array<{ callback: () => void; ms: number; cleared: boolean }>;
+  } => {
+    const intervals: Array<{ callback: () => void; ms: number; cleared: boolean }> = [];
+
+    return {
+      intervals,
+      timers: {
+        ...systemTimers,
+        setInterval: (callback, ms) => {
+          const record = { callback, ms, cleared: false };
+          intervals.push(record);
+          return record as unknown as IntervalHandle;
+        },
+        clearInterval: (handle) => {
+          (handle as unknown as { cleared: boolean }).cleared = true;
+        },
+      },
+    };
+  };
+
+  const writeDayFile = async (auditDir: string, stamp: string): Promise<void> => {
+    await writeFile(path.join(auditDir, `${stamp}.jsonl`), "{}\n", { mode: 0o600 });
+  };
+
+  /** Both sweeps are fire-and-forget (`void auditLogger.prune()`), so the assertion polls rather
+   * than sleeping on a guessed duration. */
+  const waitForAuditDir = async (auditDir: string, expected: string[]): Promise<void> => {
+    const deadline = Date.now() + 2000;
+
+    for (;;) {
+      const names = (await readdir(auditDir)).sort();
+
+      if (names.join(",") === expected.join(",") || Date.now() > deadline) {
+        expect(names).toEqual(expected);
+        return;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+
+  test("prunes stale day files at startup, again on the daily timer, and clears the timer on shutdown", async () => {
+    const stateDir = await makeTempStateDir();
+    const paths = getStateDirPaths(stateDir);
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(paths.auditDir, { recursive: true });
+    await writeFile(paths.configPath, JSON.stringify({ auditRetentionDays: 7 }));
+
+    await writeDayFile(paths.auditDir, "2026-09-05"); // today per the clock below
+    await writeDayFile(paths.auditDir, "2026-08-01"); // stale at startup
+
+    const { timers, intervals } = createIntervalRecorder();
+    let now = new Date("2026-09-05T12:00:00.000Z");
+    const daemon = await startDaemon({ stateDir, timers, clock: { now: () => now } });
+    runningDaemons.push(daemon);
+
+    await waitForAuditDir(paths.auditDir, ["2026-09-05.jsonl"]);
+
+    expect(intervals).toHaveLength(1);
+    expect(intervals[0]!.ms).toBe(AUDIT_PRUNE_INTERVAL_MS);
+
+    // A day later the daemon is still running and the sweep still fires — the file that was
+    // "today" at startup is now stale enough to go.
+    await writeDayFile(paths.auditDir, "2026-09-14");
+    now = new Date("2026-09-14T12:00:00.000Z");
+    intervals[0]!.callback();
+    await waitForAuditDir(paths.auditDir, ["2026-09-14.jsonl"]);
+
+    await daemon.shutdown();
+    expect(intervals[0]!.cleared).toBe(true);
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
+
+  test("daemon.status reports the audit footprint and the effective retention", async () => {
+    const stateDir = await makeTempStateDir();
+    const paths = getStateDirPaths(stateDir);
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(paths.auditDir, { recursive: true });
+    await writeFile(paths.configPath, JSON.stringify({ auditRetentionDays: 45 }));
+
+    const daemon = await startTrackedDaemon(stateDir);
+    await writeFile(path.join(paths.auditDir, "2026-09-05.jsonl"), "x".repeat(120), { mode: 0o600 });
+
+    const socket = await connectRaw(daemon.paths.socketPath);
+    const reader = createLineReader(socket);
+    socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "daemon.status", params: {} })}\n`);
+    const response = JSON.parse(await reader.nextLine());
+
+    expect(response.result.audit).toEqual({
+      path: paths.auditDir,
+      failedWrites: 0,
+      failedPrunes: 0,
+      retentionDays: 45,
+      files: 1,
+      bytes: 120,
+    });
+
+    socket.destroy();
+    await rm(stateDir, { force: true, recursive: true });
+  });
+
+  test("an invalid auditRetentionDays/daemonLogMaxBytes fails the daemon like any other config key", async () => {
+    const stateDir = await makeTempStateDir();
+    const paths = getStateDirPaths(stateDir);
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(stateDir, { recursive: true });
+
+    await writeFile(paths.configPath, JSON.stringify({ auditRetentionDays: 0 }));
+    await expect(startDaemon({ stateDir })).rejects.toThrow(/auditRetentionDays.*positive integer/u);
+
+    await writeFile(paths.configPath, JSON.stringify({ daemonLogMaxBytes: 1.5 }));
+    await expect(startDaemon({ stateDir })).rejects.toThrow(/daemonLogMaxBytes.*positive integer/u);
 
     await rm(stateDir, { force: true, recursive: true });
   });

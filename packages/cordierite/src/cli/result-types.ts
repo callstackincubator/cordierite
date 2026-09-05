@@ -159,5 +159,11 @@ export type DaemonStatusCommandData = {
   audit: {
     path: string;
     failed_writes: number;
+    failed_prunes: number;
+    retention_days: number;
+    /** Retained `audit/<YYYY-MM-DD>.jsonl` day files. */
+    files: number;
+    /** Total bytes across those files. */
+    bytes: number;
   };
 };

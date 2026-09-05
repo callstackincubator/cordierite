@@ -71,10 +71,19 @@ export type DaemonStatusResult = {
   sessions: SessionSummary[];
   /** Effective policy configuration (ARCHITECTURE.md §12). */
   policy: EffectivePolicyConfig;
-  /** Audit log surfacing (ARCHITECTURE.md §12): where records land and how many writes failed. */
+  /** Audit log surfacing (ARCHITECTURE.md §12): where records land, how many writes failed, and
+   * the retention footprint (ARCHITECTURE.md §3) so an operator can see the directory growing. */
   audit: {
     path: string;
     failedWrites: number;
+    /** Retention sweeps that failed to delete a day file since the daemon started. */
+    failedPrunes: number;
+    /** Effective `config.auditRetentionDays`. */
+    retentionDays: number;
+    /** `<YYYY-MM-DD>.jsonl` day files currently retained. */
+    files: number;
+    /** Total bytes across those files. */
+    bytes: number;
   };
 };
 

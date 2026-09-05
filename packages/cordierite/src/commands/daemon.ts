@@ -135,7 +135,14 @@ export const handleDaemonStatusCommand = async (
         session_count: status.sessions.length,
       },
       policy: status.policy,
-      audit: { path: status.audit.path, failed_writes: status.audit.failedWrites },
+      audit: {
+        path: status.audit.path,
+        failed_writes: status.audit.failedWrites,
+        failed_prunes: status.audit.failedPrunes,
+        retention_days: status.audit.retentionDays,
+        files: status.audit.files,
+        bytes: status.audit.bytes,
+      },
     },
   };
 };

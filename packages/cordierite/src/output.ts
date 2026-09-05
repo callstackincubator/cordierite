@@ -243,6 +243,22 @@ const renderDaemonStopData = (colors: ColorPalette, data: DaemonStopCommandData)
   ];
 };
 
+/** Human column for a byte count (the machine-readable `bytes` stays exact in `--json`). Binary
+ * units, one decimal above KiB, so a growing `audit/` reads at a glance. */
+const formatByteSize = (bytes: number): string => {
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+
+  let value = bytes;
+  let unit = 0;
+
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+
+  return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
+};
+
 const renderDaemonStatusData = (colors: ColorPalette, data: DaemonStatusCommandData): string[] => {
   return [
     colors.green("Daemon Status"),
@@ -263,7 +279,11 @@ const renderDaemonStatusData = (colors: ColorPalette, data: DaemonStatusCommandD
     "",
     ...renderFields("Audit", [
       ["Path", data.audit.path],
+      ["Retention", `${data.audit.retention_days} days`],
+      ["Files", data.audit.files],
+      ["Size", formatByteSize(data.audit.bytes)],
       ["Failed writes", data.audit.failed_writes],
+      ["Failed prunes", data.audit.failed_prunes],
     ]),
   ];
 };
