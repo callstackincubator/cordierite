@@ -93,6 +93,12 @@ export function createUseCordieriteTool(registerTool: ToolRegistrar) {
    * between passing `deps` and omitting it changes the dependency-array length between renders,
    * which React warns about, exactly as it does for a hand-written `useEffect`.
    *
+   * Consequence of keying on the *exported* schema: the registry keeps the schema objects from the
+   * most recent registration, so a schema replaced by an identity-different one that exports the
+   * same JSON Schema keeps validating against the earlier object. That only matters for a
+   * validation rule the JSON Schema cannot express *and* that closes over changing state (a
+   * `.refine()` over component state, say) — pass `deps` for that case.
+   *
    * Re-registration relies on the registry's identity-safe disposer, so remount / Fast Refresh
    * churn — and toggling `enabled` — never leaks a stale registration or clobbers a newer one
    * under the same tool name.
@@ -169,7 +175,7 @@ export function createUseCordieriteTool(registerTool: ToolRegistrar) {
         // so toggling it re-runs the effect.
         // eslint-disable-next-line react-hooks/exhaustive-deps
       },
-      derivesKey
+      deps === undefined
         ? [
             definition.name,
             definition.description,
@@ -179,7 +185,7 @@ export function createUseCordieriteTool(registerTool: ToolRegistrar) {
             outputSchemaKey,
             enabled,
           ]
-        : [...(deps as DependencyList), enabled],
+        : [...deps, enabled],
     );
   };
 }

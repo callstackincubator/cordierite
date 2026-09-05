@@ -188,7 +188,9 @@ useCordieriteTool({
 });
 ```
 
-**Hoisting schemas is a small optimization, not a requirement.** Schemas are compared by object identity first, so a schema defined at module scope (or wrapped in `useMemo`) is never re-exported to JSON Schema. A schema built inline in the component body is re-exported once per render to compare its shape — the same cost the old unconditional re-registration already paid — and still does not re-register unless the shape actually changed.
+**Hoisting schemas is a small optimization, not a requirement.** Schemas are compared by object identity first, so a schema defined at module scope (or wrapped in `useMemo`) is never re-exported to JSON Schema. A schema built inline in the component body is re-exported once per render to compare its shape — the same cost the old unconditional re-registration already paid — and still does not re-register unless the shape actually changed. Hoisting is worth a moment's thought for a hot component, and in builds that swap in the inert `./noop` entry, where that export buys nothing.
+
+Because the comparison is on the *exported* JSON Schema, the registry keeps the schema objects from the most recent registration: replacing a schema with an identity-different one that exports the same JSON Schema keeps validating against the earlier object. That only matters for a validation rule JSON Schema cannot express *and* that closes over changing state (a `.refine()` reading component state, say) — pass `deps` for that case.
 
 **`deps` is an optional, advanced override.** Passing it replaces the derived key entirely with `useEffect`'s own semantics (`enabled` is still appended), which is occasionally useful — e.g. forcing a re-registration on something the descriptor does not capture. Most call sites should simply omit it. Pass it consistently if you pass it at all: alternating between passing `deps` and omitting it changes the dependency-array length between renders, which React warns about, exactly as it does for a hand-written `useEffect`.
 
