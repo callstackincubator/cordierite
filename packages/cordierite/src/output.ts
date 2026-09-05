@@ -10,6 +10,7 @@ import type {
   DaemonStatusCommandData,
   DaemonStopCommandData,
   DoctorCommandData,
+  InitCommandData,
   InvokeCommandData,
   KeygenCommandData,
   LinkCommandData,
@@ -211,6 +212,30 @@ const renderKeygenData = (colors: ColorPalette, data: KeygenCommandData): string
   ];
 };
 
+const renderInitData = (colors: ColorPalette, data: InitCommandData): string[] => {
+  const snippet = JSON.stringify(
+    { mcpServers: { cordierite: data.mcpServerEntry } },
+    null,
+    2,
+  );
+
+  return [
+    colors.green(data.changed ? "Project Initialized" : "Project Already Initialized"),
+    ...renderFields("Config", [
+      ["Path", data.path],
+      ["Scheme", data.scheme],
+      ["Source", data.source],
+      ["Written", data.changed ? (data.created ? "created" : "updated") : "unchanged"],
+    ]),
+    "",
+    "MCP server entry",
+    ...snippet.split("\n").map((line) => `  ${line}`),
+    "",
+    "Next",
+    ...data.nextSteps.map((step, index) => `  ${index + 1}. ${step}`),
+  ];
+};
+
 const renderDaemonRunData = (colors: ColorPalette, data: DaemonRunCommandData): string[] => {
   return [
     colors.green("Daemon Running"),
@@ -287,6 +312,8 @@ const renderSuccessData = (
   meta?: CommandMeta,
 ): string[] => {
   switch (command) {
+    case "init":
+      return renderInitData(colors, data as InitCommandData);
     case "keygen":
       return renderKeygenData(colors, data as KeygenCommandData);
     case "link":

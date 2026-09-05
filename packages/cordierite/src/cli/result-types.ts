@@ -65,6 +65,32 @@ export type KeygenCommandData = {
   pin: string;
 };
 
+/**
+ * `cordierite init` (issue #29). `created`/`changed` are what make the command's idempotency
+ * observable to a script: a re-run with the same scheme returns `ok: true` with both `false`, so a
+ * caller can tell "nothing to do" from "I just wrote this" without diffing the file itself.
+ */
+export type InitCommandData = {
+  /** Absolute path of the project config that was written (or already correct). */
+  path: string;
+  scheme: string;
+  /** Where `scheme` came from: `--scheme`, `app.json`'s `expo.scheme`, or the file's own prior value. */
+  source: "flag" | "app.json" | "project-config";
+  /** The project config did not exist before this run. */
+  created: boolean;
+  /** This run wrote to the file. `false` on an idempotent re-run. */
+  changed: boolean;
+  /** The MCP server entry to paste into an agent's config — self-contained (it carries `--scheme`)
+   * so one machine can serve several apps without editing a global file. */
+  mcpServerEntry: {
+    command: string;
+    args: string[];
+  };
+  /** Human-facing follow-ups that cannot be inferred from the filesystem (the `auto` import, the
+   * MCP paste, how to pair a device). Also carried in `--json` so an agent can relay them. */
+  nextSteps: string[];
+};
+
 export type LinkCommandData = {
   sessionId: string;
   /** Already includes the `pin` query param (see `pin` below) alongside `cordierite`. */

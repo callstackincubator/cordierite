@@ -8,6 +8,7 @@ import {
 } from "../commands/daemon.js";
 import { handleDoctorCommand } from "../commands/doctor.js";
 import { handleEventsCommand } from "../commands/events.js";
+import { handleInitCommand } from "../commands/init.js";
 import { handleInvokeCommand } from "../commands/invoke.js";
 import { handleKeygenCommand } from "../commands/keygen.js";
 import { handleLinkCommand } from "../commands/link.js";
@@ -97,6 +98,17 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
   );
 
   switch (matchedCommand) {
+    case "init":
+      return executeCommand(
+        "init",
+        () =>
+          handleInitCommand({
+            scheme: typeof parsedOptions.scheme === "string" ? parsedOptions.scheme : undefined,
+            force: Boolean(parsedOptions.force),
+          }),
+        io,
+      );
+
     case "keygen":
       return executeCommand(
         "keygen",
@@ -234,7 +246,11 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
     case "mcp": {
       return executeHostedCommand(
         "mcp",
-        () => handleMcpCommand({ stateDir }),
+        () =>
+          handleMcpCommand({
+            stateDir,
+            scheme: typeof parsedOptions.scheme === "string" ? parsedOptions.scheme : undefined,
+          }),
         {
           ...io,
           reporter: {
