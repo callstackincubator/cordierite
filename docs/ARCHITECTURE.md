@@ -72,6 +72,7 @@ override). Created lazily with mode `0700`. Layout:
 | `daemon.sock` | UDS control socket | `0600` |
 | `daemon.pid` | pidfile (single-instance lock) | `0600` |
 | `daemon.log` | daemon stdout/stderr when auto-spawned | `0600` |
+| `daemon.log.1` | previous `daemon.log`, kept by rotation (see below) | `0600` |
 | `key.pem` | default host private key (`cordierite keygen` default output) | `0600` |
 | `config.json` | daemon configuration (port, grace, policy) | `0600` |
 | `audit/<YYYY-MM-DD>.jsonl` | append-only audit log | `0600` |
@@ -88,6 +89,8 @@ The daemon refuses to load a key file that is group/world-readable.
   "linkTtlSeconds": 300,
   "keepaliveIntervalSeconds": 15,
   "eventBufferSize": 256,
+  "auditRetentionDays": 30,
+  "daemonLogMaxBytes": 10485760,
   "policy": { "default": "allow", "destructive": "allow" },
   "advertisedIp": null,
   "scheme": null
@@ -99,12 +102,29 @@ payloads. `scheme` is the deep-link URI scheme composed into `cordierite link`'s
 when `--scheme` is not passed (§10) — set it once here instead of on every invocation.
 `eventBufferSize` caps the per-session `events.since` retention buffer (§5).
 
+**Retention.** Nothing under the state dir is unbounded:
+
+- `auditRetentionDays` (positive integer, default 30) bounds `audit/`. The daemon prunes
+  once at startup and every 24 h thereafter, deleting only files whose name matches
+  `<YYYY-MM-DD>.jsonl` and whose (UTC) date is more than `auditRetentionDays` days behind
+  today. Today's file is never touched, and neither is anything else in the directory.
+  Pruning shares the audit write queue, so it cannot race an append; a failure is counted
+  and warned like a failed write, never thrown. `daemon status` reports the retained file
+  count, total size, and both failure counters.
+- `daemonLogMaxBytes` (positive integer, default 10 MiB) bounds `daemon.log`. When a
+  daemon is spawned — auto-spawn, or `cordierite daemon start`, which spawns through the
+  same path (§4) — an over-cap `daemon.log` is renamed to `daemon.log.1` (mode `0600`,
+  single backup, previous backup replaced) before the new log is opened. Rotation happens
+  only at spawn time, while no daemon holds the log open; a running daemon never rotates
+  its own log, and a rotation failure never blocks the spawn.
+
 ## 4. Daemon lifecycle
 
 - `cordierite daemon run` — run in the foreground (what auto-spawn executes, and what
   systemd/launchd would use).
 - `cordierite daemon start|stop|status` — explicit control. `start` spawns `daemon run`
-  detached with stdio redirected to `daemon.log`; `stop` sends `daemon.shutdown` over
+  detached with stdio redirected to `daemon.log` (rotating it first if it is over
+  `daemonLogMaxBytes` — §3); `stop` sends `daemon.shutdown` over
   RPC (SIGTERM fallback via pidfile); `status` renders `daemon.status`.
 - **Auto-spawn:** the shared RPC client library used by every CLI command attempts to
   connect to `daemon.sock`. On `ENOENT`/`ECONNREFUSED` it (1) takes an exclusive
@@ -591,6 +611,8 @@ it.
   only when a `"prompt"` call proceeded on the MCP client-gate channel above — kept
   distinct from a plain `"ok"` since the daemon never observes the consent decision
   itself, only that the call arrived carrying this marker. Raw args are never logged.
+  Day files are pruned on the `auditRetentionDays` schedule described in §3, and
+  `daemon status` surfaces the directory's file count, size, and failure counters.
 
 ## 13. Package layout
 
