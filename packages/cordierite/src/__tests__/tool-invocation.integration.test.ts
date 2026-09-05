@@ -22,6 +22,7 @@ import {
   type ToolDescriptor,
 } from "@cordierite/shared";
 
+import { connect } from "../client/index.js";
 import { handleInvokeCommand } from "../commands/invoke.js";
 import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { writeTestHostKey } from "./fixtures.js";
@@ -464,14 +465,21 @@ describe("tools.call: timeout", () => {
   }, 10_000);
 });
 
-describe("cordierite invoke --timeout", () => {
+describe("caller transport timeouts over a slow tool", () => {
   test(
-    "a --timeout above the daemon default survives the CLI's own socket watchdog (issue #25)",
+    "invoke (with and without --timeout) and cordierite/client all outlive a 12 s call (issue #25)",
     async () => {
       const { daemon, port } = await startTestDaemon();
       const app = await claimApp(daemon, port);
-      await snapshotTools(daemon, app, [{ name: "slow-login" }]);
+      await snapshotTools(daemon, app, [
+        { name: "slow-explicit" },
+        // Declares its own deadline, so a caller that passes none still gets 30 s daemon-side.
+        { name: "slow-declared", timeoutMs: 30_000 },
+      ]);
 
+      // 18 s clears both watchdogs these callers used to fall back to — the bare 10 s default and
+      // the 10 s + 5 s slack derived from it — so each of the three calls below would previously
+      // have failed as a generic transport timeout rather than returning a result.
       app.socket.on("message", (data) => {
         const message = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
 
@@ -482,21 +490,34 @@ describe("cordierite invoke --timeout", () => {
                 type: "tool_result",
                 session_id: app.sessionId,
                 id: message.id,
-                result: { loggedIn: true },
+                result: { loggedIn: true, tool: message.name },
               }),
             );
-          }, 12_000);
+          }, 18_000);
         }
       });
 
-      // Before the fix `stream.call` fell back to its 10 s default here, so this died at 10 s with
-      // a generic transport error no matter what `--timeout` said.
-      const result = await handleInvokeCommand(
-        { selector: app.alias, tool: "slow-login", args: {}, timeoutMs: 30_000 },
-        { stateDir: daemon.paths.root },
-      );
+      const client = await connect({ stateDir: daemon.paths.root, selector: app.sessionId });
 
-      expect(result).toEqual({ ok: true, data: { loggedIn: true } });
+      try {
+        const [explicit, declared, viaClient] = await Promise.all([
+          handleInvokeCommand(
+            { selector: app.alias, tool: "slow-explicit", args: {}, timeoutMs: 30_000 },
+            { stateDir: daemon.paths.root },
+          ),
+          handleInvokeCommand(
+            { selector: app.alias, tool: "slow-declared", args: {} },
+            { stateDir: daemon.paths.root },
+          ),
+          client.call("slow-declared", {}),
+        ]);
+
+        expect(explicit).toEqual({ ok: true, data: { loggedIn: true, tool: "slow-explicit" } });
+        expect(declared).toEqual({ ok: true, data: { loggedIn: true, tool: "slow-declared" } });
+        expect(viaClient).toEqual({ loggedIn: true, tool: "slow-declared" });
+      } finally {
+        client.close();
+      }
 
       app.socket.close();
     },

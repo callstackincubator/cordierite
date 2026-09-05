@@ -7,7 +7,7 @@
 import { RPC_METHODS, type ToolsCallResult } from "@cordierite/shared";
 
 import type { CliResult, InvokeCommandData } from "../cli/result-types.js";
-import { deriveCallTransportTimeoutMs } from "../daemon/calls.js";
+import { deriveCallTransportTimeoutMs, MAX_CALL_TIMEOUT_MS } from "../daemon/calls.js";
 import { DaemonRpcError, openDaemonStream, type SpawnFn } from "../rpc/client.js";
 
 export type InvokeCommandOptions = {
@@ -42,7 +42,11 @@ export const handleInvokeCommand = async (
       },
       // Without this the socket watchdog defaults to 10 s and `--timeout 60000` still dies at 10 s
       // with a generic transport error instead of the daemon's own `tool_timeout` (issue #25).
-      deriveCallTransportTimeoutMs(options.timeoutMs),
+      // With no `--timeout` the daemon falls back to the *tool's* declared deadline, which this
+      // command does not know without an extra `tools.list` round trip, so the watchdog is sized
+      // for the largest deadline the daemon could enforce. It is only ever a backstop for a daemon
+      // that answers nothing: one that dies or drops the socket rejects pending calls at once.
+      deriveCallTransportTimeoutMs(options.timeoutMs ?? MAX_CALL_TIMEOUT_MS),
     );
 
     if (!signal) {

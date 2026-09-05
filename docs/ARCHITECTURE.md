@@ -159,7 +159,14 @@ rejects with `tool_timeout`. Callers that hold their own transport watchdog over
 `tools.call` (the MCP server, `cordierite invoke`, `cordierite/client`) must size it from
 the same arithmetic — `deriveCallTransportTimeoutMs` (`daemon/calls.ts`) is that clamp plus
 5 000 ms of slack — so the daemon's `tool_timeout` always arrives first and the real error
-type reaches the caller instead of a generic transport failure.
+type reaches the caller instead of a generic transport failure. A caller that knows the
+effective deadline sizes the watchdog from it (the MCP server reads the tool's
+`timeoutMs` straight off its `tools.list` entry); a caller that does not — `invoke` with no
+`--timeout`, `AppClient.call` with no `timeoutMs`, both of which leave the deadline to the
+tool's own undeclared-to-them value — sizes it from `MAX_CALL_TIMEOUT_MS` instead. That
+backstop is only ever reached by a daemon that accepts a request and then answers nothing:
+a daemon that dies or drops the socket rejects every pending call at once
+(`rpc/client.ts`'s `close` handler), so nothing waits on the long timer in practice.
 
 `daemon.status`'s result also reports the effective policy config and audit surfacing:
 `{ ..., policy: { default, destructive, tools? }, audit: { path, failedWrites } }` (§12).

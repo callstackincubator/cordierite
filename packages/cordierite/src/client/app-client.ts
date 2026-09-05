@@ -34,10 +34,11 @@ type ToolArgs<TTools, K extends keyof TTools> = TTools[K] extends { args: infer 
 type ToolResult<TTools, K extends keyof TTools> = TTools[K] extends { result: infer TResult } ? TResult : unknown;
 
 export type CallOptions = {
-  /** Forwarded to the daemon as the tool's own deadline (clamped server-side to [1s, 600s],
-   * default 10s) — NOT this call's transport timeout, which is derived from it automatically so a
-   * `tool_timeout` from the daemon always arrives before this client's own transport timeout would
-   * otherwise fire and misreport it as `connection_error`. */
+  /** Forwarded to the daemon as this call's deadline, clamped server-side to [1s, 600s]. Omitted,
+   * the daemon falls back to the tool's own declared `timeoutMs` (`registerTool`), and to 10s for a
+   * tool that declares none. Either way this is NOT the call's transport timeout, which is derived
+   * automatically so a `tool_timeout` from the daemon always arrives before this client's own
+   * transport timeout would otherwise fire and misreport it as `connection_error`. */
   timeoutMs?: number;
 };
 
@@ -132,17 +133,29 @@ const DEFAULT_WAIT_FOR_EVENT_TIMEOUT_MS = 30_000;
  * `MAX_CALL_TIMEOUT_MS` clamp so this client can compute a transport timeout that always exceeds
  * whatever server-side deadline the daemon will actually enforce for a given `timeoutMs` — not
  * imported directly to keep `cordierite/client` from pulling in daemon-internal modules. */
-const DAEMON_DEFAULT_CALL_TIMEOUT_MS = 10_000;
 const DAEMON_MIN_CALL_TIMEOUT_MS = 1_000;
 const DAEMON_MAX_CALL_TIMEOUT_MS = 600_000;
 /** Extra headroom so the daemon's own `tool_timeout` always wins the race against this client's
  * transport timeout, even accounting for RPC round-trip and event-loop scheduling delay. */
 const CALL_TRANSPORT_TIMEOUT_SLACK_MS = 5_000;
 
+/**
+ * Transport timeout for one `tools.call`. With an explicit `timeoutMs` the daemon-side deadline is
+ * known exactly, so this is that clamped value plus slack.
+ *
+ * Without one the daemon defaults to the *tool's own* declared `timeoutMs` (issue #25), which this
+ * client does not know at call time and would need an extra `tools.list` round trip (racy against
+ * re-registration) to learn — so it falls back to the largest deadline the daemon could possibly
+ * enforce. That is deliberately generous: this watchdog only exists for a daemon that accepts the
+ * request and then never answers, since a daemon that dies or drops the socket already rejects
+ * every pending call immediately (`rpc/client.ts`'s `close` handler). Sizing it off the 10 s
+ * default instead would make this client the thing that fails a long tool call, reporting a
+ * generic transport error in place of the daemon's real one.
+ */
 const transportTimeoutForToolCall = (timeoutMs: number | undefined): number => {
   const clamped =
     timeoutMs === undefined || !Number.isFinite(timeoutMs)
-      ? DAEMON_DEFAULT_CALL_TIMEOUT_MS
+      ? DAEMON_MAX_CALL_TIMEOUT_MS
       : Math.min(Math.max(Math.trunc(timeoutMs), DAEMON_MIN_CALL_TIMEOUT_MS), DAEMON_MAX_CALL_TIMEOUT_MS);
 
   return clamped + CALL_TRANSPORT_TIMEOUT_SLACK_MS;
