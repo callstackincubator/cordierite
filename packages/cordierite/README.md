@@ -46,7 +46,9 @@ Every command that targets a session accepts an optional `selector` (a session i
 
 ## Daemon lifecycle
 
-The daemon auto-starts the first time any CLI or MCP command needs it — you don't normally run `cordierite daemon start` yourself. It writes its state to `<state-dir>/` (`daemon.sock`, `daemon.pid`, `daemon.log`, `key.pem`, `config.json`, `audit/`), holds a single-instance lock via the pidfile, and keeps running independently of any one device's connection so a reload or crash on the device side never costs you the daemon process. Use `cordierite daemon status` to see what's running (version, pid, `wssPort`, pinned keys, live sessions, effective policy) and `cordierite daemon stop` to shut it down explicitly.
+The daemon auto-starts the first time any CLI or MCP command needs it — you don't normally run `cordierite daemon start` yourself. It writes its state to `<state-dir>/` (`daemon.sock`, `daemon.pid`, `daemon.log`, `daemon.log.1`, `key.pem`, `config.json`, `audit/`), holds a single-instance lock via the pidfile, and keeps running independently of any one device's connection so a reload or crash on the device side never costs you the daemon process. Use `cordierite daemon status` to see what's running (version, pid, `wssPort`, pinned keys, live sessions, effective policy, and the audit log's retention window, file count, size, and failure counters) and `cordierite daemon stop` to shut it down explicitly.
+
+Neither log grows without bound: `audit/<YYYY-MM-DD>.jsonl` files older than `auditRetentionDays` (default 30) are pruned when the daemon starts and once a day after, and a `daemon.log` over `daemonLogMaxBytes` (default 10 MiB) is rotated to `daemon.log.1` when a daemon is next spawned. Both are `config.json` keys — see `docs/ARCHITECTURE.md` §3.
 
 ## MCP setup (Claude Code, Cursor, and similar)
 

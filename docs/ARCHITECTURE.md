@@ -107,16 +107,22 @@ when `--scheme` is not passed (§10) — set it once here instead of on every in
 - `auditRetentionDays` (positive integer, default 30) bounds `audit/`. The daemon prunes
   once at startup and every 24 h thereafter, deleting only files whose name matches
   `<YYYY-MM-DD>.jsonl` and whose (UTC) date is more than `auditRetentionDays` days behind
-  today. Today's file is never touched, and neither is anything else in the directory.
+  today. The window is inclusive at both ends, so a fully-populated `audit/` holds up to
+  `auditRetentionDays + 1` files — today's plus each of the `auditRetentionDays` days
+  behind it — rather than exactly `auditRetentionDays`. Today's file is never touched,
+  and neither is anything else in the directory.
   Pruning shares the audit write queue, so it cannot race an append; a failure is counted
   and warned like a failed write, never thrown. `daemon status` reports the retained file
   count, total size, and both failure counters.
 - `daemonLogMaxBytes` (positive integer, default 10 MiB) bounds `daemon.log`. When a
   daemon is spawned — auto-spawn, or `cordierite daemon start`, which spawns through the
   same path (§4) — an over-cap `daemon.log` is renamed to `daemon.log.1` (mode `0600`,
-  single backup, previous backup replaced) before the new log is opened. Rotation happens
-  only at spawn time, while no daemon holds the log open; a running daemon never rotates
-  its own log, and a rotation failure never blocks the spawn.
+  single backup, previous backup replaced) before the new log is opened. A running daemon
+  never rotates its own log, and rotation is additionally skipped when `daemon.pid` names
+  a live process: an unreachable socket does not prove the log is unheld (a booting,
+  wedged, or shutting-down daemon still owns its fd), and rotating under one would send
+  its output to a backup the next rotation then unlinks. A rotation failure never blocks
+  the spawn.
 
 ## 4. Daemon lifecycle
 
@@ -201,7 +207,8 @@ a daemon that dies or drops the socket rejects every pending call at once
 (`rpc/client.ts`'s `close` handler), so nothing waits on the long timer in practice.
 
 `daemon.status`'s result also reports the effective policy config and audit surfacing:
-`{ ..., policy: { default, destructive, tools? }, audit: { path, failedWrites } }` (§12).
+`{ ..., policy: { default, destructive, tools? }, audit: { path, failedWrites, failedPrunes,
+retentionDays, files, bytes } }` (§12, and §3 for the retention fields).
 
 Event notification payload: `{ kind, sessionId?, alias?, ts, data, seq }` where `kind` is one
 of `daemon_started`, `link_created`, `link_expired`, `session_claimed`,
