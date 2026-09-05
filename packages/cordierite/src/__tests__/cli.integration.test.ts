@@ -51,6 +51,7 @@ describe("CLI integration", () => {
     // `host`/`connect`/`session` commands must never resurface here.
     expect(new Set(commandNames)).toEqual(
       new Set([
+        "init",
         "keygen",
         "link",
         "ls",
@@ -72,6 +73,10 @@ describe("CLI integration", () => {
       return result.stdout;
     };
 
+    const initHelp = helpFor("init");
+    expect(initHelp).toContain("--scheme");
+    expect(initHelp).toContain("--force");
+
     const keygenHelp = helpFor("keygen");
     expect(keygenHelp).toContain("--out");
     expect(keygenHelp).toContain("--force");
@@ -91,6 +96,10 @@ describe("CLI integration", () => {
 
     const eventsHelp = helpFor("events");
     expect(eventsHelp).toContain("--follow");
+
+    // Issue #29: an MCP config entry has to be able to carry its own scheme.
+    const mcpHelp = helpFor("mcp");
+    expect(mcpHelp).toContain("--scheme");
 
     const doctorHelp = helpFor("doctor");
     expect(doctorHelp).toContain("--assert-present");

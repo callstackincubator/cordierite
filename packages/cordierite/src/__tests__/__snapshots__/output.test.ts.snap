@@ -16,6 +16,38 @@ Meta
 "
 `;
 
+exports[`output rendering > init output shows the config, the pasteable MCP entry and the next steps 1`] = `
+"Project Initialized
+Config
+  Path     /apps/demo/.cordierite/config.json
+  Scheme   myapp
+  Source   app.json
+  Written  created
+
+MCP server entry
+  {
+    "mcpServers": {
+      "cordierite": {
+        "command": "cordierite",
+        "args": [
+          "mcp",
+          "--scheme",
+          "myapp"
+        ]
+      }
+    }
+  }
+
+Next
+  1. Add \`import "@cordierite/react-native/auto";\` to your app entry.
+
+Meta
+  Command: init
+  Timestamp: 2026-03-17T10:00:00.000Z
+  Duration: 3 ms
+"
+`;
+
 exports[`output rendering > invoke human output prints the raw tool result 1`] = `
 "Result
 {

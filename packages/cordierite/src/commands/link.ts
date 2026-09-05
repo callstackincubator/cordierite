@@ -20,6 +20,9 @@ export type LinkCommandOptions = {
 export type LinkCommandContext = {
   stateDir: string;
   spawn?: SpawnFn;
+  /** Where scheme discovery starts (project config walk-up, then `app.json`); defaults to
+   * `process.cwd()`, which for this command is the app root the developer is standing in. */
+  cwd?: string;
   exec?: ExecFn;
   env?: NodeJS.ProcessEnv;
 };
@@ -47,6 +50,7 @@ export const handleLinkCommand = async (
     spawn: context.spawn,
     ttlSeconds: options.ttlSeconds,
     scheme: options.scheme,
+    cwd: context.cwd,
     target: openTarget,
     device: options.device,
     exec: context.exec,
