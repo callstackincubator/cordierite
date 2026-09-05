@@ -274,7 +274,7 @@ jobs:
           ruby playground/scripts/create-cordierite-test-scheme.rb playground/ios/Pods/Pods.xcodeproj
           cd playground/ios
           xcodebuild test -workspace playground.xcworkspace -scheme Cordierite-Native-Tests \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination 'platform=iOS Simulator,name=iPhone 17' \
             -derivedDataPath build-included \
             C_COMPILER_LAUNCHER="$CCACHE_BIN" \
             CLANG_ENABLE_EXPLICIT_MODULES_WITH_COMPILER_LAUNCHER=YES \
