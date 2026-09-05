@@ -45,6 +45,14 @@ export type CordieriteConfig = {
    * CLI-side setting an operator wants to set once rather than pass with every `link` invocation.
    */
   scheme?: string;
+  /**
+   * The app's iOS bundle id, used only by the experimental `--open ios-device` /
+   * `cordierite_connect` `target: "ios-device"` delivery path (issue #31): `xcrun devicectl device
+   * process launch` needs to be told which installed app to hand the URL to, and there is nothing
+   * in the deep link itself that says so. Overridable per invocation by `--bundle-id` (CLI) or
+   * `bundleId` (MCP). CLI-side like `scheme`, not a daemon setting.
+   */
+  iosBundleId?: string;
 };
 
 const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
@@ -57,6 +65,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
   "policy",
   "advertisedIp",
   "scheme",
+  "iosBundleId",
 ]);
 
 const KNOWN_POLICY_KEYS = new Set<string>(["default", "destructive", "tools"]);
@@ -164,6 +173,10 @@ export const loadConfig = async (
 
   if (parsed.scheme !== undefined) {
     config.scheme = requireNonEmptyString(parsed.scheme, "scheme");
+  }
+
+  if (parsed.iosBundleId !== undefined) {
+    config.iosBundleId = requireNonEmptyString(parsed.iosBundleId, "iosBundleId");
   }
 
   if (parsed.graceSeconds !== undefined) {

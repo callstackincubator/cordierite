@@ -4,6 +4,7 @@
  * the thin-client shapes for the v2 command table.
  */
 
+import type { OpenTarget } from "./open-target.js";
 import type {
   AgentEndpoint,
   EffectivePolicyDecision,
@@ -80,7 +81,7 @@ export type LinkCommandData = {
    * (ARCHITECTURE.md §10). */
   delivered?: true;
   /** The `--open` target the link was delivered to, alongside `delivered`. */
-  target?: "android" | "ios-sim";
+  target?: OpenTarget;
 };
 
 /** `cordierite ls`: `sessions.list` passthrough, verbatim (ARCHITECTURE.md §10: "--json passthrough"). */

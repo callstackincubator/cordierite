@@ -25,8 +25,11 @@ export type LinkOptions = {
   /** Delivers the link directly to a booted Android emulator/device or iOS simulator instead of
    * just minting it (the CI/agent path — no human needed to scan a QR). */
   target?: OpenTarget;
-  /** `--device` equivalent; only valid with `target: "android"`. */
+  /** `--device` equivalent: an adb serial, a simulator udid, or a paired-device udid. */
   device?: string;
+  /** `--bundle-id` equivalent; only valid with `target: "ios-device"`, where it overrides
+   * `config.json`'s `iosBundleId`. */
+  bundleId?: string;
   /** Overrides `config.json`'s `scheme`. */
   scheme?: string;
   exec?: ExecFn;
@@ -46,6 +49,7 @@ export const link = async (options: LinkOptions = {}): Promise<LinkResult> => {
       ttlSeconds: options.ttlSeconds,
       target: options.target,
       device: options.device,
+      bundleId: options.bundleId,
       scheme: options.scheme,
       exec: options.exec,
       env: options.env,

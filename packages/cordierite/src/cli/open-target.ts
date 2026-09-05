@@ -7,16 +7,38 @@
  * {@link detectBootedTargets} is the same enumeration used *before* a target is chosen, so callers
  * that were given no explicit target (notably `cordierite_connect` over MCP) can deliver to the one
  * obvious device instead of falling back to a QR code nobody is there to scan.
+ *
+ * A third, experimental target — `ios-device`, a paired physical iPhone/iPad via `xcrun devicectl`
+ * (issue #31) — is explicit opt-in only: it is never auto-detected, it needs the app's bundle id,
+ * and its link must carry the LAN address rather than `127.0.0.1` (see {@link usesLoopbackAddress}).
  */
 
 import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { connectionError, usageError } from "../errors.js";
 
-export type OpenTarget = "android" | "ios-sim";
+export type OpenTarget = "android" | "ios-sim" | "ios-device";
 
 export const isOpenTarget = (value: string): value is OpenTarget => {
-  return value === "android" || value === "ios-sim";
+  return value === "android" || value === "ios-sim" || value === "ios-device";
+};
+
+/** Human-readable list of every accepted target, for the "must be one of" validation messages the
+ * CLI, the shared `mintLink` core and `cordierite_connect` each render in their own wording. */
+export const OPEN_TARGETS: readonly OpenTarget[] = ["android", "ios-sim", "ios-device"];
+
+/**
+ * Whether a link delivered to this target reaches the daemon over loopback, and so must be minted
+ * with the `127.0.0.1` address override (`link.ts`, `mcp/connect-tool.ts`). True for `android`
+ * (`adb reverse` forwards the port onto the device) and `ios-sim` (the simulator shares the host's
+ * network stack); false for `ios-device` — a physical iPhone reaches the daemon only over the LAN,
+ * so such a link must carry the machine's real advertised address (issue #31).
+ */
+export const usesLoopbackAddress = (target: OpenTarget): boolean => {
+  return target === "android" || target === "ios-sim";
 };
 
 export type ExecResult = {
@@ -129,6 +151,150 @@ const deliverIosSim = async (exec: ExecFn, deepLink: string, device: string | un
   // exactly one simulator is up, and a second one booting between the preflight and this call would
   // otherwise redirect the link to an arbitrary device.
   await run(exec, "xcrun", ["simctl", "openurl", booted[0]!.udid, deepLink]);
+};
+
+// --- ios-device (experimental, issue #31) ---
+
+/**
+ * `devicectl` writes its JSON to a *file* (`--json-output <path>`), never to stdout, so this path
+ * cannot reuse the stdout-parsing shape `simctl` uses. The file lives in a private `mkdtemp`
+ * directory removed in a `finally`, so a failing `devicectl` (or a malformed payload) never leaks
+ * a temp file.
+ */
+const runDevicectlJson = async (
+  exec: ExecFn,
+  buildArgs: (file: string) => string[],
+): Promise<unknown> => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cordierite-devicectl-"));
+  const file = path.join(dir, "devicectl.json");
+
+  try {
+    await run(exec, "xcrun", buildArgs(file));
+
+    try {
+      return JSON.parse(await readFile(file, "utf8"));
+    } catch {
+      // `devicectl` exited 0 but wrote nothing readable. Treated as an empty listing (the caller
+      // renders "no device found") rather than surfacing a JSON syntax error, matching how
+      // `parseBootedSimulators` handles unparseable `simctl` output.
+      return undefined;
+    }
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
+};
+
+type DevicectlDeviceEntry = {
+  identifier?: string;
+  deviceProperties?: { name?: string };
+  hardwareProperties?: { udid?: string };
+};
+
+type DevicectlDeviceListing = {
+  result?: { devices?: DevicectlDeviceEntry[] };
+};
+
+export type PairedIosDevice = { udid: string; name: string };
+
+const parsePairedIosDevices = (payload: unknown): PairedIosDevice[] => {
+  const devices = (payload as DevicectlDeviceListing | undefined)?.result?.devices;
+
+  if (!Array.isArray(devices)) {
+    return [];
+  }
+
+  return devices
+    .map((entry) => {
+      // `hardwareProperties.udid` is what `--device` wants; `identifier` (the CoreDevice UUID) is
+      // also accepted by `devicectl`, so a listing that omits the udid is still usable rather than
+      // silently dropped.
+      const udid = entry?.hardwareProperties?.udid ?? entry?.identifier;
+
+      return typeof udid === "string" && udid.length > 0
+        ? { udid, name: entry?.deviceProperties?.name ?? udid }
+        : undefined;
+    })
+    .filter((device): device is PairedIosDevice => device !== undefined);
+};
+
+const listPairedIosDevices = async (exec: ExecFn): Promise<PairedIosDevice[]> => {
+  const payload = await runDevicectlJson(exec, (file) => [
+    "devicectl",
+    "list",
+    "devices",
+    "--timeout",
+    "5",
+    "--json-output",
+    file,
+  ]);
+
+  return parsePairedIosDevices(payload);
+};
+
+const describeIosDevice = (device: PairedIosDevice): string => `${device.name} (${device.udid})`;
+
+/** The single wording naming both ways to supply a bundle id, so the CLI and MCP paths agree. */
+export const MISSING_BUNDLE_ID_MESSAGE =
+  "Delivering to a physical iPhone needs the app's bundle id: pass \"--bundle-id <id>\" (or " +
+  '"bundleId" over MCP), or set "iosBundleId" in config.json.';
+
+/** Same ambiguity rules as `deliverIosSim`: exactly one paired device, or the caller names one. */
+const resolveSingleIosDevice = async (exec: ExecFn): Promise<string> => {
+  const paired = await listPairedIosDevices(exec);
+
+  if (paired.length === 0) {
+    throw usageError(
+      'No paired iOS device was found ("xcrun devicectl list devices" listed none). Connect the ' +
+        "device, trust this Mac, and enable Developer Mode on it, then retry.",
+    );
+  }
+
+  if (paired.length > 1) {
+    throw usageError(
+      `Multiple paired iOS devices were found (${paired
+        .map(describeIosDevice)
+        .join(", ")}); specify --device <udid>.`,
+    );
+  }
+
+  return paired[0]!.udid;
+};
+
+/**
+ * Experimental physical-iPhone delivery (issue #31). `xcrun devicectl device process launch
+ * --device <udid> --payload-url <url> <bundle-id>` is undocumented by Apple but is the mechanism
+ * Xcode 15+ exposes for handing a URL to an installed, dev-signed app on a paired iOS 17+ device.
+ * It may cold-launch (rather than foreground) the app; the app side copes either way, because a
+ * delivered link supersedes a held session and the initial-URL path is handled.
+ *
+ * Unlike `ios-sim`, this is never auto-detected — see {@link detectBootedTargets}.
+ */
+const deliverIosDevice = async (
+  exec: ExecFn,
+  deepLink: string,
+  device: string | undefined,
+  bundleId: string | undefined,
+): Promise<void> => {
+  // Checked before any enumeration: without a bundle id the launch cannot happen at all, so
+  // spending a `devicectl list devices` timeout first would only delay the same error.
+  if (!bundleId) {
+    throw usageError(MISSING_BUNDLE_ID_MESSAGE);
+  }
+
+  // An explicit udid is honored without a preflight, mirroring the `ios-sim`/`android` passthrough.
+  const udid = device ?? (await resolveSingleIosDevice(exec));
+
+  await run(exec, "xcrun", [
+    "devicectl",
+    "device",
+    "process",
+    "launch",
+    "--device",
+    udid,
+    "--payload-url",
+    deepLink,
+    bundleId,
+  ]);
 };
 
 // --- android ---
@@ -267,6 +433,11 @@ export type DetectBootedTargetsOptions = {
  * Enumerates every booted simulator and attached Android device so a caller with no explicit
  * target can deliver to the single obvious one. `ANDROID_SERIAL`, when set, narrows the Android
  * side to that serial — it is exactly the disambiguation the user has already made.
+ *
+ * Physical iPhones (`ios-device`) are deliberately *not* enumerated here (issue #31): a paired
+ * iPhone is often someone's personal phone rather than a test device, delivery to it may
+ * cold-launch the app, and it additionally needs a bundle id the caller has to supply. It is an
+ * explicit, opt-in target only.
  */
 export const detectBootedTargets = async (
   options: DetectBootedTargetsOptions = {},
@@ -311,20 +482,29 @@ export type OpenTargetOptions = {
   deepLink: string;
   /** The daemon's wss port; used for `adb reverse tcp:<port> tcp:<port>`. */
   wssPort: number;
-  /** An adb device serial (`target: "android"`) or a simulator udid (`target: "ios-sim"`). */
+  /** An adb device serial (`target: "android"`), a simulator udid (`target: "ios-sim"`) or a
+   * paired-device udid (`target: "ios-device"`). */
   device?: string;
+  /** The installed app's bundle id. Required by (and only used for) `target: "ios-device"`. */
+  bundleId?: string;
   /** Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
   exec?: ExecFn;
 };
 
-/** Delivers `deepLink` to a booted Android device/emulator or iOS simulator. Throws a clear,
- * actionable error (missing tool, no booted device, ambiguous device) rather than a raw one. */
+/** Delivers `deepLink` to a booted Android device/emulator, an iOS simulator, or (experimentally)
+ * a paired physical iOS device. Throws a clear, actionable error (missing tool, no booted device,
+ * ambiguous device, missing bundle id) rather than a raw one. */
 export const deliverToOpenTarget = async (options: OpenTargetOptions): Promise<void> => {
   const exec = options.exec ?? defaultExec;
 
   if (options.target === "ios-sim") {
     await deliverIosSim(exec, options.deepLink, options.device);
+    return;
+  }
+
+  if (options.target === "ios-device") {
+    await deliverIosDevice(exec, options.deepLink, options.device, options.bundleId);
     return;
   }
 

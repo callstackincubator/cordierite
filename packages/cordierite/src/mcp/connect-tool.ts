@@ -23,6 +23,8 @@ import {
   deliverToOpenTarget,
   detectBootedTargets,
   isOpenTarget,
+  usesLoopbackAddress,
+  MISSING_BUNDLE_ID_MESSAGE,
   type ExecFn,
   type OpenTarget,
 } from "../cli/open-target.js";
@@ -39,7 +41,9 @@ import type { DaemonCall } from "./daemon-tools.js";
 export const CONNECT_TOOL_NAME = "cordierite_connect";
 export const WAIT_FOR_SESSION_TOOL_NAME = "cordierite_wait_for_session";
 
-/** The emulator/simulator fast path forces `127.0.0.1` — same reasoning as `cli/link.ts`. */
+/** The emulator/simulator fast path forces `127.0.0.1` — same reasoning as `cli/link.ts`. The
+ * experimental `ios-device` target is excluded (`usesLoopbackAddress`): a physical iPhone reaches
+ * the daemon only over the LAN. */
 const OPEN_TARGET_ADDRESS_OVERRIDE = "127.0.0.1";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 120_000;
@@ -71,15 +75,20 @@ export const CONNECT_TOOL_DESCRIPTOR = {
     "booted iOS simulator or attached Android device and delivers the link to it, returning " +
     "{ sessionId, delivered: true, autoDetected: true } — this is the normal agent path and needs " +
     "no human. Pass target \"android\" or \"ios-sim\" (optionally with \"device\") to choose " +
-    "explicitly, or target \"none\" to force the human flow. Only when no device is detected (or " +
-    "target is \"none\") does this return a QR code for a human to scan, along with an " +
-    "\"instructions\" field saying what to do with it. Follow up with cordierite_wait_for_session " +
-    "to know when the device has connected.",
+    "explicitly, or target \"none\" to force the human flow. Target \"ios-device\" is an " +
+    "experimental, never-auto-detected path that delivers to a paired physical iPhone/iPad via " +
+    "xcrun devicectl; it needs \"bundleId\" (or \"iosBundleId\" in config.json), iOS 17+, Xcode " +
+    "15+, a trusted device with Developer Mode on, a dev-signed build installed, and the phone on " +
+    "the same network as this machine — and it may relaunch the app. Only when no device is " +
+    "detected (or target is \"none\") does this return a QR code for a human to scan, along with " +
+    "an \"instructions\" field saying what to do with it. Follow up with " +
+    "cordierite_wait_for_session to know when the device has connected.",
   inputSchema: {
     type: "object",
     properties: {
-      target: { type: "string", enum: ["android", "ios-sim", NO_TARGET] },
+      target: { type: "string", enum: ["android", "ios-sim", "ios-device", NO_TARGET] },
       device: { type: "string" },
+      bundleId: { type: "string" },
       ttlSeconds: { type: "number", exclusiveMinimum: 0 },
     },
     additionalProperties: false,
@@ -134,7 +143,7 @@ const asOptionalConnectTarget = (value: unknown): ConnectTarget | undefined => {
   if (typeof value !== "string" || !(isOpenTarget(value) || value === NO_TARGET)) {
     throw new McpBuiltinToolError(
       "invalid_request",
-      '"target" must be "android", "ios-sim", or "none".',
+      '"target" must be "android", "ios-sim", "ios-device", or "none".',
     );
   }
 
@@ -170,6 +179,9 @@ export type ConnectToolDeps = {
   /** The scheme composing the deep link (`<scheme>:///?cordierite=<payload>`); same source order as
    * `cli/link.ts`: `--scheme` flag equivalent has no MCP analogue, so this is always config/derived. */
   scheme?: string;
+  /** `config.json`'s `iosBundleId`, the default for the experimental `ios-device` target when the
+   * call did not pass `bundleId`. Same source order as `scheme`. */
+  iosBundleId?: string;
   exec?: ExecFn;
   env?: NodeJS.ProcessEnv;
 };
@@ -196,6 +208,8 @@ export type ConnectToolResult = {
 type ResolvedDelivery = {
   target: OpenTarget;
   device?: string;
+  /** Resolved bundle id for `target: "ios-device"` (call argument, else `config.json`). */
+  bundleId?: string;
   /** Human-readable device description for notes and errors. */
   label: string;
   autoDetected: boolean;
@@ -210,10 +224,21 @@ type ResolvedDelivery = {
 const resolveDelivery = async (
   requested: ConnectTarget | undefined,
   device: string | undefined,
+  bundleId: string | undefined,
   deps: ConnectToolDeps,
 ): Promise<{ delivery?: ResolvedDelivery; note?: string }> => {
   if (requested !== undefined && requested !== NO_TARGET) {
-    return { delivery: { target: requested, device, label: device ?? requested, autoDetected: false } };
+    // `ios-device` is reachable only through this branch: `detectBootedTargets` never returns it,
+    // so a paired iPhone can never be picked up by the auto-detection path below.
+    return {
+      delivery: {
+        target: requested,
+        device,
+        ...(requested === "ios-device" ? { bundleId: bundleId ?? deps.iosBundleId } : {}),
+        label: device ?? requested,
+        autoDetected: false,
+      },
+    };
   }
 
   if (requested === NO_TARGET) {
@@ -241,7 +266,10 @@ const resolveDelivery = async (
   return {
     note:
       'No "target" was given and no booted iOS simulator or attached Android device was detected, ' +
-      "so the link could not be delivered automatically.",
+      "so the link could not be delivered automatically. A physical iPhone/iPad is never " +
+      'auto-detected: to deliver to one, re-call with target "ios-device" plus "bundleId" (needs ' +
+      "iOS 17+, Xcode 15+ and a paired, trusted device with Developer Mode on) — otherwise use " +
+      "the QR flow below.",
   };
 };
 
@@ -253,13 +281,21 @@ export const handleConnectTool = async (
 
   const requestedTarget = asOptionalConnectTarget(args.target);
   const device = asOptionalNonEmptyString(args.device, "device");
+  const bundleId = asOptionalNonEmptyString(args.bundleId, "bundleId");
   const ttlSeconds = asOptionalPositiveNumber(args.ttlSeconds, "ttlSeconds");
 
   if (device !== undefined && (requestedTarget === undefined || requestedTarget === NO_TARGET)) {
     throw new McpBuiltinToolError(
       "invalid_request",
-      '"device" requires an explicit "target" of "android" or "ios-sim" — a bare serial/udid does ' +
-        "not say which platform it belongs to.",
+      '"device" requires an explicit "target" of "android", "ios-sim" or "ios-device" — a bare ' +
+        "serial/udid does not say which platform it belongs to.",
+    );
+  }
+
+  if (bundleId !== undefined && requestedTarget !== "ios-device") {
+    throw new McpBuiltinToolError(
+      "invalid_request",
+      '"bundleId" only applies with target "ios-device".',
     );
   }
 
@@ -270,11 +306,18 @@ export const handleConnectTool = async (
     );
   }
 
-  const { delivery, note } = await resolveDelivery(requestedTarget, device, deps);
+  const { delivery, note } = await resolveDelivery(requestedTarget, device, bundleId, deps);
+
+  // Rejected before minting, so a call that cannot possibly deliver does not strand a pending
+  // session behind it.
+  if (delivery?.target === "ios-device" && !delivery.bundleId) {
+    throw new McpBuiltinToolError("invalid_request", MISSING_BUNDLE_ID_MESSAGE);
+  }
 
   // A link's advertised address is fixed at mint time: `127.0.0.1` only when it is being handed to
-  // something on this machine. That is why delivery is decided first, and why the QR fallback below
-  // has to mint a *fresh* link rather than reuse a loopback one no phone could reach.
+  // something that reaches this machine over loopback (an emulator or simulator — not a physical
+  // iPhone, which needs the LAN address). That is why delivery is decided first, and why the QR
+  // fallback below has to mint a *fresh* link rather than reuse a loopback one no phone could reach.
   const mint = (deliverLocally: boolean): Promise<LinkCreateResult> => {
     return deps.call<LinkCreateResult>(RPC_METHODS.linkCreate, {
       ttlSeconds,
@@ -299,13 +342,14 @@ export const handleConnectTool = async (
     return asQrResult(await mint(false), note);
   }
 
-  const result = await mint(true);
+  const result = await mint(usesLoopbackAddress(delivery.target));
   const deepLink = `${deps.scheme}:///?cordierite=${result.deepLinkPayload}`;
 
   try {
     await deliverToOpenTarget({
       target: delivery.target,
       device: delivery.device,
+      bundleId: delivery.bundleId,
       deepLink,
       wssPort: result.endpoint.port,
       exec: deps.exec,

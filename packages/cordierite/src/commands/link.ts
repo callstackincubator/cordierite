@@ -5,7 +5,7 @@
  */
 
 import type { CliResult, LinkCommandData } from "../cli/result-types.js";
-import { isOpenTarget, type ExecFn, type OpenTarget } from "../cli/open-target.js";
+import { isOpenTarget, OPEN_TARGETS, type ExecFn, type OpenTarget } from "../cli/open-target.js";
 import { mintLink } from "../link.js";
 import { usageError } from "../errors.js";
 import type { SpawnFn } from "../rpc/client.js";
@@ -15,6 +15,7 @@ export type LinkCommandOptions = {
   scheme?: string;
   open?: string;
   device?: string;
+  bundleId?: string;
 };
 
 export type LinkCommandContext = {
@@ -32,7 +33,11 @@ export const handleLinkCommand = async (
 
   if (options.open !== undefined) {
     if (!isOpenTarget(options.open)) {
-      throw usageError(`"--open" must be "android" or "ios-sim" (got "${options.open}").`);
+      throw usageError(
+        `"--open" must be one of ${OPEN_TARGETS.map((target) => `"${target}"`).join(", ")} (got "${
+          options.open
+        }").`,
+      );
     }
 
     openTarget = options.open;
@@ -42,6 +47,12 @@ export const handleLinkCommand = async (
     throw usageError('"--device" only applies with "--open".');
   }
 
+  // A bundle id is only ever consumed by the `devicectl` launch; accepting it silently elsewhere
+  // would let `--open ios-sim --bundle-id ...` look like it did something it did not.
+  if (options.bundleId !== undefined && openTarget !== "ios-device") {
+    throw usageError('"--bundle-id" only applies with "--open ios-device".');
+  }
+
   const result = await mintLink({
     stateDir: context.stateDir,
     spawn: context.spawn,
@@ -49,6 +60,7 @@ export const handleLinkCommand = async (
     scheme: options.scheme,
     target: openTarget,
     device: options.device,
+    bundleId: options.bundleId,
     exec: context.exec,
     env: context.env,
   });

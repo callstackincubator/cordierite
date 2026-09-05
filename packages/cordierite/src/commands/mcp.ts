@@ -23,6 +23,8 @@ export type McpCommandContext = {
   spawn?: SpawnFn;
   /** Overrides `config.json`'s `scheme` (there is no per-invocation flag for `mcp`, unlike `link`). */
   scheme?: string;
+  /** Overrides `config.json`'s `iosBundleId`; test seam, same shape as `scheme`. */
+  iosBundleId?: string;
   exec?: ExecFn;
   env?: NodeJS.ProcessEnv;
   /** Test seam: defaults to the real process stdin/stdout. */
@@ -47,6 +49,7 @@ export const handleMcpCommand = async (context: McpCommandContext): Promise<McpH
     stateDir: context.stateDir,
     spawn: context.spawn,
     scheme,
+    iosBundleId: context.iosBundleId ?? config.iosBundleId,
     exec: context.exec,
     env: context.env,
   });
