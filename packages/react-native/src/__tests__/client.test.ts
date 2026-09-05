@@ -1021,6 +1021,36 @@ describe("createCordieriteClient: tool registry", () => {
     ).toBe(true);
   });
 
+  test("only an explicitly declared timeoutMs reaches the descriptor, never defaultToolTimeoutMs (issue #25)", () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule, {
+      defaultToolTimeoutMs: 45_000,
+    });
+
+    client.registerTool({
+      name: "declared",
+      description: "Declares its own deadline",
+      timeoutMs: 60_000,
+      handler: () => {},
+    });
+    client.registerTool({
+      name: "undeclared",
+      description: "Declares nothing",
+      handler: () => {},
+    });
+
+    // The app-wide default is an app-side abort-timer fallback only: putting it on the wire would
+    // silently retune every older app's daemon-side deadline.
+    expect(client.getRegisteredTools()).toEqual([
+      {
+        name: "declared",
+        description: "Declares its own deadline",
+        timeoutMs: 60_000,
+      },
+      { name: "undeclared", description: "Declares nothing" },
+    ]);
+  });
+
   test("a registry-sync send failure is reported on the unified error channel, not thrown (v1 defect: unhandled fire-and-forget)", async () => {
     const nativeModule = createMockModule();
     const client = createCordieriteClient(nativeModule);

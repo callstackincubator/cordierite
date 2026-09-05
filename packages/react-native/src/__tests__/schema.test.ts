@@ -904,3 +904,31 @@ describe("toToolDescriptor: schemas MCP cannot represent (issue #26)", () => {
     expect(relevant[0]!.join(" ")).toContain("shapeless");
   });
 });
+
+describe("toToolDescriptor: timeoutMs", () => {
+  test("carries an explicitly declared timeoutMs onto the wire descriptor", () => {
+    const descriptor = toToolDescriptor({
+      name: "slow-tool",
+      description: "d",
+      timeoutMs: 60_000,
+    });
+
+    expect(descriptor).toEqual({
+      name: "slow-tool",
+      description: "d",
+      timeoutMs: 60_000,
+    });
+  });
+
+  test("omits the key entirely when the tool declares no timeout", () => {
+    const descriptor = toToolDescriptor({
+      name: "plain-tool",
+      description: "d",
+    });
+
+    // Not merely `undefined`: the key must be absent so the frame never carries
+    // `"timeoutMs": undefined` and the daemon keeps its own default.
+    expect("timeoutMs" in descriptor).toBe(false);
+    expect(Object.keys(descriptor)).toEqual(["name", "description"]);
+  });
+});

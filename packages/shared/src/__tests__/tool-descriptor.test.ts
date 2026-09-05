@@ -78,6 +78,28 @@ describe("isToolDescriptor", () => {
     expect(isToolDescriptor({ ...valid(), annotations: { readOnlyHint: "yes" } })).toBe(false);
   });
 
+  test("accepts a positive integer timeoutMs", () => {
+    expect(isToolDescriptor({ ...valid(), timeoutMs: 60_000 })).toBe(true);
+    expect(isToolDescriptor({ ...valid(), timeoutMs: 1 })).toBe(true);
+  });
+
+  test("accepts a descriptor that omits timeoutMs (older apps keep the daemon default)", () => {
+    expect(isToolDescriptor(valid())).toBe(true);
+    expect(isToolDescriptor({ ...valid(), timeoutMs: undefined })).toBe(true);
+  });
+
+  test.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["a numeric string", "60000"],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["null", null],
+  ])("rejects a timeoutMs that is %s", (_label, timeoutMs) => {
+    expect(isToolDescriptor({ ...valid(), timeoutMs })).toBe(false);
+  });
+
   test("rejects null", () => {
     expect(isToolDescriptor(null)).toBe(false);
   });

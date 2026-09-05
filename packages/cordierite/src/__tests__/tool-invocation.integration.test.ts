@@ -14,8 +14,15 @@ import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import WebSocket from "ws";
 
-import { decodeBootstrap, TOOL_ERROR_TYPES, type EventKind, type EventNotification } from "@cordierite/shared";
+import {
+  decodeBootstrap,
+  TOOL_ERROR_TYPES,
+  type EventKind,
+  type EventNotification,
+  type ToolDescriptor,
+} from "@cordierite/shared";
 
+import { handleInvokeCommand } from "../commands/invoke.js";
 import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { writeTestHostKey } from "./fixtures.js";
 
@@ -264,7 +271,7 @@ const claimApp = async (daemon: RunningDaemon, port: number, deviceModel = "Pixe
 const snapshotTools = async (
   daemon: RunningDaemon,
   app: ClaimedApp,
-  tools: Array<{ name: string; description?: string; input_schema?: Record<string, unknown> }>,
+  tools: Array<Partial<ToolDescriptor> & { name: string }>,
 ): Promise<void> => {
   const toolsChanged = waitForEvent(daemon, "tools_changed");
   app.socket.send(
@@ -415,6 +422,86 @@ describe("tools.call: timeout", () => {
 
     app.socket.close();
   }, 5000);
+
+  test("the tool's own declared timeoutMs is the default when the caller passes none (issue #25)", async () => {
+    const { daemon, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    // Declared well below DEFAULT_CALL_TIMEOUT_MS (10 s) so the assertion below distinguishes the
+    // two: if the descriptor's timeout were still being dropped on the wire, this call would sit
+    // there for 10 s and blow the 5 s test budget.
+    await snapshotTools(daemon, app, [{ name: "hangs", timeoutMs: 1000 }]);
+
+    const startedAt = Date.now();
+    await expect(
+      rpcCall(daemon.paths.socketPath, "tools.call", {
+        selector: app.alias,
+        name: "hangs",
+        args: {},
+      }),
+    ).rejects.toMatchObject({ data: { type: "tool_timeout" } });
+    expect(Date.now() - startedAt).toBeLessThan(5000);
+
+    app.socket.close();
+  }, 10_000);
+
+  test("an explicit caller timeoutMs still overrides the tool's declared one (issue #25)", async () => {
+    const { daemon, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    await snapshotTools(daemon, app, [{ name: "hangs", timeoutMs: 600_000 }]);
+
+    const startedAt = Date.now();
+    await expect(
+      rpcCall(daemon.paths.socketPath, "tools.call", {
+        selector: app.alias,
+        name: "hangs",
+        args: {},
+        timeoutMs: 1000,
+      }),
+    ).rejects.toMatchObject({ data: { type: "tool_timeout" } });
+    expect(Date.now() - startedAt).toBeLessThan(5000);
+
+    app.socket.close();
+  }, 10_000);
+});
+
+describe("cordierite invoke --timeout", () => {
+  test(
+    "a --timeout above the daemon default survives the CLI's own socket watchdog (issue #25)",
+    async () => {
+      const { daemon, port } = await startTestDaemon();
+      const app = await claimApp(daemon, port);
+      await snapshotTools(daemon, app, [{ name: "slow-login" }]);
+
+      app.socket.on("message", (data) => {
+        const message = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+
+        if (message.type === "tool_call") {
+          setTimeout(() => {
+            app.socket.send(
+              JSON.stringify({
+                type: "tool_result",
+                session_id: app.sessionId,
+                id: message.id,
+                result: { loggedIn: true },
+              }),
+            );
+          }, 12_000);
+        }
+      });
+
+      // Before the fix `stream.call` fell back to its 10 s default here, so this died at 10 s with
+      // a generic transport error no matter what `--timeout` said.
+      const result = await handleInvokeCommand(
+        { selector: app.alias, tool: "slow-login", args: {}, timeoutMs: 30_000 },
+        { stateDir: daemon.paths.root },
+      );
+
+      expect(result).toEqual({ ok: true, data: { loggedIn: true } });
+
+      app.socket.close();
+    },
+    60_000,
+  );
 });
 
 describe("tools.call: concurrency", () => {
