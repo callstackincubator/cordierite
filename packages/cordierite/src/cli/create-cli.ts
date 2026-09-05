@@ -37,7 +37,11 @@ export const createCli = () => {
   cli
     .command("invoke [selector] [tool]", "Call a tool on a session.")
     .option("--input <json>", "Tool input arguments as a JSON object.")
-    .option("--timeout <ms>", "Call timeout in milliseconds (default: 10000).");
+    .option(
+      "--timeout <ms>",
+      "Call timeout in milliseconds. Shortens the deadline; it cannot extend one past the app's " +
+        "own timer, which is the tool's declared timeoutMs (else 10000).",
+    );
 
   cli
     .command("events [selector]", "Stream session/tool events until interrupted.")

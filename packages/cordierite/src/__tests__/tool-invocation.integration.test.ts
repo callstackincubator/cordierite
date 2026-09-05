@@ -430,7 +430,7 @@ describe("tools.call: timeout", () => {
     // Declared well below DEFAULT_CALL_TIMEOUT_MS (10 s) so the assertion below distinguishes the
     // two: if the descriptor's timeout were still being dropped on the wire, this call would sit
     // there for 10 s and blow the 5 s test budget.
-    await snapshotTools(daemon, app, [{ name: "hangs", timeoutMs: 1000 }]);
+    await snapshotTools(daemon, app, [{ name: "hangs", timeout_ms: 1000 }]);
 
     const startedAt = Date.now();
     await expect(
@@ -445,10 +445,10 @@ describe("tools.call: timeout", () => {
     app.socket.close();
   }, 10_000);
 
-  test("an explicit caller timeoutMs still overrides the tool's declared one (issue #25)", async () => {
+  test("an explicit caller timeoutMs still shortens a longer declared deadline (issue #25)", async () => {
     const { daemon, port } = await startTestDaemon();
     const app = await claimApp(daemon, port);
-    await snapshotTools(daemon, app, [{ name: "hangs", timeoutMs: 600_000 }]);
+    await snapshotTools(daemon, app, [{ name: "hangs", timeout_ms: 600_000 }]);
 
     const startedAt = Date.now();
     await expect(
@@ -467,19 +467,21 @@ describe("tools.call: timeout", () => {
 
 describe("caller transport timeouts over a slow tool", () => {
   test(
-    "invoke (with and without --timeout) and cordierite/client all outlive a 12 s call (issue #25)",
+    "invoke (with and without --timeout) and cordierite/client all outlive the daemon's 10 s default (issue #25)",
     async () => {
       const { daemon, port } = await startTestDaemon();
       const app = await claimApp(daemon, port);
       await snapshotTools(daemon, app, [
         { name: "slow-explicit" },
-        // Declares its own deadline, so a caller that passes none still gets 30 s daemon-side.
-        { name: "slow-declared", timeoutMs: 30_000 },
+        // Declares its own deadline, so a caller that passes none still gets 20 s daemon-side.
+        { name: "slow-declared", timeout_ms: 20_000 },
       ]);
 
-      // 18 s clears both watchdogs these callers used to fall back to — the bare 10 s default and
-      // the 10 s + 5 s slack derived from it — so each of the three calls below would previously
-      // have failed as a generic transport timeout rather than returning a result.
+      // 11 s clears the 10 s default these calls would otherwise be held to, and the declared 20 s
+      // leaves nine seconds of headroom above it, so a slow runner drifting a second or two turns
+      // this into neither a hard `tool_timeout` nor a false pass. The watchdog arithmetic itself is
+      // asserted exactly — and instantly — in call-timeouts.test.ts rather than by sleeping past
+      // each candidate timer here.
       app.socket.on("message", (data) => {
         const message = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
 
@@ -493,7 +495,7 @@ describe("caller transport timeouts over a slow tool", () => {
                 result: { loggedIn: true, tool: message.name },
               }),
             );
-          }, 18_000);
+          }, 11_000);
         }
       });
 
@@ -521,7 +523,7 @@ describe("caller transport timeouts over a slow tool", () => {
 
       app.socket.close();
     },
-    60_000,
+    25_000,
   );
 });
 

@@ -1,4 +1,8 @@
-import type { StandardSchemaV1 } from "@cordierite/shared";
+import {
+  MAX_TOOL_TIMEOUT_MS,
+  MIN_TOOL_TIMEOUT_MS,
+  type StandardSchemaV1,
+} from "@cordierite/shared";
 import { describe, expect, test } from "vitest";
 import { z as z3 } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -905,40 +909,42 @@ describe("toToolDescriptor: schemas MCP cannot represent (issue #26)", () => {
   });
 });
 
-describe("toToolDescriptor: timeoutMs", () => {
-  test("carries an explicitly declared timeoutMs onto the wire descriptor", () => {
+describe("toToolDescriptor: timeout_ms", () => {
+  test("carries an explicitly declared timeoutMs onto the wire descriptor as timeout_ms", () => {
     const descriptor = toToolDescriptor({
       name: "slow-tool",
       description: "d",
       timeoutMs: 60_000,
     });
 
+    // The registration option is camelCase; the wire field is snake_case like every other
+    // protocol-defined descriptor field.
     expect(descriptor).toEqual({
       name: "slow-tool",
       description: "d",
-      timeoutMs: 60_000,
+      timeout_ms: 60_000,
     });
   });
 
   test.each([
-    ["zero", 0],
-    ["negative", -1],
-    ["fractional", 1500.5],
-    ["NaN", Number.NaN],
-    ["Infinity", Number.POSITIVE_INFINITY],
+    ["below the minimum", 500, MIN_TOOL_TIMEOUT_MS],
+    ["zero", 0, MIN_TOOL_TIMEOUT_MS],
+    ["negative", -1, MIN_TOOL_TIMEOUT_MS],
+    ["above the maximum", 900_000, MAX_TOOL_TIMEOUT_MS],
+    ["fractional", 1500.5, 1500],
   ])(
-    "drops a timeoutMs that is %s, with a dev warning, rather than sending a descriptor the daemon rejects",
-    (_label, timeoutMs) => {
+    "clamps a timeoutMs %s into the range the daemon enforces, with a dev warning",
+    (_label, timeoutMs, expected) => {
       const warnings = withDevWarnCaptured(() => {
         const descriptor = toToolDescriptor({
-          name: "odd-timeout",
+          name: `clamped-${String(timeoutMs)}`,
           description: "d",
           timeoutMs,
         });
 
-        // `isToolDescriptor` rejects the whole registry snapshot over one bad field, so emitting
-        // this would close the session instead of degrading to the daemon's default.
-        expect("timeoutMs" in descriptor).toBe(false);
+        // Sending the raw value would leave the app's abort timer and the daemon's call timer
+        // disagreeing about when this tool is out of time.
+        expect(descriptor.timeout_ms).toBe(expected);
       });
 
       expect(
@@ -946,6 +952,51 @@ describe("toToolDescriptor: timeoutMs", () => {
       ).toBe(true);
     },
   );
+
+  test.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+  ])(
+    "drops a timeoutMs that is %s, with a dev warning, rather than sending a descriptor the daemon rejects",
+    (_label, timeoutMs) => {
+      const warnings = withDevWarnCaptured(() => {
+        const descriptor = toToolDescriptor({
+          name: `unclampable-${String(timeoutMs)}`,
+          description: "d",
+          timeoutMs,
+        });
+
+        // `isToolDescriptor` rejects the whole registry snapshot over one bad field, so emitting
+        // this would close the session instead of degrading to the daemon's default.
+        expect("timeout_ms" in descriptor).toBe(false);
+      });
+
+      expect(
+        warnings.some((args) => args.some((arg) => arg.includes("timeoutMs"))),
+      ).toBe(true);
+    },
+  );
+
+  test("warns only once per tool name, like the shapeless-schema warning", () => {
+    const warnings = withDevWarnCaptured(() => {
+      toToolDescriptor({
+        name: "noisy-timeout",
+        description: "d",
+        timeoutMs: 5,
+      });
+      toToolDescriptor({
+        name: "noisy-timeout",
+        description: "d",
+        timeoutMs: 5,
+      });
+    });
+
+    expect(
+      warnings.filter((args) =>
+        args.some((arg) => arg.includes("noisy-timeout")),
+      ),
+    ).toHaveLength(1);
+  });
 
   test("omits the key entirely when the tool declares no timeout", () => {
     const descriptor = toToolDescriptor({
@@ -955,7 +1006,7 @@ describe("toToolDescriptor: timeoutMs", () => {
 
     // Not merely `undefined`: the key must be absent so the frame never carries
     // `"timeoutMs": undefined` and the daemon keeps its own default.
-    expect("timeoutMs" in descriptor).toBe(false);
+    expect("timeout_ms" in descriptor).toBe(false);
     expect(Object.keys(descriptor)).toEqual(["name", "description"]);
   });
 });

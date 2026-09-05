@@ -1,5 +1,8 @@
 import {
+  clampToolTimeoutMs,
   isObjectRootedSchema,
+  MAX_TOOL_TIMEOUT_MS,
+  MIN_TOOL_TIMEOUT_MS,
   type StandardSchemaV1,
   type StandardSchemaV1JsonSchema,
   type ToolDescriptor,
@@ -483,15 +486,34 @@ export type CordieriteNormalizedToolDefinition = Pick<
   outputSchema?: CordieriteNormalizedToolSchema;
 };
 
+/** Dedupes the timeout warnings below per tool name, matching `warnMissingSchemaExporter`. */
+const timeoutWarningsSeen = new Set<string>();
+
+const warnOnceAboutTimeout = (toolName: string, message: string): void => {
+  if (timeoutWarningsSeen.has(toolName)) {
+    return;
+  }
+  timeoutWarningsSeen.add(toolName);
+  logger.devWarn(message);
+};
+
 /**
- * The daemon's `isToolDescriptor` requires `timeoutMs` to be a positive integer when present, and
- * rejects the *whole* registry snapshot otherwise (closing the session as `invalid_registry`). An
- * app-side `timeoutMs` has never been validated — it only ever fed a local `setTimeout` — so a tool
- * that happens to declare `0` or a computed fraction must not start taking the session down now
- * that the value travels on the wire. Anything the daemon would reject is dropped from the
- * descriptor (the app-side abort timer still uses it verbatim) with a dev warning.
+ * Normalizes a tool's declared `timeoutMs` into the one number both timers use (issue #25).
+ *
+ * A declared timeout now feeds two clocks: this app's abort timer and, via the descriptor, the
+ * daemon's `tools.call` timer. The daemon clamps whatever it is given to
+ * [{@link MIN_TOOL_TIMEOUT_MS}, {@link MAX_TOOL_TIMEOUT_MS}], so passing an out-of-range value
+ * through untouched would make the two disagree — declare 900_000 and the daemon gives up at ten
+ * minutes while the handler runs five minutes longer; declare 500 and this app aborts before the
+ * daemon's one-second floor. Clamping here, with the shared bounds, keeps a single deadline.
+ *
+ * A value the daemon's `isToolDescriptor` could never accept is dropped instead of clamped: the
+ * guard rejects the *whole* registry snapshot over one bad field, closing the session as
+ * `invalid_registry`. An app-side `timeoutMs` was never validated before (it only fed a local
+ * `setTimeout`), so a tool declaring something odd must degrade to the default rather than take
+ * the session down.
  */
-const toWireTimeoutMs = (
+export const normalizeToolTimeoutMs = (
   timeoutMs: number | undefined,
   toolName: string,
 ): number | undefined => {
@@ -499,17 +521,28 @@ const toWireTimeoutMs = (
     return undefined;
   }
 
-  if (Number.isInteger(timeoutMs) && timeoutMs > 0) {
-    return timeoutMs;
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
+    warnOnceAboutTimeout(
+      toolName,
+      `Tool "${toolName}" declares a timeoutMs of ${String(timeoutMs)}, which is not a finite ` +
+        "number of milliseconds. It is ignored, so this tool falls back to the default deadline.",
+    );
+    return undefined;
   }
 
-  logger.devWarn(
-    `Tool "${toolName}" declares a timeoutMs of ${String(timeoutMs)}, which is not a positive ` +
-      "integer number of milliseconds. It will not be sent to the daemon, so calls to this tool " +
-      "get the daemon's default 10s deadline; the app-side handler timeout is unaffected.",
-  );
+  const clamped = clampToolTimeoutMs(timeoutMs);
 
-  return undefined;
+  if (clamped !== timeoutMs) {
+    warnOnceAboutTimeout(
+      toolName,
+      `Tool "${toolName}" declares a timeoutMs of ${String(timeoutMs)}, outside the supported ` +
+        `range of ${String(MIN_TOOL_TIMEOUT_MS)}-${String(MAX_TOOL_TIMEOUT_MS)}ms. It is clamped ` +
+        `to ${String(clamped)}ms, which is what both this app's handler timeout and the daemon's ` +
+        "call deadline use.",
+    );
+  }
+
+  return clamped;
 };
 
 export const toToolDescriptor = (
@@ -525,7 +558,10 @@ export const toToolDescriptor = (
     "output",
     definition.name,
   );
-  const wireTimeoutMs = toWireTimeoutMs(definition.timeoutMs, definition.name);
+  const wireTimeoutMs = normalizeToolTimeoutMs(
+    definition.timeoutMs,
+    definition.name,
+  );
 
   if (inputSchema !== undefined && !isObjectRootedSchema(inputSchema)) {
     warnNonObjectRootedSchema(definition.name, "input", inputSchema);
@@ -545,7 +581,7 @@ export const toToolDescriptor = (
       : {}),
     // Only the tool's *explicit* `timeoutMs` travels on the wire — never the app-wide
     // `defaultToolTimeoutMs`, which stays a purely app-side fallback. Omitted entirely (no
-    // `timeoutMs: undefined` key) when the tool declares none, so the daemon keeps its own default.
-    ...(wireTimeoutMs !== undefined ? { timeoutMs: wireTimeoutMs } : {}),
+    // `timeout_ms: undefined` key) when the tool declares none, so the daemon keeps its default.
+    ...(wireTimeoutMs !== undefined ? { timeout_ms: wireTimeoutMs } : {}),
   };
 };

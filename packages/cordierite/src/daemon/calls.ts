@@ -15,21 +15,27 @@
 
 import { randomBytes } from "node:crypto";
 
-import type {
-  ToolCallMessage,
-  ToolCallProgressMessage,
-  ToolCancelMessage,
-  ToolErrorMessage,
-  ToolResultMessage,
+import {
+  clampToolTimeoutMs,
+  DEFAULT_TOOL_TIMEOUT_MS,
+  MAX_TOOL_TIMEOUT_MS,
+  MIN_TOOL_TIMEOUT_MS,
+  type ToolCallMessage,
+  type ToolCallProgressMessage,
+  type ToolCancelMessage,
+  type ToolErrorMessage,
+  type ToolResultMessage,
 } from "@cordierite/shared";
 
 import type { EventBus } from "./event-bus.js";
 import { RpcApplicationError } from "./rpc-server.js";
 import { systemTimers, type TimerFns, type TimerHandle } from "./timers.js";
 
-export const DEFAULT_CALL_TIMEOUT_MS = 10_000;
-export const MIN_CALL_TIMEOUT_MS = 1_000;
-export const MAX_CALL_TIMEOUT_MS = 600_000;
+/** Re-exported under this module's historical names; the values live in `@cordierite/shared` so the
+ * RN SDK's app-side abort timer and this timer cannot drift apart (issue #25). */
+export const DEFAULT_CALL_TIMEOUT_MS = DEFAULT_TOOL_TIMEOUT_MS;
+export const MIN_CALL_TIMEOUT_MS = MIN_TOOL_TIMEOUT_MS;
+export const MAX_CALL_TIMEOUT_MS = MAX_TOOL_TIMEOUT_MS;
 
 /** Identifies the session a call belongs to; carried through so progress/lifecycle events can be
  * tagged with the alias without this module needing to look sessions back up. */
@@ -107,7 +113,7 @@ export const clampTimeout = (timeoutMs: number | undefined): number => {
     return DEFAULT_CALL_TIMEOUT_MS;
   }
 
-  return Math.min(Math.max(Math.trunc(timeoutMs), MIN_CALL_TIMEOUT_MS), MAX_CALL_TIMEOUT_MS);
+  return clampToolTimeoutMs(timeoutMs);
 };
 
 /** Transport timeout a caller should use for a `tools.call` that will be given `timeoutMs`

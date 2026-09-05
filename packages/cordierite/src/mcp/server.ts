@@ -27,7 +27,7 @@ import {
 import { RPC_METHODS, type EventKind, type EventNotification, type SessionsListResult, type ToolsCallResult } from "@cordierite/shared";
 
 import type { ExecFn } from "../cli/open-target.js";
-import { deriveCallTransportTimeoutMs } from "../daemon/calls.js";
+import { clampTimeout, deriveCallTransportTimeoutMs } from "../daemon/calls.js";
 import { DaemonRpcError, openDaemonStream, type SpawnFn } from "../rpc/client.js";
 import {
   CONNECT_TOOL_DESCRIPTOR,
@@ -265,6 +265,16 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
         ? "client"
         : undefined;
 
+    // The deadline this call runs under, resolved once from the `tools.list` snapshot it was
+    // matched against, and sent explicitly rather than left to the daemon's `?? tool.timeout_ms`
+    // fallback. `clampTimeout` folds in the 10 s default for a tool that declares nothing, so
+    // there is exactly one number here and the watchdog below can never be sized off a different
+    // read: the daemon consults its live registry, which a re-registration between that snapshot
+    // and this call could have moved, and a watchdog built for the older value would fire first
+    // and mask the daemon's real `tool_timeout` (issue #25).
+    const timeoutMs = clampTimeout(tool.descriptor.timeout_ms);
+    const transportTimeoutMs = deriveCallTransportTimeoutMs(timeoutMs);
+
     if (progressToken === undefined) {
       const result = await stream.call<ToolsCallResult>(
         RPC_METHODS.toolsCall,
@@ -273,12 +283,10 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
           name: tool.descriptor.name,
           args,
           caller: "mcp",
+          timeoutMs,
           ...(consent ? { consent } : {}),
         },
-        // Sized off the deadline the daemon will actually enforce for this tool, so its
-        // `tool_timeout` always arrives before this transport watchdog fires and the agent sees the
-        // real error type instead of a generic transport failure (issue #25).
-        deriveCallTransportTimeoutMs(tool.descriptor.timeoutMs),
+        transportTimeoutMs,
       );
 
       return result.result;
@@ -354,9 +362,10 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
             name: tool.descriptor.name,
             args,
             caller: "mcp",
+            timeoutMs,
             ...(consent ? { consent } : {}),
           },
-          deriveCallTransportTimeoutMs(tool.descriptor.timeoutMs),
+          transportTimeoutMs,
         );
 
         return result.result;

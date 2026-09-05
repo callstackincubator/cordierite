@@ -14,6 +14,28 @@ export type ToolAnnotations = {
 
 const TOOL_ANNOTATION_KEYS = ["readOnlyHint", "destructiveHint", "idempotentHint"] as const;
 
+/**
+ * The bounds the daemon enforces on any `tools.call` deadline (`docs/ARCHITECTURE.md` §5), and the
+ * deadline it applies when neither the caller nor the tool declares one.
+ *
+ * These live here, in the shared wire vocabulary, rather than in the daemon: a tool's declared
+ * {@link ToolDescriptor.timeout_ms} now crosses the wire, so the app's own abort timer and the
+ * daemon's timer must be derived from the same numbers. Two copies would silently drift into a
+ * disagreement where one side gives up while the other is still waiting.
+ */
+export const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
+export const MIN_TOOL_TIMEOUT_MS = 1_000;
+export const MAX_TOOL_TIMEOUT_MS = 600_000;
+
+/**
+ * Normalizes a declared or caller-supplied timeout to a whole number of milliseconds inside
+ * [{@link MIN_TOOL_TIMEOUT_MS}, {@link MAX_TOOL_TIMEOUT_MS}]. Callers must reject non-finite input
+ * before calling this — `Math.trunc(NaN)` is `NaN`, which no comparison would clamp.
+ */
+export const clampToolTimeoutMs = (timeoutMs: number): number => {
+  return Math.min(Math.max(Math.trunc(timeoutMs), MIN_TOOL_TIMEOUT_MS), MAX_TOOL_TIMEOUT_MS);
+};
+
 export type ToolDescriptor = {
   /** Required, unique per session, `[a-zA-Z0-9_-]{1,64}`. */
   name: string;
@@ -25,8 +47,12 @@ export type ToolDescriptor = {
    * The app-declared per-call deadline for this tool, in milliseconds (a positive integer). The
    * daemon uses it as the default `tools.call` timeout when the caller passes none; an explicit
    * caller `timeoutMs` still wins. Optional — older apps omit it and keep the daemon's default.
+   *
+   * snake_case like every other protocol-defined field on this descriptor; the camelCase
+   * `timeoutMs` spelling belongs to the RN `registerTool` option and the `tools.call` RPC param,
+   * which are camelCase layers. A camelCase key arriving here is not a timeout and is ignored.
    */
-  timeoutMs?: number;
+  timeout_ms?: number;
 };
 
 const isJsonObject = (value: unknown): value is Record<string, unknown> => {
@@ -89,7 +115,10 @@ export const isToolDescriptor = (value: unknown): value is ToolDescriptor => {
     return false;
   }
 
-  if (value.timeoutMs !== undefined && (!Number.isInteger(value.timeoutMs) || (value.timeoutMs as number) <= 0)) {
+  if (
+    value.timeout_ms !== undefined &&
+    (!Number.isInteger(value.timeout_ms) || (value.timeout_ms as number) <= 0)
+  ) {
     return false;
   }
 

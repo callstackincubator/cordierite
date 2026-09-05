@@ -602,7 +602,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
             // The caller's explicit `timeoutMs` wins; otherwise the tool's own declared deadline is
             // the default, and only if it declares none does `clampTimeout` fall back to
             // DEFAULT_CALL_TIMEOUT_MS (issue #25).
-            timeoutMs ?? tool.timeoutMs,
+            timeoutMs ?? tool.timeout_ms,
           );
 
           // If the connection that issued this tools.call drops while the call is still pending

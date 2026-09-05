@@ -8,6 +8,8 @@
  * why the notification listener has to be registered before the `events.since` drain call is sent.
  */
 import {
+  clampToolTimeoutMs,
+  MAX_TOOL_TIMEOUT_MS,
   RPC_METHODS,
   type EventNotification,
   type EventsSinceResult,
@@ -129,14 +131,11 @@ export type AppClient<TTools = ToolMap> = {
 
 const DEFAULT_WAIT_FOR_EVENT_TIMEOUT_MS = 30_000;
 
-/** Mirrors `daemon/calls.ts`'s `DEFAULT_CALL_TIMEOUT_MS`/`MIN_CALL_TIMEOUT_MS`/
- * `MAX_CALL_TIMEOUT_MS` clamp so this client can compute a transport timeout that always exceeds
- * whatever server-side deadline the daemon will actually enforce for a given `timeoutMs` — not
- * imported directly to keep `cordierite/client` from pulling in daemon-internal modules. */
-const DAEMON_MIN_CALL_TIMEOUT_MS = 1_000;
-const DAEMON_MAX_CALL_TIMEOUT_MS = 600_000;
 /** Extra headroom so the daemon's own `tool_timeout` always wins the race against this client's
- * transport timeout, even accounting for RPC round-trip and event-loop scheduling delay. */
+ * transport timeout, even accounting for RPC round-trip and event-loop scheduling delay. Kept
+ * local because it is a property of this transport, not of the protocol; the *bounds* it is added
+ * to come from `@cordierite/shared`, so this client and the daemon cannot disagree about the
+ * deadline itself. */
 const CALL_TRANSPORT_TIMEOUT_SLACK_MS = 5_000;
 
 /**
@@ -152,11 +151,11 @@ const CALL_TRANSPORT_TIMEOUT_SLACK_MS = 5_000;
  * default instead would make this client the thing that fails a long tool call, reporting a
  * generic transport error in place of the daemon's real one.
  */
-const transportTimeoutForToolCall = (timeoutMs: number | undefined): number => {
+export const transportTimeoutForToolCall = (timeoutMs: number | undefined): number => {
   const clamped =
     timeoutMs === undefined || !Number.isFinite(timeoutMs)
-      ? DAEMON_MAX_CALL_TIMEOUT_MS
-      : Math.min(Math.max(Math.trunc(timeoutMs), DAEMON_MIN_CALL_TIMEOUT_MS), DAEMON_MAX_CALL_TIMEOUT_MS);
+      ? MAX_TOOL_TIMEOUT_MS
+      : clampToolTimeoutMs(timeoutMs);
 
   return clamped + CALL_TRANSPORT_TIMEOUT_SLACK_MS;
 };

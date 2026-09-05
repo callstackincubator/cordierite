@@ -309,7 +309,7 @@ handler: async ({ url }, { signal }) => {
 },
 ```
 
-**Long-running tools:** a tool call gets 10 seconds by default. Declare `timeoutMs` on the registration for anything slower — a real `login()`, a `seedCart()` that hits your backend — and that deadline is the one enforced end to end: the app aborts the handler's `signal` at it, and it also travels to the daemon on the tool descriptor, so an agent calling the tool over MCP (or `cordierite invoke` with no `--timeout`) gets the same budget instead of a `tool_timeout` at 10 s:
+**Long-running tools:** a tool call gets 10 seconds by default. Declaring `timeoutMs` on the registration is the *only* way to raise that — a real `login()`, a `seedCart()` that hits your backend. That deadline is then the one enforced end to end: the app aborts the handler's `signal` at it, and it also travels to the daemon as the descriptor's `timeout_ms`, so an agent calling the tool over MCP (or `cordierite invoke` with no `--timeout`) gets the same budget instead of a `tool_timeout` at 10 s:
 
 ```ts
 useCordieriteTool(
@@ -323,7 +323,7 @@ useCordieriteTool(
 );
 ```
 
-The value is clamped daemon-side to `[1_000, 600_000]` ms, and a caller that passes its own timeout (`cordierite invoke --timeout`, `app.call(name, args, { timeoutMs })`) still overrides it. `createCordieriteClient`'s `defaultToolTimeoutMs` changes only the app-side fallback for tools that declare nothing; it is deliberately not sent to the daemon, so set `timeoutMs` per tool when the host needs to know.
+The SDK clamps the value to `[1_000, 600_000]` ms before either timer is set, so the handler's abort timer and the daemon's call deadline are always the same number (a value outside that range is clamped with a dev warning). A caller that passes its own timeout (`cordierite invoke --timeout`, `app.call(name, args, { timeoutMs })`) can **shorten** the deadline but cannot extend it past this one: the app aborts the handler at its own timer regardless — so for a tool that declares nothing, a caller asking for 60 s still gets the app's 10 s default. `createCordieriteClient`'s `defaultToolTimeoutMs` changes only that app-side fallback for tools that declare nothing; it is deliberately not sent to the daemon, so declare `timeoutMs` per tool when the host needs to know.
 
 **Gating a tool by build variant:** `useCordieriteTool` takes a third `options` argument, `{ enabled?: boolean }` (default `true`). `enabled: false` never registers the tool, and removing it (or a hook that was already mounted) leaves no registration behind. Toggling `enabled` at runtime registers/unregisters cleanly — this is the supported way to make registration conditional, so put the condition in the argument instead of wrapping the hook call in an `if`, which is a rules-of-hooks violation:
 
