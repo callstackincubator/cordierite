@@ -105,9 +105,7 @@ the `wss://` port or the daemon's key is being rotated.
 ## Declaring tools
 
 The app must register tools before `cordierite tools` / `cordierite invoke` (or MCP
-`tools/call`) can do anything useful. Define schemas with **Zod v4** (its built-in JSON
-Schema exporter means agents see a real tool shape) and register with `registerTool` or
-`useCordieriteTool`:
+`tools/call`) can do anything useful. Register with `registerTool` or `useCordieriteTool`:
 
 ```ts
 import { registerTool } from "@cordierite/react-native";
@@ -124,6 +122,18 @@ registerTool({
   handler: async (args) => ({ echoed: args.value }),
 });
 ```
+
+`inputSchema`/`outputSchema` accept three forms:
+
+| Form | Validated app-side | Shape agents see |
+| --- | --- | --- |
+| Standard Schema with a JSON Schema exporter (**Zod v4**, arktype) | yes | its exporter's output |
+| `{ schema, jsonSchema }` pair — for Zod 3 (`zod-to-json-schema`), valibot (`@valibot/to-json-schema`) | yes | the supplied JSON Schema |
+| A raw JSON Schema object (no `~standard`) | **no** — args pass through | the object, verbatim |
+
+A bare Zod 3 / plain valibot schema (Standard Schema, no exporter) **throws in `__DEV__`**:
+it would otherwise register a shapeless tool that `tools/list` reports as taking any
+object. Pair it, or pass raw JSON Schema.
 
 ## Notes
 

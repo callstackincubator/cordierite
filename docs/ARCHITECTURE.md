@@ -400,8 +400,30 @@ Client behavior:
   warning) otherwise.
 - Unified listener: `addCordieriteListener(kind, cb)` with kinds `stateChange`,
   `error` (covers bootstrap parse/connect and socket errors), `sessionChange`.
-- Schema handling: Standard Schema JSON exporter as in v1; when a schema lacks the
-  exporter, log a dev warning that agents will see a shapeless tool.
+- Schema handling: Standard Schema stays the only runtime-validation contract, but
+  `inputSchema`/`outputSchema` accept three forms, classified once at registration by
+  `normalizeToolSchema` (`schema.ts`) into `standard` / `paired` / `raw`:
+  - a **Standard Schema** — validated with `~standard.validate`, published from
+    `~standard.jsonSchema` (the Standard JSON Schema companion spec; zod 4 and arktype
+    implement it, zod 3 and plain valibot do not). With no exporter this **throws in
+    `__DEV__`**, naming the two forms below; outside dev it warns once per tool name and
+    registers with no `input_schema`/`output_schema`, as it always did, so a shipped app
+    is not bricked by an upgrade.
+  - a **`{ schema, jsonSchema }` pair** — validated with `schema["~standard"].validate`,
+    published from the supplied JSON Schema object or `{ input, output }` converter. This
+    is the supported path for zod 3 (`zod-to-json-schema`) and valibot
+    (`@valibot/to-json-schema`).
+  - a **raw JSON Schema object**, detected purely by the absence of `~standard` —
+    published verbatim and handed to the handler **unvalidated**. No JSON Schema validator
+    is bundled: `@cordierite/react-native` keeps zero runtime dependencies (§13). The
+    optional `jsonSchema<T>()` helper is a pure type-level cast that gives such a handler
+    real argument/result types.
+
+  Exported JSON Schema is not normalized or checked against a target dialect, and vendors
+  differ in what they emit (`default` handling, `additionalProperties`, draft version), so
+  two libraries describing the same shape may not produce byte-identical schemas. The wire
+  `ToolDescriptor` (§7) is unchanged by any of this — it already carries draft 2020-12
+  JSON Schema, so the whole contract is app-side.
 - App-side handler timeout: if a handler exceeds the call timeout hint, abort its
   `AbortSignal`, reply `tool_timeout`, and ignore the late result.
 - Cancellation: `tool.handler(args, context)`'s `context.signal` (`AbortSignal`) aborts on

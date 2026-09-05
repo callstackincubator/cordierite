@@ -235,9 +235,13 @@ can ask "what happened?" after the fact instead of only listening live.
   "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true } }
 ```
 
-Schemas come from the Standard Schema JSON Schema exporter (zod v4's built-in exporter,
-for example); a schema library without one still registers the tool, with a JS-side dev
-warning that agents will see a shapeless (`{}`) schema. `annotations` map 1:1 to MCP tool
+Schemas come from whatever the app registered the tool with: a Standard Schema JSON Schema
+exporter (zod v4's built-in one, for example), the JSON Schema half of a
+`{ schema, jsonSchema }` pair, or a raw JSON Schema object passed straight through — see
+`docs/ARCHITECTURE.md` §11. A Standard Schema whose library has no exporter still registers
+the tool, without `input_schema`/`output_schema`, so agents see a shapeless (`{}`) schema;
+the app-side SDK throws on that in development rather than letting it ship silently.
+`annotations` map 1:1 to MCP tool
 annotations and drive the daemon's policy engine (`docs/ARCHITECTURE.md` §12):
 `destructiveHint: true` routes a call through `policy.destructive` instead of
 `policy.default`.
