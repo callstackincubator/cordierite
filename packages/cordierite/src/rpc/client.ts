@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { RPC_METHODS, type DaemonStatusResult, type RpcErrorData } from "@cordierite/shared";
 
 import { getStateDirPaths, type StateDirPaths } from "../daemon/state-dir.js";
+import { DAEMON_VERSION_OVERRIDE_ENV } from "../package-version.js";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const defaultBinPath = join(packageRoot, "bin.js");
@@ -36,31 +37,94 @@ export class DaemonRpcError extends Error {
   }
 }
 
+/**
+ * `reason` distinguishes outcomes that look identical to a caller but mean opposite things to the
+ * version-drift restart (issue #30): `"closed"` is the daemon dropping the connection — expected
+ * while it tears itself down — whereas `"timeout"` is a daemon that is very much alive and simply
+ * not answering, which must never be mistaken for "it is gone, spawn another one".
+ */
 export class DaemonUnavailableError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly reason: "timeout" | "closed" | "unreachable" = "unreachable",
+  ) {
     super(message);
     this.name = "DaemonUnavailableError";
   }
 }
 
+/** A request that ran out of time against a daemon that never dropped the connection. */
+const isRequestTimeoutError = (error: unknown): boolean => {
+  return error instanceof DaemonUnavailableError && error.reason === "timeout";
+};
+
+/** What a restart would destroy, as read from one `daemon.status` reply. */
+export type DaemonLiveState = {
+  sessions: number;
+  pendingLinks: number;
+};
+
+const describeLiveState = (state: DaemonLiveState): string => {
+  const parts: string[] = [];
+
+  if (state.sessions > 0) {
+    parts.push(`${state.sessions} connected session(s)`);
+  }
+
+  if (state.pendingLinks > 0) {
+    parts.push(`${state.pendingLinks} unclaimed link(s)`);
+  }
+
+  return parts.join(" and ");
+};
+
 /**
  * Raised when the daemon this client reached is running a different Cordierite version and could
- * not be restarted safely — i.e. it still has live sessions and no force knob was given (issue
- * #30). Restarting drops every session (resume tokens are in-memory; ARCHITECTURE.md §4), so the
- * caller is told rather than silently costing the operator their connected devices.
+ * not be replaced (issue #30). The common case is live state a restart would destroy: sessions
+ * (resume tokens are in-daemon memory, so a restart makes the app's resume fail closed with 1008)
+ * or pending links (a deep link or QR code someone is about to scan). The caller is told rather
+ * than silently paying that cost.
  */
 export class DaemonVersionMismatchError extends Error {
+  readonly sessionCount: number;
+  readonly pendingLinkCount: number;
+
   constructor(
     readonly daemonVersion: string,
     readonly clientVersion: string,
-    readonly sessionCount: number,
+    live: DaemonLiveState,
+    message?: string,
   ) {
     super(
-      `The running Cordierite daemon is version ${daemonVersion}, but this client is version ${clientVersion}. ` +
-        `It was not restarted automatically because ${sessionCount} session(s) are still connected and a restart drops them. ` +
-        `Run "cordierite daemon stop" once the sessions are expendable, or force it with "--daemon-restart".`,
+      message ??
+        `The running Cordierite daemon is version ${daemonVersion}, but this client is version ${clientVersion}. ` +
+          `It was not restarted automatically because ${describeLiveState(live)} would be lost. ` +
+          `Run "cordierite daemon stop" once that state is expendable, or force it with "--daemon-restart".`,
     );
     this.name = "DaemonVersionMismatchError";
+    this.sessionCount = live.sessions;
+    this.pendingLinkCount = live.pendingLinks;
+  }
+}
+
+/**
+ * Raised when the daemon *was* restarted and the replacement still reports a different version.
+ * Retrying would just kill daemon after daemon, so the check stops after one restart and says what
+ * it actually found — almost always two installs of the `cordierite` binary, where the one that
+ * spawns the daemon is not the one running this command.
+ */
+export class DaemonVersionRestartIneffectiveError extends DaemonVersionMismatchError {
+  constructor(daemonVersion: string, clientVersion: string, live: DaemonLiveState, binPath: string) {
+    super(
+      daemonVersion,
+      clientVersion,
+      live,
+      `The Cordierite daemon was restarted to match this client (version ${clientVersion}), but the replacement reports version ${daemonVersion}. ` +
+        `The daemon is spawned from "${binPath}", which is probably a different install than the one running this command ` +
+        `(a project-local "node_modules/.bin/cordierite" alongside a global one, say). ` +
+        `Run "cordierite daemon stop" and start the daemon from the install you intend to use.`,
+    );
+    this.name = "DaemonVersionRestartIneffectiveError";
   }
 }
 
@@ -72,8 +136,65 @@ export class DaemonVersionMismatchError extends Error {
 export type VersionCheckOptions = {
   /** The version this client actually is — always the real package version, never an override. */
   clientVersion: string;
-  /** Restart on mismatch even when sessions are live (`--daemon-restart`, config, env). */
+  /** Restart even when the daemon has live sessions or pending links (`--daemon-restart`, the
+   * `CORDIERITE_DAEMON_RESTART` env var, or `config.json`'s `restartDaemonOnVersionMismatch`). */
   forceRestart?: boolean;
+  /** Where the "the daemon is newer than this client" notice goes. Defaults to `process.stderr` —
+   * never stdout, which belongs to `--json` output and to the MCP transport's frames. */
+  onWarning?: (message: string) => void;
+};
+
+// --- version comparison ------------------------------------------------------------------------
+
+type ParsedVersion = { numbers: readonly number[]; prerelease: string | undefined };
+
+/** Parses `1.2.3`, `1.2.3-beta.1`, `1.2.3+build`; `undefined` for anything else. */
+const parseVersion = (value: string): ParsedVersion | undefined => {
+  const match = /^(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(value.trim());
+
+  if (!match) {
+    return undefined;
+  }
+
+  return { numbers: match[1]!.split(".").map(Number), prerelease: match[2] };
+};
+
+/**
+ * `-1` when `a` is older, `1` when newer, `0` when equivalent; `undefined` when either side is not
+ * a version this can order. A prerelease sorts before the same numeric release (`1.0.0-rc` < `1.0.0`),
+ * matching semver — which is what keeps a `-rc` build from restarting the release it is testing.
+ */
+const compareVersions = (a: string, b: string): number | undefined => {
+  const left = parseVersion(a);
+  const right = parseVersion(b);
+
+  if (!left || !right) {
+    return undefined;
+  }
+
+  const length = Math.max(left.numbers.length, right.numbers.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const difference = (left.numbers[index] ?? 0) - (right.numbers[index] ?? 0);
+
+    if (difference !== 0) {
+      return difference < 0 ? -1 : 1;
+    }
+  }
+
+  if (left.prerelease === right.prerelease) {
+    return 0;
+  }
+
+  if (left.prerelease === undefined) {
+    return 1;
+  }
+
+  if (right.prerelease === undefined) {
+    return -1;
+  }
+
+  return left.prerelease < right.prerelease ? -1 : 1;
 };
 
 export type CallDaemonOptions = {
@@ -140,7 +261,9 @@ const sendRequest = <TResult>(
     };
 
     const timeout = setTimeout(() => {
-      finish(() => reject(new DaemonUnavailableError(`Timed out waiting for a response to "${method}".`)));
+      finish(() =>
+        reject(new DaemonUnavailableError(`Timed out waiting for a response to "${method}".`, "timeout")),
+      );
     }, timeoutMs);
 
     socket = connect(socketPath);
@@ -192,7 +315,9 @@ const sendRequest = <TResult>(
     });
 
     socket.on("close", () => {
-      finish(() => reject(new DaemonUnavailableError("Connection to the Cordierite daemon closed.")));
+      finish(() =>
+        reject(new DaemonUnavailableError("Connection to the Cordierite daemon closed.", "closed")),
+      );
     });
   });
 };
@@ -260,10 +385,16 @@ const defaultSpawn: SpawnFn = async (args, context) => {
   const logFd = await open(context.logFilePath, "a", 0o600);
 
   try {
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, CORDIERITE_STATE_DIR: context.stateDir };
+    // A daemon this client spawns must report its real version, whatever this process inherited.
+    // Otherwise a stray `CORDIERITE_DAEMON_VERSION_OVERRIDE` in the operator's shell would be
+    // copied into the replacement, which would then mismatch too — an endless restart loop.
+    delete childEnv[DAEMON_VERSION_OVERRIDE_ENV];
+
     const child = spawnChildProcess(process.execPath, [defaultBinPath, ...args], {
       detached: true,
       stdio: ["ignore", logFd.fd, logFd.fd],
-      env: { ...process.env, CORDIERITE_STATE_DIR: context.stateDir },
+      env: childEnv,
     });
 
     child.unref();
@@ -288,6 +419,15 @@ type SpawnDaemonOptions = {
    */
   awaitLockRelease?: boolean;
 };
+
+/**
+ * How long a spawn-lock may be held before another process treats it as abandoned. A restart holds
+ * the lock across a status read, a `daemon.shutdown`, and a wait for the daemon to disappear, so
+ * the ceiling has to be generous — but a Ctrl-C in that window used to leave the lock behind
+ * forever, and every later command would then quietly skip spawning and time out on a socket that
+ * was never going to appear.
+ */
+const SPAWN_LOCK_STALE_MS = 30_000;
 
 const pollUntilLockReleased = async (
   lockPath: string,
@@ -315,6 +455,44 @@ const pathExists = async (target: string): Promise<boolean> => {
 };
 
 /**
+ * Takes the exclusive spawn-lock, reclaiming one that has been held past
+ * {@link SPAWN_LOCK_STALE_MS} (its owner died without cleaning up). The takeover is itself racy
+ * only in the sense that two processes could reclaim the same abandoned lock in the same instant —
+ * which lands them exactly where the plain double-spawn race already does, and the pidfile's
+ * `O_EXCL` still decides the winner.
+ */
+const acquireSpawnLock = async (lockPath: string): Promise<boolean> => {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const lockHandle = await open(lockPath, "wx", 0o600);
+      await lockHandle.close();
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+    }
+
+    let heldForMs: number;
+
+    try {
+      heldForMs = Date.now() - (await stat(lockPath)).mtimeMs;
+    } catch {
+      // Released between the failed create and the stat — go straight back and take it.
+      continue;
+    }
+
+    if (heldForMs < SPAWN_LOCK_STALE_MS) {
+      return false;
+    }
+
+    await rm(lockPath, { force: true });
+  }
+
+  return false;
+};
+
+/**
  * Takes the exclusive spawn-lock, spawns `daemon run` detached if this caller wins the race
  * (the loser just polls), then waits for the socket to become ready.
  */
@@ -325,17 +503,7 @@ const spawnDaemonAndWait = async (
   pollIntervalMs: number,
   options: SpawnDaemonOptions = {},
 ): Promise<void> => {
-  let acquiredLock = false;
-
-  try {
-    const lockHandle = await open(paths.spawnLockPath, "wx", 0o600);
-    await lockHandle.close();
-    acquiredLock = true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      throw error;
-    }
-  }
+  const acquiredLock = await acquireSpawnLock(paths.spawnLockPath);
 
   if (acquiredLock) {
     try {
@@ -355,8 +523,14 @@ const spawnDaemonAndWait = async (
   const ready = await pollForSocket(paths.socketPath, waitTimeoutMs, pollIntervalMs);
 
   if (!ready) {
+    // A lock still sitting there is the single most useful thing to say here: it means another
+    // process is (or died) mid-spawn, and this one deliberately did not spawn a second daemon.
+    const lockHint = (await pathExists(paths.spawnLockPath))
+      ? ` Another process holds the spawn-lock at "${paths.spawnLockPath}"; if no "cordierite daemon" is starting, delete it and retry.`
+      : "";
+
     throw new DaemonUnavailableError(
-      `Timed out waiting for the Cordierite daemon socket at "${paths.socketPath}".`,
+      `Timed out waiting for the Cordierite daemon socket at "${paths.socketPath}".${lockHint}`,
     );
   }
 };
@@ -377,9 +551,13 @@ export const resetDaemonVersionChecks = (): void => {
   versionChecks.clear();
 };
 
-/** How many times the check will re-read status and restart before giving up and reporting the
- * mismatch. >1 only matters when several processes race to replace the same daemon. */
-const MAX_VERSION_CHECK_ATTEMPTS = 3;
+/**
+ * Per-call timeout for the `daemon.status` and `daemon.shutdown` requests issued *while the
+ * spawn-lock is held*. Deliberately much shorter than the general request timeout: everything
+ * between taking the lock and releasing it is time in which no other process can spawn a daemon,
+ * and an unresponsive daemon must not stretch that into tens of seconds.
+ */
+const RESTART_REQUEST_TIMEOUT_MS = 3000;
 
 type VersionCheckContext = {
   paths: StateDirPaths;
@@ -426,7 +604,12 @@ const readStatusSpawningIfNeeded = async (
   }
 };
 
-/** `daemon.status` against whatever is listening right now; `undefined` when nothing is. */
+/**
+ * `daemon.status` against whatever is listening right now; `undefined` only when nothing is
+ * listening at all. A *timeout* is not "gone" — it is a daemon that is alive and busy, and
+ * spawning a second one over it would be the worst possible response — so it aborts the restart
+ * with a message that says so.
+ */
 const readStatusIfReachable = async (
   context: VersionCheckContext,
 ): Promise<DaemonStatusResult | undefined> => {
@@ -435,11 +618,19 @@ const readStatusIfReachable = async (
       context.paths.socketPath,
       RPC_METHODS.daemonStatus,
       {},
-      context.requestTimeoutMs,
+      RESTART_REQUEST_TIMEOUT_MS,
     );
   } catch (error) {
-    if (isDaemonUnreachableError(error)) {
+    if (isConnectionMissingError(error)) {
       return undefined;
+    }
+
+    if (isRequestTimeoutError(error)) {
+      throw new DaemonUnavailableError(
+        `The Cordierite daemon at "${context.paths.socketPath}" did not answer "daemon.status" within ${RESTART_REQUEST_TIMEOUT_MS}ms, so it was not replaced. ` +
+          `It is running but unresponsive — run "cordierite daemon stop" and retry.`,
+        "timeout",
+      );
     }
 
     throw error;
@@ -469,13 +660,20 @@ const isDaemonGone = async (paths: StateDirPaths): Promise<boolean> => {
 };
 
 /**
- * How many sessions a restart would drop. Defensive about the field's presence rather than
- * indexing it blindly: a daemon old enough to answer `daemon.status` without `sessions` predates
- * the persistent daemon entirely, and a `TypeError` from deep inside the version check would be a
- * far worse diagnosis than the drift it was trying to report.
+ * What a restart of this daemon would destroy. Defensive about both fields' presence rather than
+ * indexing them blindly: `pendingLinks` is absent from daemons older than 0.8.0 (and drift with an
+ * older daemon is the whole point of this code path), and a `TypeError` from deep inside the
+ * version check would be a far worse diagnosis than the drift it was trying to report.
  */
-const liveSessionCount = (status: DaemonStatusResult): number => {
-  return Array.isArray(status.sessions) ? status.sessions.length : 0;
+const readLiveState = (status: DaemonStatusResult): DaemonLiveState => {
+  return {
+    sessions: Array.isArray(status.sessions) ? status.sessions.length : 0,
+    pendingLinks: typeof status.pendingLinks === "number" ? status.pendingLinks : 0,
+  };
+};
+
+const isSafeToRestart = (live: DaemonLiveState): boolean => {
+  return live.sessions === 0 && live.pendingLinks === 0;
 };
 
 const pollUntilDaemonGone = async (
@@ -512,9 +710,9 @@ const restartDaemon = async (context: VersionCheckContext): Promise<void> => {
       awaitLockRelease: true,
       beforeSpawn: async () => {
         // Re-read under the lock: another process may have replaced the daemon while this one was
-        // queued, and a session may have been claimed since the status read that decided a restart
-        // was safe. (Not fully atomic — the daemon has no compare-and-shutdown — but it closes the
-        // window that a slow lock wait would otherwise leave wide open.)
+        // queued, and a session or link may have appeared since the status read that decided a
+        // restart was safe. (Not fully atomic — the daemon has no compare-and-shutdown — but it
+        // closes the window that a slow lock wait would otherwise leave wide open.)
         const status = await readStatusIfReachable(context);
 
         if (status === undefined) {
@@ -525,12 +723,10 @@ const restartDaemon = async (context: VersionCheckContext): Promise<void> => {
           return false;
         }
 
-        if (liveSessionCount(status) > 0 && !context.check.forceRestart) {
-          throw new DaemonVersionMismatchError(
-            status.version,
-            context.check.clientVersion,
-            liveSessionCount(status),
-          );
+        const live = readLiveState(status);
+
+        if (!isSafeToRestart(live) && !context.check.forceRestart) {
+          throw new DaemonVersionMismatchError(status.version, context.check.clientVersion, live);
         }
 
         try {
@@ -538,11 +734,20 @@ const restartDaemon = async (context: VersionCheckContext): Promise<void> => {
             context.paths.socketPath,
             RPC_METHODS.daemonShutdown,
             {},
-            context.requestTimeoutMs,
+            RESTART_REQUEST_TIMEOUT_MS,
           );
         } catch (error) {
-          // `daemon.shutdown` answers before teardown finishes, so a dropped connection here is
-          // an ordinary outcome; the poll below is what actually establishes the daemon is gone.
+          if (isRequestTimeoutError(error)) {
+            throw new DaemonUnavailableError(
+              `The Cordierite daemon at "${context.paths.socketPath}" did not acknowledge "daemon.shutdown" within ${RESTART_REQUEST_TIMEOUT_MS}ms, so it was left running. ` +
+                `Run "cordierite daemon stop" and retry.`,
+              "timeout",
+            );
+          }
+
+          // The daemon answers `shutdown` before teardown finishes, so a connection that is
+          // already gone (or drops mid-reply) is an ordinary outcome; the poll below is what
+          // actually establishes it left.
           if (!isDaemonUnreachableError(error)) {
             throw error;
           }
@@ -560,37 +765,75 @@ const restartDaemon = async (context: VersionCheckContext): Promise<void> => {
   );
 };
 
+const warnOlderClient = (context: VersionCheckContext, daemonVersion: string): void => {
+  const message =
+    `cordierite: the running daemon is version ${daemonVersion}, newer than this client (${context.check.clientVersion}). ` +
+    `Continuing without restarting it — a newer daemon serves an older client, and replacing it would downgrade whatever started it. ` +
+    `Run "cordierite daemon stop" if you want this client's daemon instead.\n`;
+
+  const warn = context.check.onWarning ?? ((text: string) => void process.stderr.write(text));
+  warn(message);
+};
+
+/**
+ * Compares the daemon's version with this client's and, at most **once** per process, replaces a
+ * daemon this client has outgrown.
+ *
+ * One restart, never a loop: each restart destroys whatever the daemon was holding, so retrying a
+ * restart that did not take effect just kills daemon after daemon while reporting a cause that was
+ * never true. If the replacement still disagrees, that is a different problem with a different
+ * answer ({@link DaemonVersionRestartIneffectiveError}).
+ */
 const runVersionCheck = async (context: VersionCheckContext): Promise<void> => {
-  let lastStatus: DaemonStatusResult | undefined;
+  const status = await readStatusSpawningIfNeeded(context);
 
-  for (let attempt = 0; attempt < MAX_VERSION_CHECK_ATTEMPTS; attempt += 1) {
-    const status = await readStatusSpawningIfNeeded(context);
-
-    if (status === undefined) {
-      return;
-    }
-
-    lastStatus = status;
-
-    if (status.version === context.check.clientVersion) {
-      return;
-    }
-
-    if (liveSessionCount(status) > 0 && !context.check.forceRestart) {
-      throw new DaemonVersionMismatchError(
-        status.version,
-        context.check.clientVersion,
-        liveSessionCount(status),
-      );
-    }
-
-    await restartDaemon(context);
+  if (status === undefined) {
+    return;
   }
 
-  throw new DaemonVersionMismatchError(
-    lastStatus?.version ?? "unknown",
+  if (status.version === context.check.clientVersion) {
+    return;
+  }
+
+  // Direction matters. Restarting is only ever right when this client has outgrown the daemon;
+  // a *newer* daemon already speaks everything this client knows, and replacing it would
+  // downgrade the daemon out from under whichever newer install started it — two installs on one
+  // machine would otherwise take turns killing each other's daemon on every command.
+  if ((compareVersions(context.check.clientVersion, status.version) ?? -1) <= 0) {
+    warnOlderClient(context, status.version);
+    return;
+  }
+
+  const live = readLiveState(status);
+
+  if (!isSafeToRestart(live) && !context.check.forceRestart) {
+    throw new DaemonVersionMismatchError(status.version, context.check.clientVersion, live);
+  }
+
+  await restartDaemon(context);
+
+  const replacement = await readStatusIfReachable(context);
+
+  if (replacement === undefined) {
+    throw new DaemonUnavailableError(
+      `The Cordierite daemon was restarted but nothing is listening at "${context.paths.socketPath}"; check "${context.paths.logFilePath}".`,
+    );
+  }
+
+  if (replacement.version === context.check.clientVersion) {
+    return;
+  }
+
+  if ((compareVersions(context.check.clientVersion, replacement.version) ?? -1) < 0) {
+    warnOlderClient(context, replacement.version);
+    return;
+  }
+
+  throw new DaemonVersionRestartIneffectiveError(
+    replacement.version,
     context.check.clientVersion,
-    lastStatus ? liveSessionCount(lastStatus) : 0,
+    readLiveState(replacement),
+    defaultBinPath,
   );
 };
 
@@ -827,7 +1070,7 @@ export const openDaemonStream = async (
   socket.on("close", () => {
     for (const [, pending] of pendingCalls) {
       clearTimeout(pending.timeout);
-      pending.reject(new DaemonUnavailableError("Connection to the Cordierite daemon closed."));
+      pending.reject(new DaemonUnavailableError("Connection to the Cordierite daemon closed.", "closed"));
     }
 
     pendingCalls.clear();
@@ -845,7 +1088,7 @@ export const openDaemonStream = async (
 
         const timeout = setTimeout(() => {
           pendingCalls.delete(id);
-          reject(new DaemonUnavailableError(`Timed out waiting for a response to "${method}".`));
+          reject(new DaemonUnavailableError(`Timed out waiting for a response to "${method}".`, "timeout"));
         }, timeoutMs ?? requestTimeoutMs);
 
         pendingCalls.set(id, {

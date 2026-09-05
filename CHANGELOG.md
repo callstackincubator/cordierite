@@ -16,14 +16,19 @@ package versions for a release.
   CLI against a 0.5.x daemon got an opaque "method not found" for `cordierite events --since` or
   `cordierite_wait_for_event`, with nothing pointing at `cordierite daemon stop`. Each CLI/MCP
   process now compares `daemon.status`'s `version` with its own once, on its first connection
-  (cached per daemon socket, so one extra round-trip per process, not per request). With no live
-  sessions the daemon is replaced transparently; with sessions connected the command fails with a
-  `connection_error` naming both versions, the session count, and the remedy, because a restart
-  drops every session (resume tokens live in daemon memory). Force the restart with the new global
-  `--daemon-restart` flag, `CORDIERITE_DAEMON_RESTART=1`, or `config.json`'s new
-  `restartDaemonOnVersionMismatch`. `cordierite daemon status` reports drift as a warning and never
-  restarts the daemon it was asked about; `daemon run`/`stop` and the `cordierite/client` test SDK
-  opt out entirely. See `docs/ARCHITECTURE.md` §4, "Version drift".
+  (cached per daemon socket, so one extra round-trip per process, not per request). Versions are
+  compared as semver and only a client *newer* than the daemon replaces it — a newer daemon already
+  serves an older client, and downgrading it would break whichever install started it. With nothing
+  live the daemon is replaced transparently, at most once per process; when there is live state to
+  lose the command fails with a `connection_error` naming both versions and what would go. "Live
+  state" is connected sessions (resume tokens live in daemon memory, so a restart makes an app's
+  resume fail closed with 1008) and minted-but-unclaimed links — for which `daemon.status` gains a
+  `pendingLinks` count. Force the restart with the new global `--daemon-restart` flag,
+  `CORDIERITE_DAEMON_RESTART=1`, or `config.json`'s new `restartDaemonOnVersionMismatch`;
+  `--no-daemon-restart` overrules the latter two for one command. `cordierite daemon status` reports
+  drift as a warning and never restarts the daemon it was asked about; `daemon run`/`stop`,
+  `keygen`/`doctor`, and the `cordierite/client` test SDK opt out entirely. See
+  `docs/ARCHITECTURE.md` §4, "Version drift".
 - **New: `inputSchema`/`outputSchema` accept a `{ schema, jsonSchema }` pair and raw JSON
   Schema objects.** Previously a tool schema had to be a Standard Schema *and* implement the
   non-standard `~standard.jsonSchema` exporter to give agents a real shape; zod 3 and plain

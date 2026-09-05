@@ -282,3 +282,90 @@ const isAlive = (pid: number): boolean => {
     return false;
   }
 };
+
+describe("e2e: forcing a version-drift restart", () => {
+  test(
+    "CORDIERITE_DAEMON_RESTART=1 forces the restart with no flag on the command line",
+    async () => {
+      const { stateDir, port } = await makeTempStateDir();
+      const stalePid = await startStaleDaemon(stateDir);
+
+      const pinnedKeys = await fetchPinnedKeys(stateDir);
+      const link = await mintLinkWithoutCli(stateDir);
+      const app = new FakeAppClient(port, pinnedKeys);
+      await app.claim(link, { model: "Pixel 8" });
+
+      // The env form exists for exactly this: an MCP launch config passes no CLI flags.
+      const lsResult = await runCliJson<unknown[]>(["ls"], stateDir, {
+        CORDIERITE_DAEMON_RESTART: "1",
+      });
+
+      expect(lsResult.ok).toBe(true);
+      expect(lsResult.data).toEqual([]);
+
+      const status = await readStatus(stateDir);
+      expect(status.daemon.version).toBe(CLI_VERSION);
+      expect(status.daemon.pid).not.toBe(stalePid);
+
+      untrackDaemonPid(stalePid);
+      trackDaemonPid(status.daemon.pid);
+
+      app.close();
+    },
+    30_000,
+  );
+
+  test(
+    "--no-daemon-restart overrules restartDaemonOnVersionMismatch for one command",
+    async () => {
+      const { stateDir, port } = await makeTempStateDir({ restartDaemonOnVersionMismatch: true });
+      const stalePid = await startStaleDaemon(stateDir);
+
+      const pinnedKeys = await fetchPinnedKeys(stateDir);
+      const link = await mintLinkWithoutCli(stateDir);
+      const app = new FakeAppClient(port, pinnedKeys);
+      await app.claim(link, { model: "Pixel 8" });
+
+      try {
+        // Config says "always restart"; the flag says "not this time". A flag that parsed cleanly
+        // and then did nothing would be the worst outcome for a knob that decides whether the
+        // operator's connected device survives the next command.
+        const lsResult = await runCliJson(["ls", "--no-daemon-restart"], stateDir);
+
+        expect(lsResult.ok).toBe(false);
+        expect(lsResult.error?.type).toBe("connection_error");
+        expect(lsResult.error?.message).toContain(STALE_VERSION);
+
+        const status = await readStatus(stateDir);
+        expect(status.daemon.pid).toBe(stalePid);
+        expect(status.daemon.session_count).toBe(1);
+      } finally {
+        app.close();
+      }
+    },
+    30_000,
+  );
+
+  test(
+    "an unclaimed link blocks a restart, and the message says so",
+    async () => {
+      const { stateDir } = await makeTempStateDir();
+      const stalePid = await startStaleDaemon(stateDir);
+
+      // A minted-but-unclaimed link is a QR code someone may be walking over to scan. It is not a
+      // session, so nothing in `sessions` protects it — the daemon reports it separately.
+      await mintLinkWithoutCli(stateDir);
+
+      const lsResult = await runCliJson(["ls"], stateDir);
+
+      expect(lsResult.ok).toBe(false);
+      expect(lsResult.error?.type).toBe("connection_error");
+      expect(lsResult.error?.message).toContain("unclaimed link(s)");
+      expect(lsResult.error?.details).toMatchObject({ session_count: 0, pending_link_count: 1 });
+
+      const status = await readStatus(stateDir);
+      expect(status.daemon.pid).toBe(stalePid);
+    },
+    30_000,
+  );
+});

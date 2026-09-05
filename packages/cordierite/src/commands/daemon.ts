@@ -128,11 +128,15 @@ export const handleDaemonStatusCommand = async (
   );
 
   const clientVersion = context.clientVersion ?? getPackageVersion();
+  // Guarded the same way the version check guards it (`rpc/client.ts`): a `daemon.status` without
+  // `sessions` would otherwise throw from the middle of the command that exists to diagnose a
+  // daemon — the one command that must keep working against a daemon it does not fully understand.
+  const sessionCount = Array.isArray(status.sessions) ? status.sessions.length : 0;
   const warning =
     status.version === clientVersion
       ? undefined
       : `Version drift: this daemon is ${status.version} but the CLI is ${clientVersion}. ` +
-        `Newer RPC methods will fail against it — run "cordierite daemon stop" (this drops ${status.sessions.length} session(s)) ` +
+        `Newer RPC methods will fail against it — run "cordierite daemon stop" (this drops ${sessionCount} session(s)) ` +
         `and the next command will start a matching daemon.`;
 
   return {
@@ -145,7 +149,7 @@ export const handleDaemonStatusCommand = async (
         started_at: status.startedAt,
         wss_port: status.wssPort,
         pinned_keys: status.pinnedKeys,
-        session_count: status.sessions.length,
+        session_count: sessionCount,
       },
       policy: status.policy,
       audit: { path: status.audit.path, failed_writes: status.audit.failedWrites },

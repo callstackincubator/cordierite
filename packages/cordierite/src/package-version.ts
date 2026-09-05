@@ -17,8 +17,18 @@ import { fileURLToPath } from "node:url";
  * `daemon.status` and the `daemon_started` event, so an integration test can produce a genuine
  * client/daemon version mismatch without installing two builds. Read only by the daemon — a
  * *client* must always report the version it truly is, or the check would compare a lie to a lie.
+ *
+ * Honored **only under a test runner** (see {@link isTestRuntime}). A daemon that lied about its
+ * version in production would make every command restart it, forever: the value is inherited by
+ * whatever the shell exported, and the replacement daemon would report the same lie. The RPC
+ * client additionally strips this key from the environment of any daemon it spawns.
  */
 export const DAEMON_VERSION_OVERRIDE_ENV = "CORDIERITE_DAEMON_VERSION_OVERRIDE";
+
+/** True under Vitest, or with an explicit `NODE_ENV=test`. */
+const isTestRuntime = (env: NodeJS.ProcessEnv): boolean => {
+  return Boolean(env.VITEST) || env.NODE_ENV === "test";
+};
 
 const packageJsonPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
 
@@ -36,6 +46,10 @@ export const getPackageVersion = (): string => {
  * started in-process by a test picks up the environment that test set.
  */
 export const getDaemonReportedVersion = (env: NodeJS.ProcessEnv = process.env): string => {
+  if (!isTestRuntime(env)) {
+    return getPackageVersion();
+  }
+
   const override = env[DAEMON_VERSION_OVERRIDE_ENV];
   return override !== undefined && override.length > 0 ? override : getPackageVersion();
 };

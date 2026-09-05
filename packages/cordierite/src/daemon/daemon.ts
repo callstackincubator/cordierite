@@ -104,6 +104,7 @@ const buildStatusResult = (
     wssPort: config.wssPort,
     pinnedKeys: tls.pinnedKeys(),
     sessions: sessionManager.list(),
+    pendingLinks: sessionManager.pendingLinkCount(),
     policy: config.policy,
     audit: { path: auditDir, failedWrites: auditLogger.failedWrites() },
   };

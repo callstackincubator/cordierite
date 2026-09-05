@@ -52,6 +52,8 @@ export type PendingLinkRegistry = {
   recordFailedAttempt: (sessionId: string) => number;
   /** Discards a link outright (TTL expiry, attempt-limit exceeded, or explicit revoke). */
   discard: (sessionId: string) => void;
+  /** How many links are minted but not yet claimed, expired, or discarded (`daemon.status`). */
+  size: () => number;
   /** Clears every outstanding TTL timer (daemon shutdown). */
   disposeAll: () => void;
 };
@@ -170,6 +172,7 @@ export const createPendingLinkRegistry = (options: PendingLinkRegistryOptions): 
       return record.attempts;
     },
     discard,
+    size: () => records.size,
     disposeAll: () => {
       for (const sessionId of Array.from(records.keys())) {
         discard(sessionId);

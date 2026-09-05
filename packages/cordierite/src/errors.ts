@@ -133,6 +133,7 @@ export const toCliError = (error: unknown): CliError => {
         daemon_version: error.daemonVersion,
         client_version: error.clientVersion,
         session_count: error.sessionCount,
+        pending_link_count: error.pendingLinkCount,
       },
     };
   }

@@ -123,12 +123,16 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
         // because one optional knob lives there; the daemon reports the real problem when it starts.
       }
 
+      // An explicit flag wins outright, in both directions: `--no-daemon-restart` is how an
+      // operator overrules a `restartDaemonOnVersionMismatch: true` in their config (or a
+      // `CORDIERITE_DAEMON_RESTART` exported by a wrapper script) for one command, and silently
+      // ignoring it would be the worst kind of surprise for a knob that decides whether their
+      // connected devices survive.
+      const flag = typeof parsedOptions.daemonRestart === "boolean" ? parsedOptions.daemonRestart : undefined;
+
       return {
         clientVersion: getPackageVersion(),
-        forceRestart:
-          Boolean(parsedOptions.daemonRestart) ||
-          isEnvTruthy(process.env[DAEMON_RESTART_ENV]) ||
-          configuredForce,
+        forceRestart: flag ?? (isEnvTruthy(process.env[DAEMON_RESTART_ENV]) || configuredForce),
       };
     })();
 

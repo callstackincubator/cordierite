@@ -25,7 +25,14 @@ import { RPC_METHODS, type EventKind, type EventNotification, type SessionsListR
 import type { ExecFn } from "../cli/open-target.js";
 import { clampTimeout, deriveCallTransportTimeoutMs } from "../daemon/calls.js";
 import { getPackageVersion } from "../package-version.js";
-import { DaemonRpcError, openDaemonStream, type SpawnFn, type VersionCheckOptions } from "../rpc/client.js";
+import {
+  DaemonRpcError,
+  DaemonVersionMismatchError,
+  openDaemonStream,
+  type DaemonStream,
+  type SpawnFn,
+  type VersionCheckOptions,
+} from "../rpc/client.js";
 import {
   CONNECT_TOOL_DESCRIPTOR,
   CONNECT_TOOL_NAME,
@@ -227,11 +234,24 @@ export type McpServerHandle = {
 };
 
 export const createMcpServer = async (options: CreateMcpServerOptions): Promise<McpServerHandle> => {
-  const stream = await openDaemonStream({
-    stateDir: options.stateDir,
-    spawn: options.spawn,
-    checkVersion: options.checkVersion,
-  });
+  let stream: DaemonStream;
+
+  try {
+    stream = await openDaemonStream({
+      stateDir: options.stateDir,
+      spawn: options.spawn,
+      checkVersion: options.checkVersion,
+    });
+  } catch (error) {
+    if (error instanceof DaemonVersionMismatchError) {
+      // An MCP client renders a startup failure as a bare "server failed to start" with no cause,
+      // and the operator never sees the thrown message. This stderr line — which the client's own
+      // logs keep — is the only place the actual diagnosis reaches a human (ARCHITECTURE.md §4).
+      console.error(`cordierite mcp: refusing to start. ${error.message}`);
+    }
+
+    throw error;
+  }
 
   const server = new Server(
     { name: "cordierite", version: packageVersion },

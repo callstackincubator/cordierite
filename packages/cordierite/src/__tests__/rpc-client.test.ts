@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,6 +11,7 @@ import {
   callDaemon,
   DaemonUnavailableError,
   DaemonVersionMismatchError,
+  DaemonVersionRestartIneffectiveError,
   openDaemonStream,
   resetDaemonVersionChecks,
   type SpawnFn,
@@ -63,7 +64,13 @@ let nextFakeDaemonId = 1;
 
 const startFakeDaemon = async (
   stateDir: string,
-  options: { version: string; sessionCount?: number },
+  options: {
+    version: string;
+    sessionCount?: number;
+    pendingLinks?: number;
+    /** Accept the connection but never answer `daemon.status` — an alive-but-wedged daemon. */
+    stallStatus?: boolean;
+  },
 ): Promise<FakeDaemon> => {
   const paths = getStateDirPaths(stateDir);
   const id = nextFakeDaemonId;
@@ -117,6 +124,11 @@ const startFakeDaemon = async (
 
         if (request.method === "daemon.status") {
           statusCalls += 1;
+
+          if (options.stallStatus) {
+            continue;
+          }
+
           result = {
             version: options.version,
             pid: id,
@@ -131,6 +143,7 @@ const startFakeDaemon = async (
               createdAt: new Date(0).toISOString(),
               toolCount: 0,
             })),
+            pendingLinks: options.pendingLinks ?? 0,
             policy: { default: "allow", destructive: "allow" },
             audit: { path: paths.auditDir, failedWrites: 0 },
           };
@@ -383,6 +396,7 @@ describe("daemon version check (issue #30)", () => {
     expect(mismatch.daemonVersion).toBe(OLD_VERSION);
     expect(mismatch.clientVersion).toBe(CLIENT_VERSION);
     expect(mismatch.sessionCount).toBe(2);
+    expect(mismatch.message).toContain("2 connected session(s)");
     expect(mismatch.message).toContain("cordierite daemon stop");
     expect(mismatch.message).toContain("--daemon-restart");
 
@@ -504,6 +518,245 @@ describe("daemon version check (issue #30)", () => {
     } finally {
       stream.close();
     }
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
+});
+
+describe("daemon version check: drift direction and one-restart ceiling (issue #30 review)", () => {
+  const CLIENT_VERSION = "1.4.0";
+  const timing = { spawnPollIntervalMs: 10, spawnWaitTimeoutMs: 2000, requestTimeoutMs: 2000 } as const;
+
+  test("a newer daemon is left running, with a warning instead of a restart", async () => {
+    const stateDir = await makeTempStateDir();
+    const newer = await startFakeDaemon(stateDir, { version: "1.5.0" });
+    const warnings: string[] = [];
+
+    const spawn: SpawnFn = () => {
+      throw new Error("a daemon newer than this client must never be replaced");
+    };
+
+    const result = await callDaemon<{ answeredBy: number }>(
+      "sessions.list",
+      {},
+      {
+        stateDir,
+        autoSpawn: true,
+        spawn,
+        ...timing,
+        checkVersion: {
+          clientVersion: CLIENT_VERSION,
+          onWarning: (message) => warnings.push(message),
+        },
+      },
+    );
+
+    // Downgrading the daemon would break whichever newer install started it — two installs on one
+    // machine would otherwise take turns killing each other's daemon on every single command.
+    expect(newer.shutdownCalls()).toBe(0);
+    expect(result.answeredBy).toBe(newer.id);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("1.5.0");
+    expect(warnings[0]).toContain(CLIENT_VERSION);
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
+
+  test("a prerelease client does not restart the release it is testing", async () => {
+    const stateDir = await makeTempStateDir();
+    const release = await startFakeDaemon(stateDir, { version: "1.4.0" });
+    const warnings: string[] = [];
+
+    const spawn: SpawnFn = () => {
+      throw new Error("1.4.0-rc.1 is older than 1.4.0 and must not restart it");
+    };
+
+    await callDaemon(
+      "sessions.list",
+      {},
+      {
+        stateDir,
+        autoSpawn: true,
+        spawn,
+        ...timing,
+        checkVersion: {
+          clientVersion: "1.4.0-rc.1",
+          onWarning: (message) => warnings.push(message),
+        },
+      },
+    );
+
+    expect(release.shutdownCalls()).toBe(0);
+    expect(warnings).toHaveLength(1);
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
+
+  test("an unparseable daemon version warns rather than restarting on a guess", async () => {
+    const stateDir = await makeTempStateDir();
+    const odd = await startFakeDaemon(stateDir, { version: "nightly" });
+    const warnings: string[] = [];
+
+    const spawn: SpawnFn = () => {
+      throw new Error("an unorderable version must not be assumed older");
+    };
+
+    await callDaemon(
+      "sessions.list",
+      {},
+      {
+        stateDir,
+        autoSpawn: true,
+        spawn,
+        ...timing,
+        checkVersion: {
+          clientVersion: CLIENT_VERSION,
+          onWarning: (message) => warnings.push(message),
+        },
+      },
+    );
+
+    expect(odd.shutdownCalls()).toBe(0);
+    expect(warnings).toHaveLength(1);
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
+
+  test("a replacement that still mismatches is reported, not restarted again", async () => {
+    const stateDir = await makeTempStateDir();
+    await startFakeDaemon(stateDir, { version: "1.0.0" });
+    let spawnCalls = 0;
+
+    // The pathological case the retry loop used to hit: the binary that spawns the daemon is a
+    // different install, so every replacement reports the same wrong version. Restarting again
+    // would just kill daemon after daemon.
+    const spawn: SpawnFn = async () => {
+      spawnCalls += 1;
+      await startFakeDaemon(stateDir, { version: "1.0.0" });
+    };
+
+    const error = await callDaemon(
+      "sessions.list",
+      {},
+      { stateDir, autoSpawn: true, spawn, ...timing, checkVersion: { clientVersion: CLIENT_VERSION } },
+    ).catch((thrown: unknown) => thrown);
+
+    expect(spawnCalls).toBe(1);
+    expect(error).toBeInstanceOf(DaemonVersionRestartIneffectiveError);
+    const ineffective = error as DaemonVersionRestartIneffectiveError;
+    expect(ineffective.daemonVersion).toBe("1.0.0");
+    expect(ineffective.clientVersion).toBe(CLIENT_VERSION);
+    expect(ineffective.message).toContain("was restarted");
+    expect(ineffective.message).toContain("bin.js");
+    // Never the "sessions are connected" story, which was never true here.
+    expect(ineffective.message).not.toContain("was not restarted");
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
+
+  test("an unclaimed pending link blocks a restart just like a session", async () => {
+    const stateDir = await makeTempStateDir();
+    const stale = await startFakeDaemon(stateDir, { version: "1.0.0", pendingLinks: 1 });
+
+    const spawn: SpawnFn = () => {
+      throw new Error("a minted link someone may still be scanning must not be thrown away");
+    };
+
+    const error = await callDaemon(
+      "sessions.list",
+      {},
+      { stateDir, autoSpawn: true, spawn, ...timing, checkVersion: { clientVersion: CLIENT_VERSION } },
+    ).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(DaemonVersionMismatchError);
+    const mismatch = error as DaemonVersionMismatchError;
+    expect(mismatch.sessionCount).toBe(0);
+    expect(mismatch.pendingLinkCount).toBe(1);
+    expect(mismatch.message).toContain("1 unclaimed link(s)");
+    expect(stale.shutdownCalls()).toBe(0);
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
+
+  test("an alive-but-unresponsive daemon aborts the check instead of being replaced", async () => {
+    const stateDir = await makeTempStateDir();
+    const wedged = await startFakeDaemon(stateDir, { version: "1.0.0", stallStatus: true });
+
+    const spawn: SpawnFn = () => {
+      throw new Error("a second daemon must never be spawned over a daemon that is still running");
+    };
+
+    const error = await callDaemon(
+      "sessions.list",
+      {},
+      {
+        stateDir,
+        autoSpawn: true,
+        spawn,
+        spawnPollIntervalMs: 10,
+        spawnWaitTimeoutMs: 2000,
+        // The pre-check's own status read is the one that times out here.
+        requestTimeoutMs: 300,
+        checkVersion: { clientVersion: CLIENT_VERSION },
+      },
+    ).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(DaemonUnavailableError);
+    expect((error as DaemonUnavailableError).reason).toBe("timeout");
+    expect(wedged.shutdownCalls()).toBe(0);
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
+});
+
+describe("spawn-lock staleness (issue #30 review)", () => {
+  test("a lock abandoned by a dead process is taken over instead of blocking forever", async () => {
+    const stateDir = await makeTempStateDir();
+    const paths = getStateDirPaths(stateDir);
+
+    // What a Ctrl-C during a restart leaves behind: a lock with no owner and no daemon. Before the
+    // staleness rule this poisoned the state dir permanently — every later command skipped the
+    // spawn and timed out waiting for a socket nobody was going to create.
+    await writeFile(paths.spawnLockPath, "", "utf8");
+    const longAgo = new Date(Date.now() - 120_000);
+    await utimes(paths.spawnLockPath, longAgo, longAgo);
+
+    let spawnCalls = 0;
+    const spawn: SpawnFn = async () => {
+      spawnCalls += 1;
+      await startFakeDaemon(stateDir, { version: "1.4.0" });
+    };
+
+    const result = await callDaemon<{ answeredBy: number }>(
+      "sessions.list",
+      {},
+      { stateDir, autoSpawn: true, spawn, spawnPollIntervalMs: 10, spawnWaitTimeoutMs: 2000 },
+    );
+
+    expect(spawnCalls).toBe(1);
+    expect(result.answeredBy).toBeGreaterThan(0);
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
+
+  test("a lock held by a live process still blocks, and the timeout says so", async () => {
+    const stateDir = await makeTempStateDir();
+    const paths = getStateDirPaths(stateDir);
+    await writeFile(paths.spawnLockPath, "", "utf8");
+
+    const spawn: SpawnFn = () => {
+      throw new Error("a fresh lock means another process is spawning; this one must not");
+    };
+
+    const error = await callDaemon(
+      "sessions.list",
+      {},
+      { stateDir, autoSpawn: true, spawn, spawnPollIntervalMs: 10, spawnWaitTimeoutMs: 200 },
+    ).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(DaemonUnavailableError);
+    // The lock is the actual reason nothing was spawned, so the message has to name it.
+    expect((error as Error).message).toContain(paths.spawnLockPath);
 
     await rm(stateDir, { force: true, recursive: true });
   });
