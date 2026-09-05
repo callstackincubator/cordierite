@@ -76,7 +76,7 @@ type TestDaemon = {
   port: number;
 };
 
-const startTestDaemon = async (): Promise<TestDaemon> => {
+const startTestDaemon = async (extraConfig: Record<string, unknown> = {}): Promise<TestDaemon> => {
   const stateDir = await mkdtemp(path.join(tmpdir(), "cordierite-mcp-"));
   stateDirs.push(stateDir);
   await writeTestHostKey(path.join(stateDir, "key.pem"));
@@ -84,7 +84,7 @@ const startTestDaemon = async (): Promise<TestDaemon> => {
   const port = await pickFreePort();
   await writeFile(
     path.join(stateDir, "config.json"),
-    JSON.stringify({ wssPort: port, advertisedIp: "127.0.0.1", scheme: "cordierite" }),
+    JSON.stringify({ wssPort: port, advertisedIp: "127.0.0.1", scheme: "cordierite", ...extraConfig }),
   );
 
   const daemon = await startDaemon({ stateDir });
@@ -238,11 +238,16 @@ const noDevicesExec: ExecFn = async (command) => {
   return { stdout: "List of devices attached\n\n", stderr: "" };
 };
 
-const createMcpHandle = async (stateDir: string, exec: ExecFn = noDevicesExec): Promise<McpServerHandle> => {
+const createMcpHandle = async (
+  stateDir: string,
+  exec: ExecFn = noDevicesExec,
+  iosBundleId?: string,
+): Promise<McpServerHandle> => {
   const handle = await createMcpServer({
     stateDir,
     spawn: failIfCalled,
     scheme: "cordierite",
+    iosBundleId,
     exec,
     env: {},
   });
@@ -730,6 +735,190 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
 
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.content)).toMatch(/device.{0,4} requires an explicit/u);
+  });
+
+  test('explicit target "ios-device" delivers via devicectl with the LAN address, not 127.0.0.1', async () => {
+    const { stateDir } = await startTestDaemon({ advertisedIp: "203.0.113.9" });
+
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec: ExecFn = async (command, args) => {
+      calls.push({ command, args });
+
+      const jsonOutputIndex = args.indexOf("--json-output");
+
+      if (jsonOutputIndex !== -1) {
+        // `devicectl` writes its listing to the file named in argv, never to stdout.
+        await writeFile(
+          args[jsonOutputIndex + 1]!,
+          JSON.stringify({
+            result: {
+              devices: [
+                {
+                  deviceProperties: { name: "My iPhone" },
+                  hardwareProperties: { udid: "00008030-AAAA", platform: "iOS" },
+                },
+              ],
+            },
+          }),
+          "utf8",
+        );
+      }
+
+      return { stdout: "", stderr: "" };
+    };
+
+    const handle = await createMcpHandle(stateDir, exec);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      {
+        method: "tools/call",
+        params: {
+          name: "cordierite_connect",
+          arguments: { target: "ios-device", bundleId: "com.example.playground" },
+        },
+      },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).not.toBe(true);
+    const data = result.structuredContent as {
+      delivered?: true;
+      autoDetected?: true;
+      target?: string;
+      deepLink: string;
+      qr?: string;
+    };
+
+    expect(data.delivered).toBe(true);
+    expect(data.target).toBe("ios-device");
+    expect(data.autoDetected).toBeUndefined();
+    expect(data.qr).toBeUndefined();
+
+    // The link a physical iPhone gets must carry the machine's LAN address: there is no
+    // `adb reverse` equivalent, so `127.0.0.1` would point the phone at itself (issue #31).
+    const decoded = decodeBootstrap(data.deepLink.split("cordierite=")[1]!);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.address).toBe("203.0.113.9");
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.args.slice(0, 5)).toEqual(["devicectl", "list", "devices", "--timeout", "5"]);
+    expect(calls[1]!.args).toEqual([
+      "devicectl",
+      "device",
+      "process",
+      "launch",
+      "--device",
+      "00008030-AAAA",
+      "--payload-url",
+      data.deepLink,
+      "com.example.playground",
+    ]);
+  });
+
+  test('target "ios-device" falls back to config.json\'s iosBundleId when no bundleId is passed', async () => {
+    const { stateDir } = await startTestDaemon();
+
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec: ExecFn = async (command, args) => {
+      calls.push({ command, args });
+      return { stdout: "", stderr: "" };
+    };
+
+    const handle = await createMcpHandle(stateDir, exec, "com.example.fromconfig");
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      {
+        method: "tools/call",
+        params: {
+          name: "cordierite_connect",
+          // An explicit device skips the listing, so this exercises the bundle-id default alone.
+          arguments: { target: "ios-device", device: "00008030-BBBB" },
+        },
+      },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect((result.structuredContent as { delivered?: true }).delivered).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.args.at(-1)).toBe("com.example.fromconfig");
+  });
+
+  test('target "ios-device" with no bundle id anywhere is an invalid_request, and mints nothing', async () => {
+    const { stateDir } = await startTestDaemon();
+
+    const calls: string[] = [];
+    const exec: ExecFn = async (command, args) => {
+      calls.push(`${command} ${args.join(" ")}`);
+      return { stdout: "", stderr: "" };
+    };
+
+    const handle = await createMcpHandle(stateDir, exec);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      {
+        method: "tools/call",
+        params: { name: "cordierite_connect", arguments: { target: "ios-device" } },
+      },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(/iosBundleId/u);
+    // Rejected before `link.create`, so no pending session is stranded behind a doomed call.
+    expect(calls).toEqual([]);
+  });
+
+  test('"bundleId" without target "ios-device" is rejected rather than silently ignored', async () => {
+    const { stateDir } = await startTestDaemon();
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      {
+        method: "tools/call",
+        params: {
+          name: "cordierite_connect",
+          arguments: { target: "ios-sim", bundleId: "com.example.playground" },
+        },
+      },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(/bundleId.{0,4} only applies with target/u);
+  });
+
+  test("an omitted target never picks a physical iPhone, and says so in the QR note", async () => {
+    const { stateDir } = await startTestDaemon();
+
+    const invocations: string[] = [];
+    const exec: ExecFn = async (command, args) => {
+      invocations.push(`${command} ${args.join(" ")}`);
+      return noDevicesExec(command, args);
+    };
+
+    const handle = await createMcpHandle(stateDir, exec);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: {} } },
+      CallToolResultSchema,
+    );
+
+    const data = result.structuredContent as { delivered?: true; target?: string; note?: string };
+
+    expect(data.delivered).toBeUndefined();
+    expect(data.target).toBeUndefined();
+    // Auto-detection must never reach devicectl: a paired iPhone is often a personal phone.
+    expect(invocations.some((invocation) => invocation.includes("devicectl"))).toBe(false);
+    // ...and the note has to tell the agent that the target exists but must be asked for.
+    expect(data.note).toMatch(/never auto-detected/iu);
+    expect(data.note).toMatch(/ios-device/u);
+    expect(data.note).toMatch(/bundleId/u);
   });
 
   test("cordierite_wait_for_session resolves once a fake client claims the minted session", async () => {

@@ -285,4 +285,30 @@ describe("daemon lifecycle", () => {
 
     await rm(stateDir, { force: true, recursive: true });
   });
+
+  test("config.json iosBundleId is a known key, loaded as-is and validated as a non-empty string", async () => {
+    const stateDir = await makeTempStateDir();
+    const paths = getStateDirPaths(stateDir);
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(stateDir, { recursive: true });
+    const { loadConfig } = await import("../daemon/config.js");
+
+    await writeFile(paths.configPath, JSON.stringify({ iosBundleId: "com.example.playground" }));
+
+    const warnings: string[] = [];
+    const config = await loadConfig(paths, { warn: (message) => warnings.push(message) });
+
+    expect(config.iosBundleId).toBe("com.example.playground");
+    // A key that warned as unknown would still "work" via the `--bundle-id` flag, hiding a typo'd
+    // config from the operator for as long as they only ever passed the flag.
+    expect(warnings).toEqual([]);
+
+    await writeFile(paths.configPath, JSON.stringify({ iosBundleId: "" }));
+    await expect(loadConfig(paths)).rejects.toThrow(/iosBundleId/u);
+
+    await writeFile(paths.configPath, JSON.stringify({ iosBundleId: 42 }));
+    await expect(loadConfig(paths)).rejects.toThrow(/iosBundleId/u);
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
 });

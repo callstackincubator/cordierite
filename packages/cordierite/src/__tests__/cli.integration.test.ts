@@ -81,6 +81,23 @@ describe("CLI integration", () => {
     expect(linkHelp).toContain("--qr");
     expect(linkHelp).toContain("--scheme");
     expect(linkHelp).toContain("--open");
+    expect(linkHelp).toContain("--device");
+    expect(linkHelp).toContain("--bundle-id");
+    expect(linkHelp).toContain("ios-device");
+
+    // `--bundle-id` has to survive cac's camelCasing all the way into `handleLinkCommand`, and a
+    // flag that quietly parsed to `undefined` would look identical to one that was never passed:
+    // `link --open ios-sim --bundle-id ...` would then mint and deliver instead of erroring. The
+    // validation runs before any daemon contact, so this needs no state dir beyond an empty one.
+    const misplacedBundleId = runCliBinary(
+      ["link", "--open", "ios-sim", "--bundle-id", "com.example.playground", "--json"],
+      { stateDir: path.join(tmpdir(), "cordierite-bundle-id-flag-nonexistent") },
+    );
+    expect(misplacedBundleId.exitCode).not.toBe(0);
+    // `--json` escapes the quotes in the message, so match on the shape rather than the literal.
+    expect(`${misplacedBundleId.stdout}${misplacedBundleId.stderr}`).toMatch(
+      /--bundle-id.{0,4} only applies with .{0,4}--open ios-device/u,
+    );
 
     const toolsHelp = helpFor("tools");
     expect(toolsHelp).toContain("--full");
