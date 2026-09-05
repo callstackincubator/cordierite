@@ -332,12 +332,10 @@ export type CordieriteNormalizedToolSchema =
  * schema's *output* (post-validation) type; a raw JSON Schema infers whatever `jsonSchema<T>()`
  * declared, or `Record<string, unknown>` for a bare object; no schema at all infers `undefined`.
  */
-export type InferToolArgs<TSchema> = TSchema extends {
-  readonly schema: infer S extends StandardSchemaV1;
-}
-  ? StandardSchemaV1.InferOutput<S>
-  : TSchema extends StandardSchemaV1
-    ? StandardSchemaV1.InferOutput<TSchema>
+export type InferToolArgs<TSchema> = TSchema extends StandardSchemaV1
+  ? StandardSchemaV1.InferOutput<TSchema>
+  : TSchema extends { readonly schema: infer S extends StandardSchemaV1 }
+    ? StandardSchemaV1.InferOutput<S>
     : TSchema extends CordieriteJsonSchemaObject<infer T>
       ? unknown extends T
         ? Record<string, unknown>
@@ -348,12 +346,10 @@ export type InferToolArgs<TSchema> = TSchema extends {
  * Handler result type for an `outputSchema` — the mirror of {@link InferToolArgs}, using the
  * schema's *input* (pre-validation) type so a handler may return whatever the schema accepts.
  */
-export type InferToolResult<TSchema> = TSchema extends {
-  readonly schema: infer S extends StandardSchemaV1;
-}
-  ? StandardSchemaV1.InferInput<S>
-  : TSchema extends StandardSchemaV1
-    ? StandardSchemaV1.InferInput<TSchema>
+export type InferToolResult<TSchema> = TSchema extends StandardSchemaV1
+  ? StandardSchemaV1.InferInput<TSchema>
+  : TSchema extends { readonly schema: infer S extends StandardSchemaV1 }
+    ? StandardSchemaV1.InferInput<S>
     : TSchema extends CordieriteJsonSchemaObject<infer T>
       ? unknown extends T
         ? Record<string, unknown>

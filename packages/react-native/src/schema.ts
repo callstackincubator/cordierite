@@ -10,11 +10,7 @@ import type {
   CordieriteNormalizedToolSchema,
   CordieriteToolDefinition,
 } from "./Cordierite.types";
-import { logger } from "./logger";
-
-declare const __DEV__: boolean | undefined;
-
-const isDev = (): boolean => typeof __DEV__ !== "undefined" && Boolean(__DEV__);
+import { isDev, logger } from "./logger";
 
 const JSON_SCHEMA_TARGET = "draft-2020-12";
 
