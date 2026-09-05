@@ -13,7 +13,7 @@ import { DaemonAlreadyRunningError, readPidFromFile } from "../daemon/pidfile.js
 import { getStateDirPaths } from "../daemon/state-dir.js";
 import { connectionError } from "../errors.js";
 import { getPackageVersion } from "../package-version.js";
-import { callDaemon, isDaemonUnreachableError, type SpawnFn } from "../rpc/client.js";
+import { callDaemon, isDaemonUnreachableError, isSameVersion, type SpawnFn } from "../rpc/client.js";
 
 export type DaemonCommandContext = {
   stateDir: string;
@@ -132,12 +132,16 @@ export const handleDaemonStatusCommand = async (
   // `sessions` would otherwise throw from the middle of the command that exists to diagnose a
   // daemon — the one command that must keep working against a daemon it does not fully understand.
   const sessionCount = Array.isArray(status.sessions) ? status.sessions.length : 0;
-  const warning =
-    status.version === clientVersion
-      ? undefined
-      : `Version drift: this daemon is ${status.version} but the CLI is ${clientVersion}. ` +
-        `Newer RPC methods will fail against it — run "cordierite daemon stop" (this drops ${sessionCount} session(s)) ` +
-        `and the next command will start a matching daemon.`;
+  const pendingLinkCount = typeof status.pendingLinks === "number" ? status.pendingLinks : 0;
+  // Names the same cost the restart path names (`rpc/client.ts`), so the diagnosis an operator
+  // reads here and the error they hit on the next command tell one consistent story: an unclaimed
+  // link is destroyed by a restart just as surely as a session is.
+  const atStake = `${sessionCount} session(s) and ${pendingLinkCount} unclaimed link(s)`;
+  const warning = isSameVersion(status.version, clientVersion)
+    ? undefined
+    : `Version drift: this daemon is ${status.version} but the CLI is ${clientVersion}. ` +
+      `Newer RPC methods will fail against it — run "cordierite daemon stop" (this drops ${atStake}) ` +
+      `and the next command will start a matching daemon, or pass "--daemon-restart" to any command to replace it in place.`;
 
   return {
     ok: true,

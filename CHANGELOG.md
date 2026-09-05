@@ -22,8 +22,8 @@ package versions for a release.
   live the daemon is replaced transparently, at most once per process; when there is live state to
   lose the command fails with a `connection_error` naming both versions and what would go. "Live
   state" is connected sessions (resume tokens live in daemon memory, so a restart makes an app's
-  resume fail closed with 1008) and minted-but-unclaimed links — for which `daemon.status` gains a
-  `pendingLinks` count. Force the restart with the new global `--daemon-restart` flag,
+  resume fail closed with 1008) and links that are still claimable — for which `daemon.status`
+  gains a `pendingLinks` count. Force the restart with the new global `--daemon-restart` flag,
   `CORDIERITE_DAEMON_RESTART=1`, or `config.json`'s new `restartDaemonOnVersionMismatch`;
   `--no-daemon-restart` overrules the latter two for one command. `cordierite daemon status` reports
   drift as a warning and never restarts the daemon it was asked about; `daemon run`/`stop`,

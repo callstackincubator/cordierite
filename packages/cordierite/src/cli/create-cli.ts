@@ -11,7 +11,7 @@ export const createCli = () => {
   cli.option("--state-dir <path>", "Override the Cordierite state directory (default: ~/.cordierite).");
   cli.option(
     "--daemon-restart",
-    "On a daemon/CLI version mismatch, restart the daemon even though that drops live sessions.",
+    "On a daemon/CLI version mismatch, restart the daemon even though that drops live sessions and unclaimed links.",
   );
 
   cli

@@ -108,21 +108,20 @@ export class DaemonVersionMismatchError extends Error {
 }
 
 /**
- * Raised when the daemon *was* restarted and the replacement still reports a different version.
- * Retrying would just kill daemon after daemon, so the check stops after one restart and says what
- * it actually found — almost always two installs of the `cordierite` binary, where the one that
- * spawns the daemon is not the one running this command.
+ * Raised when the daemon *was* restarted and the daemon now answering still reports a different
+ * version. Retrying would just kill daemon after daemon, so the check stops after one restart and
+ * reports what it actually observed rather than guessing at a cause.
  */
 export class DaemonVersionRestartIneffectiveError extends DaemonVersionMismatchError {
-  constructor(daemonVersion: string, clientVersion: string, live: DaemonLiveState, binPath: string) {
+  constructor(daemonVersion: string, clientVersion: string, live: DaemonLiveState) {
     super(
       daemonVersion,
       clientVersion,
       live,
-      `The Cordierite daemon was restarted to match this client (version ${clientVersion}), but the replacement reports version ${daemonVersion}. ` +
-        `The daemon is spawned from "${binPath}", which is probably a different install than the one running this command ` +
-        `(a project-local "node_modules/.bin/cordierite" alongside a global one, say). ` +
-        `Run "cordierite daemon stop" and start the daemon from the install you intend to use.`,
+      `The Cordierite daemon was restarted to match this client (version ${clientVersion}), but the daemon now answering still reports version ${daemonVersion}. ` +
+        `Either the old daemon never exited (compare "daemon.pid" with what "cordierite daemon status" reports), ` +
+        `or another process spawned an older daemon in the meantime. ` +
+        `Run "cordierite daemon stop", then retry.`,
     );
     this.name = "DaemonVersionRestartIneffectiveError";
   }
@@ -146,7 +145,7 @@ export type VersionCheckOptions = {
 
 // --- version comparison ------------------------------------------------------------------------
 
-type ParsedVersion = { numbers: readonly number[]; prerelease: string | undefined };
+type ParsedVersion = { numbers: readonly number[]; prerelease: readonly string[] | undefined };
 
 /** Parses `1.2.3`, `1.2.3-beta.1`, `1.2.3+build`; `undefined` for anything else. */
 const parseVersion = (value: string): ParsedVersion | undefined => {
@@ -156,13 +155,63 @@ const parseVersion = (value: string): ParsedVersion | undefined => {
     return undefined;
   }
 
-  return { numbers: match[1]!.split(".").map(Number), prerelease: match[2] };
+  return {
+    numbers: match[1]!.split(".").map(Number),
+    // Build metadata (`+…`) is dropped, per semver: it never affects precedence, so two versions
+    // differing only there are the same version and neither restarts nor warns about the other.
+    prerelease: match[2]?.split("."),
+  };
+};
+
+const isNumericIdentifier = (identifier: string): boolean => /^\d+$/u.test(identifier);
+
+/**
+ * Semver §11's prerelease precedence, which a plain string compare gets wrong in both directions:
+ * numeric identifiers compare as numbers (`rc.2` < `rc.10`, where `"rc.2" > "rc.10"` as strings),
+ * a numeric identifier always ranks below an alphanumeric one, and when one side runs out of
+ * identifiers first the shorter one ranks lower (`1.0.0-rc` < `1.0.0-rc.1`).
+ */
+const comparePrerelease = (left: readonly string[], right: readonly string[]): number => {
+  const length = Math.max(left.length, right.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const a = left[index];
+    const b = right[index];
+
+    if (a === undefined) {
+      return -1;
+    }
+
+    if (b === undefined) {
+      return 1;
+    }
+
+    if (a === b) {
+      continue;
+    }
+
+    const aNumeric = isNumericIdentifier(a);
+    const bNumeric = isNumericIdentifier(b);
+
+    if (aNumeric && bNumeric) {
+      return Number(a) < Number(b) ? -1 : 1;
+    }
+
+    if (aNumeric !== bNumeric) {
+      return aNumeric ? -1 : 1;
+    }
+
+    return a < b ? -1 : 1;
+  }
+
+  return 0;
 };
 
 /**
- * `-1` when `a` is older, `1` when newer, `0` when equivalent; `undefined` when either side is not
- * a version this can order. A prerelease sorts before the same numeric release (`1.0.0-rc` < `1.0.0`),
- * matching semver — which is what keeps a `-rc` build from restarting the release it is testing.
+ * `-1` when `a` is older, `1` when newer, `0` when they are the same version; `undefined` when
+ * either side is not a version this can order. A prerelease sorts before its release
+ * (`1.0.0-rc.1` < `1.0.0`), which is what keeps an `-rc` build from restarting the release it is
+ * testing.
  */
 const compareVersions = (a: string, b: string): number | undefined => {
   const left = parseVersion(a);
@@ -182,7 +231,7 @@ const compareVersions = (a: string, b: string): number | undefined => {
     }
   }
 
-  if (left.prerelease === right.prerelease) {
+  if (left.prerelease === undefined && right.prerelease === undefined) {
     return 0;
   }
 
@@ -194,8 +243,19 @@ const compareVersions = (a: string, b: string): number | undefined => {
     return -1;
   }
 
-  return left.prerelease < right.prerelease ? -1 : 1;
+  return comparePrerelease(left.prerelease, right.prerelease);
 };
+
+/**
+ * True when two version strings name the same version even though the strings differ — `1.2` and
+ * `1.2.0`, or two builds differing only in `+metadata`. Comparing the raw strings would report
+ * drift that does not exist and, worse, print a "the daemon is newer" notice about a daemon that
+ * is exactly this version.
+ */
+export const isSameVersion = (a: string, b: string): boolean => {
+  return a === b || compareVersions(a, b) === 0;
+};
+
 
 export type CallDaemonOptions = {
   stateDir: string;
@@ -429,19 +489,32 @@ type SpawnDaemonOptions = {
  */
 const SPAWN_LOCK_STALE_MS = 30_000;
 
+/** `false` when the lock was still held when the wait ran out. */
 const pollUntilLockReleased = async (
   lockPath: string,
   timeoutMs: number,
   pollIntervalMs: number,
-): Promise<void> => {
+): Promise<boolean> => {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
     if (!(await pathExists(lockPath))) {
-      return;
+      return true;
     }
 
     await sleep(pollIntervalMs);
+  }
+
+  return !(await pathExists(lockPath));
+};
+
+/** The pid the pidfile currently names, or `undefined` when there is no readable one. */
+const readPidfilePid = async (paths: StateDirPaths): Promise<number | undefined> => {
+  try {
+    const pid = Number.parseInt((await readFile(paths.pidFilePath, "utf8")).trim(), 10);
+    return Number.isNaN(pid) ? undefined : pid;
+  } catch {
+    return undefined;
   }
 };
 
@@ -492,6 +565,15 @@ const acquireSpawnLock = async (lockPath: string): Promise<boolean> => {
   return false;
 };
 
+/** What {@link spawnDaemonAndWait} observed, for callers that need to tell "someone else did the
+ * work" apart from "nobody did". */
+type SpawnDaemonOutcome = {
+  /** This caller held the lock and ran `beforeSpawn`/`spawn` itself. */
+  ownedLock: boolean;
+  /** The lock was held by someone else and was *still* held when the wait ran out. */
+  lockWaitTimedOut: boolean;
+};
+
 /**
  * Takes the exclusive spawn-lock, spawns `daemon run` detached if this caller wins the race
  * (the loser just polls), then waits for the socket to become ready.
@@ -502,8 +584,9 @@ const spawnDaemonAndWait = async (
   waitTimeoutMs: number,
   pollIntervalMs: number,
   options: SpawnDaemonOptions = {},
-): Promise<void> => {
+): Promise<SpawnDaemonOutcome> => {
   const acquiredLock = await acquireSpawnLock(paths.spawnLockPath);
+  let lockWaitTimedOut = false;
 
   if (acquiredLock) {
     try {
@@ -517,7 +600,7 @@ const spawnDaemonAndWait = async (
       await rm(paths.spawnLockPath, { force: true });
     }
   } else if (options.awaitLockRelease) {
-    await pollUntilLockReleased(paths.spawnLockPath, waitTimeoutMs, pollIntervalMs);
+    lockWaitTimedOut = !(await pollUntilLockReleased(paths.spawnLockPath, waitTimeoutMs, pollIntervalMs));
   }
 
   const ready = await pollForSocket(paths.socketPath, waitTimeoutMs, pollIntervalMs);
@@ -533,6 +616,8 @@ const spawnDaemonAndWait = async (
       `Timed out waiting for the Cordierite daemon socket at "${paths.socketPath}".${lockHint}`,
     );
   }
+
+  return { ownedLock: acquiredLock, lockWaitTimedOut };
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -661,7 +746,7 @@ const isDaemonGone = async (paths: StateDirPaths): Promise<boolean> => {
 
 /**
  * What a restart of this daemon would destroy. Defensive about both fields' presence rather than
- * indexing them blindly: `pendingLinks` is absent from daemons older than 0.8.0 (and drift with an
+ * indexing them blindly: `pendingLinks` is absent from daemons that predate the field (and drift with an
  * older daemon is the whole point of this code path), and a `TypeError` from deep inside the
  * version check would be a far worse diagnosis than the drift it was trying to report.
  */
@@ -701,7 +786,12 @@ const pollUntilDaemonGone = async (
  * may still be the outgoing daemon's.
  */
 const restartDaemon = async (context: VersionCheckContext): Promise<void> => {
-  await spawnDaemonAndWait(
+  // Which daemon was in charge before this attempt. Only used for the lock-contention case below,
+  // where this process never got to run the replacement itself and has to tell "the other process
+  // replaced it" apart from "nothing happened at all".
+  const pidBefore = await readPidfilePid(context.paths);
+
+  const outcome = await spawnDaemonAndWait(
     context.paths,
     context.spawn,
     context.waitTimeoutMs,
@@ -719,7 +809,7 @@ const restartDaemon = async (context: VersionCheckContext): Promise<void> => {
           return true;
         }
 
-        if (status.version === context.check.clientVersion) {
+        if (isSameVersion(status.version, context.check.clientVersion)) {
           return false;
         }
 
@@ -763,6 +853,16 @@ const restartDaemon = async (context: VersionCheckContext): Promise<void> => {
       },
     },
   );
+
+  if (!outcome.ownedLock && outcome.lockWaitTimedOut && (await readPidfilePid(context.paths)) === pidBefore) {
+    // Another process has held the spawn-lock past the wait and the daemon is still the same one.
+    // `pollForSocket` happily connected to it, but nothing was replaced — reporting that as a
+    // restart that "did not take effect" would blame the wrong thing entirely.
+    throw new DaemonUnavailableError(
+      `The Cordierite daemon at "${context.paths.socketPath}" did not shut down in time: another process has held the spawn-lock at ` +
+        `"${context.paths.spawnLockPath}" for longer than this command waited. Retry, or run "cordierite daemon stop" if nothing is starting a daemon.`,
+    );
+  }
 };
 
 const warnOlderClient = (context: VersionCheckContext, daemonVersion: string): void => {
@@ -791,7 +891,7 @@ const runVersionCheck = async (context: VersionCheckContext): Promise<void> => {
     return;
   }
 
-  if (status.version === context.check.clientVersion) {
+  if (isSameVersion(status.version, context.check.clientVersion)) {
     return;
   }
 
@@ -820,11 +920,11 @@ const runVersionCheck = async (context: VersionCheckContext): Promise<void> => {
     );
   }
 
-  if (replacement.version === context.check.clientVersion) {
+  if (isSameVersion(replacement.version, context.check.clientVersion)) {
     return;
   }
 
-  if ((compareVersions(context.check.clientVersion, replacement.version) ?? -1) < 0) {
+  if ((compareVersions(context.check.clientVersion, replacement.version) ?? -1) <= 0) {
     warnOlderClient(context, replacement.version);
     return;
   }
@@ -833,7 +933,6 @@ const runVersionCheck = async (context: VersionCheckContext): Promise<void> => {
     replacement.version,
     context.check.clientVersion,
     readLiveState(replacement),
-    defaultBinPath,
   );
 };
 

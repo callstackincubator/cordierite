@@ -109,11 +109,11 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
 
   // --- daemon/CLI version drift (issue #30, ARCHITECTURE.md §4 "Version drift") ------------------
 
-  let versionCheck: Promise<VersionCheckOptions> | undefined;
+  let forceRestart: Promise<boolean> | undefined;
 
   /** Memoized so the config read behind `restartDaemonOnVersionMismatch` happens at most once. */
-  const resolveVersionCheck = (): Promise<VersionCheckOptions> => {
-    versionCheck ??= (async () => {
+  const resolveForceRestart = (): Promise<boolean> => {
+    forceRestart ??= (async () => {
       let configuredForce = false;
 
       try {
@@ -130,13 +130,27 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
       // connected devices survive.
       const flag = typeof parsedOptions.daemonRestart === "boolean" ? parsedOptions.daemonRestart : undefined;
 
-      return {
-        clientVersion: getPackageVersion(),
-        forceRestart: flag ?? (isEnvTruthy(process.env[DAEMON_RESTART_ENV]) || configuredForce),
-      };
+      return flag ?? (isEnvTruthy(process.env[DAEMON_RESTART_ENV]) || configuredForce);
     })();
 
-    return versionCheck;
+    return forceRestart;
+  };
+
+  /**
+   * Where the "the running daemon is newer than this client" notice goes. `--json` promises one
+   * machine-readable object and nothing else, so in that mode the notice is dropped rather than
+   * dribbled onto stderr where it would corrupt a script that captures both streams — the check
+   * still behaves identically, it just says nothing. (A structured warning channel would be the
+   * better answer; the runner has none today.)
+   */
+  const cliWarning = json ? () => {} : (message: string) => void writers.stderr.write(message);
+
+  const versionCheckFor = async (onWarning: (message: string) => void): Promise<VersionCheckOptions> => {
+    return {
+      clientVersion: getPackageVersion(),
+      forceRestart: await resolveForceRestart(),
+      onWarning,
+    };
   };
 
   /**
@@ -152,7 +166,7 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
       await ensureDaemonVersionMatches({
         stateDir,
         autoSpawn: false,
-        checkVersion: await resolveVersionCheck(),
+        checkVersion: await versionCheckFor(cliWarning),
       });
 
       return handler();
@@ -307,7 +321,13 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
         // Unlike every other command the check is threaded into the server itself, not run ahead
         // of it: the MCP server is long-lived and auto-spawns its own daemon, so the check belongs
         // on the startup stream that establishes the connection it keeps (ARCHITECTURE.md §9).
-        async () => handleMcpCommand({ stateDir, checkVersion: await resolveVersionCheck() }),
+        // The notice always goes to stderr here, `--json` or not: stdout carries MCP protocol
+        // frames, and stderr is this server's only log channel (ARCHITECTURE.md §9).
+        async () =>
+          handleMcpCommand({
+            stateDir,
+            checkVersion: await versionCheckFor((message) => void writers.stderr.write(message)),
+          }),
         {
           ...io,
           reporter: {

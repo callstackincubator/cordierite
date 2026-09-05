@@ -12,6 +12,7 @@ import {
   DaemonUnavailableError,
   DaemonVersionMismatchError,
   DaemonVersionRestartIneffectiveError,
+  isSameVersion,
   openDaemonStream,
   resetDaemonVersionChecks,
   type SpawnFn,
@@ -647,7 +648,11 @@ describe("daemon version check: drift direction and one-restart ceiling (issue #
     expect(ineffective.daemonVersion).toBe("1.0.0");
     expect(ineffective.clientVersion).toBe(CLIENT_VERSION);
     expect(ineffective.message).toContain("was restarted");
-    expect(ineffective.message).toContain("bin.js");
+    // Reports what it observed, and the two things that actually explain it — not a guess about a
+    // second install at a path that is by construction this install's own bin.
+    expect(ineffective.message).toContain("still reports version 1.0.0");
+    expect(ineffective.message).toContain("daemon.pid");
+    expect(ineffective.message).toContain("cordierite daemon stop");
     // Never the "sessions are connected" story, which was never true here.
     expect(ineffective.message).not.toContain("was not restarted");
 
@@ -757,6 +762,129 @@ describe("spawn-lock staleness (issue #30 review)", () => {
     expect(error).toBeInstanceOf(DaemonUnavailableError);
     // The lock is the actual reason nothing was spawned, so the message has to name it.
     expect((error as Error).message).toContain(paths.spawnLockPath);
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
+});
+
+describe("daemon version check: semver precedence (issue #30 second review)", () => {
+  const timing = { spawnPollIntervalMs: 10, spawnWaitTimeoutMs: 2000, requestTimeoutMs: 2000 } as const;
+
+  /** Runs the check and reports what it decided, without asserting on wording. */
+  const decide = async (
+    clientVersion: string,
+    daemonVersion: string,
+  ): Promise<{ restarted: boolean; warnings: string[] }> => {
+    const stateDir = await makeTempStateDir();
+    const daemon = await startFakeDaemon(stateDir, { version: daemonVersion });
+    const warnings: string[] = [];
+
+    const spawn: SpawnFn = async () => {
+      await startFakeDaemon(stateDir, { version: clientVersion });
+    };
+
+    await callDaemon(
+      "sessions.list",
+      {},
+      {
+        stateDir,
+        autoSpawn: true,
+        spawn,
+        ...timing,
+        checkVersion: { clientVersion, onWarning: (message) => warnings.push(message) },
+      },
+    );
+
+    const decision = { restarted: daemon.shutdownCalls() > 0, warnings };
+    await rm(stateDir, { force: true, recursive: true });
+    resetDaemonVersionChecks();
+    return decision;
+  };
+
+  test("numeric prerelease identifiers compare as numbers, not as strings", async () => {
+    // The bug a plain string compare has: "rc.2" > "rc.10", so an rc.10 client would have seen
+    // itself as older than the rc.2 daemon it had just replaced.
+    await expect(decide("1.0.0-rc.10", "1.0.0-rc.2")).resolves.toMatchObject({ restarted: true });
+    await expect(decide("1.0.0-rc.2", "1.0.0-rc.10")).resolves.toMatchObject({ restarted: false });
+  });
+
+  test("alphanumeric prerelease identifiers compare lexically", async () => {
+    await expect(decide("1.0.0-beta", "1.0.0-alpha")).resolves.toMatchObject({ restarted: true });
+    await expect(decide("1.0.0-alpha", "1.0.0-beta")).resolves.toMatchObject({ restarted: false });
+  });
+
+  test("a prerelease ranks below its own release, and a longer prerelease above a shorter one", async () => {
+    await expect(decide("1.0.0", "1.0.0-rc.1")).resolves.toMatchObject({ restarted: true });
+    await expect(decide("1.0.0-rc.1", "1.0.0")).resolves.toMatchObject({ restarted: false });
+    await expect(decide("1.0.0-rc.1", "1.0.0-rc")).resolves.toMatchObject({ restarted: true });
+  });
+
+  test("a numeric prerelease identifier ranks below an alphanumeric one", async () => {
+    await expect(decide("1.0.0-alpha", "1.0.0-1")).resolves.toMatchObject({ restarted: true });
+    await expect(decide("1.0.0-1", "1.0.0-alpha")).resolves.toMatchObject({ restarted: false });
+  });
+
+  test("versions that differ only in shape are the same version — no restart and no notice", async () => {
+    // `1.2` and `1.2.0` are one version, and build metadata never affects precedence. Comparing
+    // the raw strings would report drift that does not exist, and — worse — print a "the daemon is
+    // newer" notice about a daemon running exactly this build.
+    for (const [client, daemon] of [
+      ["1.2", "1.2.0"],
+      ["1.2.0", "1.2"],
+      ["1.2.0+build.7", "1.2.0"],
+      ["1.2.0", "1.2.0+build.7"],
+    ] as const) {
+      const decision = await decide(client, daemon);
+      expect(decision).toMatchObject({ restarted: false });
+      expect(decision.warnings).toEqual([]);
+    }
+  });
+
+  test("isSameVersion treats equivalent spellings as equal and real drift as unequal", () => {
+    expect(isSameVersion("1.2", "1.2.0")).toBe(true);
+    expect(isSameVersion("1.2.0+build.7", "1.2.0")).toBe(true);
+    expect(isSameVersion("1.2.0", "1.2.1")).toBe(false);
+    expect(isSameVersion("1.0.0-rc.1", "1.0.0")).toBe(false);
+    // Unorderable strings fall back to plain equality rather than claiming a match.
+    expect(isSameVersion("nightly", "nightly")).toBe(true);
+    expect(isSameVersion("nightly", "1.0.0")).toBe(false);
+  });
+});
+
+describe("daemon version check: a contended lock is not an ineffective restart (issue #30 second review)", () => {
+  test("losing the spawn-lock for the whole wait reports the lock, not a failed replacement", async () => {
+    const stateDir = await makeTempStateDir();
+    const paths = getStateDirPaths(stateDir);
+    const stale = await startFakeDaemon(stateDir, { version: "1.0.0" });
+
+    // Another process is mid-spawn and holds the lock for longer than this command will wait. The
+    // old daemon is still listening, so the socket poll succeeds — but nothing was replaced, and
+    // saying "the restart did not take effect" would blame the wrong thing entirely.
+    await writeFile(paths.spawnLockPath, "", "utf8");
+
+    const spawn: SpawnFn = () => {
+      throw new Error("the lock holder spawns, not this process");
+    };
+
+    const error = await callDaemon(
+      "sessions.list",
+      {},
+      {
+        stateDir,
+        autoSpawn: true,
+        spawn,
+        spawnPollIntervalMs: 10,
+        spawnWaitTimeoutMs: 200,
+        requestTimeoutMs: 2000,
+        checkVersion: { clientVersion: "2.0.0" },
+      },
+    ).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(DaemonUnavailableError);
+    expect(error).not.toBeInstanceOf(DaemonVersionRestartIneffectiveError);
+    expect((error as Error).message).toContain("did not shut down in time");
+    expect((error as Error).message).toContain(paths.spawnLockPath);
+    expect(stale.shutdownCalls()).toBe(0);
 
     await rm(stateDir, { force: true, recursive: true });
   });

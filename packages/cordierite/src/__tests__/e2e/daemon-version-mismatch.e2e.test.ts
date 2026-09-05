@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 import { connect as connectUds } from "node:net";
 import path from "node:path";
+import { text } from "node:stream/consumers";
 
 import { afterEach, describe, expect, test } from "vitest";
 
@@ -28,6 +29,7 @@ import {
   trackCleanup,
   trackDaemonPid,
   untrackDaemonPid,
+  waitForExit,
   waitUntil,
   type DecodedLink,
 } from "./harness.js";
@@ -103,10 +105,10 @@ const rawRpc = <TResult>(stateDir: string, method: string, params: unknown = {})
   });
 };
 
-/** Starts a real `cordierite daemon run` subprocess that reports `STALE_VERSION`. */
-const startStaleDaemon = async (stateDir: string): Promise<number> => {
+/** Starts a real `cordierite daemon run` subprocess reporting `version` (default: an older one). */
+const startStaleDaemon = async (stateDir: string, version: string = STALE_VERSION): Promise<number> => {
   const proc = spawnCli(["daemon", "run"], stateDir, {
-    CORDIERITE_DAEMON_VERSION_OVERRIDE: STALE_VERSION,
+    CORDIERITE_DAEMON_VERSION_OVERRIDE: version,
   });
 
   // `daemon run` streams its bootstrap render; leaving the pipes unread would eventually stall it.
@@ -135,7 +137,7 @@ const startStaleDaemon = async (stateDir: string): Promise<number> => {
   );
 
   const status = await readStatus(stateDir);
-  expect(status.daemon.version).toBe(STALE_VERSION);
+  expect(status.daemon.version).toBe(version);
 
   trackDaemonPid(status.daemon.pid);
   return status.daemon.pid;
@@ -369,3 +371,88 @@ describe("e2e: forcing a version-drift restart", () => {
     30_000,
   );
 });
+
+/** Runs the CLI and keeps both streams — the version-drift notice only ever lands on stderr. */
+const runCliCapturing = async (
+  args: string[],
+  stateDir: string,
+  extraEnv: Record<string, string> = {},
+): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+  const proc = spawnCli(args, stateDir, extraEnv);
+  const [stdout, stderr] = await Promise.all([text(proc.stdout), text(proc.stderr)]);
+  const exitCode = await waitForExit(proc);
+
+  return { stdout, stderr, exitCode };
+};
+
+describe("e2e: a daemon newer than the CLI", () => {
+  const NEWER_VERSION = "99.0.0";
+
+  test(
+    "is left running, with the notice on stderr in human mode and nothing at all under --json",
+    async () => {
+      const { stateDir } = await makeTempStateDir();
+      const newerPid = await startStaleDaemon(stateDir, NEWER_VERSION);
+
+      // Human mode: the operator gets told, and the daemon keeps serving.
+      const human = await runCliCapturing(["ls"], stateDir);
+      expect(human.exitCode).toBe(0);
+      expect(human.stderr).toContain(NEWER_VERSION);
+      expect(human.stderr).toContain(CLI_VERSION);
+
+      // `--json` promises one machine-readable object and nothing else; a bare line of prose on
+      // stderr would corrupt a script that captures both streams.
+      const machine = await runCliCapturing(["ls", "--json"], stateDir);
+      expect(machine.exitCode).toBe(0);
+      expect(machine.stderr).toBe("");
+      expect(JSON.parse(machine.stdout).ok).toBe(true);
+
+      // Downgrading it would break whichever newer install started it.
+      const status = await readStatus(stateDir);
+      expect(status.daemon.pid).toBe(newerPid);
+      expect(status.daemon.version).toBe(NEWER_VERSION);
+    },
+    30_000,
+  );
+});
+
+describe("e2e: an expired link no longer blocks an upgrade", () => {
+  test(
+    "a link past its TTL stops counting, so the stale daemon is replaced transparently",
+    async () => {
+      const { stateDir } = await makeTempStateDir({ linkTtlSeconds: 1 });
+      const stalePid = await startStaleDaemon(stateDir);
+
+      await mintLinkWithoutCli(stateDir);
+
+      // While the link is claimable it is live state, and the restart is refused.
+      const blocked = await runCliJson(["ls"], stateDir);
+      expect(blocked.ok).toBe(false);
+      expect(blocked.error?.details).toMatchObject({ pending_link_count: 1 });
+
+      // Once the TTL passes, the record lingers only so a late claim can be told "expired". Nobody
+      // can scan that QR any more, so it must not hold off the upgrade for a further grace window.
+      await waitUntil(
+        async () => (await readStatus(stateDir)).daemon.pid === stalePid && (await pendingLinks(stateDir)) === 0,
+        { timeoutMs: 10_000, intervalMs: 100, description: "the minted link to pass its TTL" },
+      );
+
+      const lsResult = await runCliJson<unknown[]>(["ls"], stateDir);
+      expect(lsResult.ok).toBe(true);
+
+      const status = await readStatus(stateDir);
+      expect(status.daemon.version).toBe(CLI_VERSION);
+      expect(status.daemon.pid).not.toBe(stalePid);
+
+      untrackDaemonPid(stalePid);
+      trackDaemonPid(status.daemon.pid);
+    },
+    30_000,
+  );
+});
+
+/** Reads `pendingLinks` straight off the control socket — `daemon status` does not render it. */
+const pendingLinks = async (stateDir: string): Promise<number> => {
+  const status = await rawRpc<{ pendingLinks?: number }>(stateDir, "daemon.status", {});
+  return status.pendingLinks ?? 0;
+};
