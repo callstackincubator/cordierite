@@ -558,3 +558,6 @@ named-pipe path `\\.\pipe\cordierite-<user>` behind the same client API.
   pin sets; the anchor-CA design is a future option).
 - Web/browser client (safe no-op stub only).
 - Multiple endpoint candidates in the bootstrap payload.
+- A tool whose `input_schema` is not object-rooted is listed but not usefully callable over MCP,
+  because MCP tool arguments are always an object (§9). Wrapping such arguments so the tool stays
+  callable is tracked in [issue #34](https://github.com/callstackincubator/cordierite/issues/34).
