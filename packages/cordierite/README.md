@@ -17,8 +17,10 @@ The **`cordierite`** package is the operator/agent side of Cordierite: a long-li
 
 ```bash
 npm install cordierite
-cordierite link --qr
+cordierite link --scheme myapp --qr
 ```
+
+`link` needs your app's deep-link scheme: pass `--scheme` (the app's `expo.scheme`, or its bare-RN equivalent), or set `"scheme"` once in `~/.cordierite/config.json` and omit the flag. Without either, the command exits with a usage error.
 
 Scan the QR (or open the deep link) in a Cordierite-enabled app, then:
 

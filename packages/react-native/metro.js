@@ -6,7 +6,8 @@
  *
  * The native half — whether the Cordierite pod/module is compiled in at all — is decided by
  * autolinking (`docs/tasks/00-overview.md`'s "Inclusion" contract), not by this file. Neither
- * half alone removes both; see the README's "Compiling Cordierite out of production" section.
+ * half alone removes both; see `docs/BUILD-VARIANTS.md`'s "Compiling Cordierite out of production
+ * builds" section.
  */
 const { isCordieriteAutolinkEnabled } = require("./autolink-env");
 

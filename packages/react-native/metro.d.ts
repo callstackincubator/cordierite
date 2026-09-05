@@ -18,8 +18,8 @@ export interface WithCordieriteOptions {
  * Wraps a Metro config so that, when `options.include` is `false`, imports of
  * `@cordierite/react-native` (and any other entry point this package exports) resolve to the
  * inert `/noop` entry instead. Chains to `config.resolver.resolveRequest` if already set, rather
- * than replacing it -- call this last, after anything else that sets `resolveRequest`. See the
- * package README's "Compiling Cordierite out of production builds" section.
+ * than replacing it -- call this last, after anything else that sets `resolveRequest`. See
+ * `docs/BUILD-VARIANTS.md`'s "Compiling Cordierite out of production builds" section.
  */
 export function withCordierite<TConfig extends Record<string, unknown>>(
   config: TConfig,

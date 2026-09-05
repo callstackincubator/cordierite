@@ -115,8 +115,8 @@ torn down, so a malformed or expired link costs the existing session nothing.
 configuration alone. Set `cliPins` (which makes `trust: "pin"` the default) on any build you
 don't want accepting a link-carried pin. Separately, if you don't want Cordierite's native
 code present in a build at all — regardless of trust mode — exclude it from autolinking (see
-[Compile out of a build you don't want carrying Cordierite at all](#production-guidance)
-below and [`BUILD-VARIANTS.md`](BUILD-VARIANTS.md)); `cordierite doctor`
+[Compiling Cordierite out of production
+builds](BUILD-VARIANTS.md#compiling-cordierite-out-of-production-builds)); `cordierite doctor`
 ([`CI.md`](CI.md#release-gate-cordierite-doctor)) verifies that exclusion actually took
 effect in a built artifact, rather than trusting the config that was supposed to produce
 it.
@@ -391,11 +391,16 @@ not as the mechanism that keeps a destructive tool out of reach of a hostile one
 - **Compile out of a build you don't want carrying Cordierite at all.** Being present and
   trusting nothing (`trust: "pin"` with a `cliPins` set that has no matching daemon, or an
   app that simply never mints a bootstrap link for that build) still ships the native code
-  and JS bundle inside the binary. Stripping it takes two independent steps — exclude the
-  package from **autolinking** (the only thing that removes the compiled native
-  pod/module) and swap the **JS** entries for `/noop` at bundle time (the only thing that
-  removes the deep-link listener and tool registry from the bundle). Neither alone removes
-  both; `CORDIERITE_ENABLED=0` drives both at once.
+  and JS bundle inside the binary.
+
+  Stripping it takes two independent steps. Excluding the package from **autolinking** is
+  the only thing that removes the compiled native pod/module; swapping the **JS** entries
+  for `/noop` at bundle time is the only thing that removes the deep-link listener and tool
+  registry from the bundle.
+
+  Neither alone removes both. `CORDIERITE_ENABLED=0` drives both at once, but only once
+  the `withCordierite` Metro helper is wired into `metro.config.js` — without it the
+  variable removes the native half only.
 
   The exact snippets, the `package.json`-only placement of `expo.autolinking`, the
   `apple`-overrides-`ios` rule and the iOS codegen coupling live in

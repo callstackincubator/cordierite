@@ -30,9 +30,13 @@ Use this file when the task is to add Cordierite to a new React Native project.
 8. Advanced: use `getCordieriteState()` / `addCordieriteListener("stateChange", ...)` for
    manual connection-state UI.
 9. Production builds that shouldn't ship Cordierite at all should be built with
-   `CORDIERITE_ENABLED=0`, which drops the native module and swaps the JS entries for
-   `@cordierite/react-native/noop` (see `docs/BUILD-VARIANTS.md`), rather than relying on
-   a runtime flag.
+   `CORDIERITE_ENABLED=0` rather than gated by a runtime flag. That variable drops the
+   native module on its own.
+10. To strip Cordierite's JS as well, wrap the app's Metro config in the
+   `withCordierite` helper from `@cordierite/react-native/metro` (call it last, after
+   anything else that sets `resolver.resolveRequest`). Without that wiring the real JS
+   entry is still bundled; it just finds no native module and goes inert. See
+   `docs/BUILD-VARIANTS.md`.
 
 ## Expo
 

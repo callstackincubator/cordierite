@@ -1,8 +1,12 @@
 # Build variants: which builds carry Cordierite
 
-Whether Cordierite's native code and JS ship in a given build is one explicit decision,
-driven by autolinking and the `CORDIERITE_ENABLED` environment variable. It is **not**
-derived from whether the build is debuggable.
+Whether Cordierite's native code ships in a given build is decided by autolinking and the
+`CORDIERITE_ENABLED` environment variable. It is **not** derived from whether the build is
+debuggable.
+
+The JS half is a separate, opt-in step. `CORDIERITE_ENABLED` strips Cordierite's JS too,
+but only once the `withCordierite` Metro helper is wired into `metro.config.js` — without
+that, the real JS entry is still bundled; it just finds no native module and goes inert.
 
 What a build *trusts* once it does ship is a separate, orthogonal decision — see
 [`SECURITY.md`](SECURITY.md#trust-modes).
@@ -56,11 +60,8 @@ ships at all.
 
 ## `CORDIERITE_ENABLED`
 
-**Debug builds carry Cordierite by default; release builds don't.** On iOS this is
-CocoaPods only linking the `Cordierite` pod into configurations named `Debug`
-(`react-native.config.js`'s `ios.configurations`). On Android, `android/build.gradle`
-compiles the real implementation for `debug` and a no-op stand-in for `release`, driven by
-the same variable. Neither is a runtime check.
+The per-platform mechanism is described above; this section is what to set, and where
+each surface reads it.
 
 A release-signed internal/QA build that still needs Cordierite (an agent-driven CI build,
 for example) opts back in explicitly:
@@ -119,9 +120,13 @@ release build that carries Cordierite by mistake, which is the failure that matt
 ## Compiling Cordierite out of production builds
 
 Removing Cordierite entirely takes two independent halves — the native module and the JS
-bundle. `CORDIERITE_ENABLED=0` drives both at once, which is what you want to satisfy an
-app-store reviewer who expects no "remote control" surface whatsoever, not just an inert
-one.
+bundle. `CORDIERITE_ENABLED=0` drives both at once **provided `withCordierite` is wired
+into `metro.config.js`** (see [JS — swap the module at bundle
+time](#js--swap-the-module-at-bundle-time)); without that helper the variable removes only
+the native half.
+
+Both halves are what satisfies an app-store reviewer who expects no "remote control"
+surface whatsoever, not just an inert one.
 
 **Either half alone still yields a working, inert app.** The `/noop` Metro swap alone
 gives you an app with no Cordierite JS running but the native pod still compiled in

@@ -38,6 +38,21 @@ const IGNORED_DIRS = new Set([
 /** Schemes that are out of scope for an offline checker. */
 const EXTERNAL = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
 
+/**
+ * Package READMEs published to npm must link to docs by absolute URL — a relative `../../docs/…`
+ * 404s on npmjs.com, which renders the README outside the repo tree. Those URLs still name files
+ * in THIS repository, so rewrite them back to repo-relative paths and check them like any other
+ * link; nothing is fetched.
+ */
+const SELF_BLOB =
+  /^https:\/\/github\.com\/callstackincubator\/cordierite\/blob\/main\/(.+)$/i;
+
+/** Repo-relative form of a self-referencing blob URL, or null if it is a genuinely external one. */
+function selfRelative(url) {
+  const match = SELF_BLOB.exec(url);
+  return match ? match[1] : null;
+}
+
 /** Collect every `.md` file under `dir`, skipping generated/vendored trees. */
 function collectMarkdown(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -185,8 +200,17 @@ for (const file of files) {
   }
 
   for (const { target, index } of targets) {
-    const raw = target.trim();
-    if (!raw || EXTERNAL.test(raw)) continue;
+    let raw = target.trim();
+    // A link into this repo's own tree is checkable even when written absolutely.
+    const selfPath = selfRelative(raw);
+    let base = here;
+    if (selfPath !== null) {
+      raw = selfPath;
+      base = ROOT;
+    } else if (!raw || EXTERNAL.test(raw)) {
+      continue;
+    }
+    if (!raw) continue;
 
     const line = lineOf(source, index);
     const hashAt = raw.indexOf("#");
@@ -195,7 +219,7 @@ for (const file of files) {
 
     let targetPath = file;
     if (pathPart) {
-      targetPath = resolve(here, decodeURIComponent(pathPart));
+      targetPath = resolve(base, decodeURIComponent(pathPart));
       let stats;
       try {
         stats = statSync(targetPath);
