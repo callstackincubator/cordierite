@@ -19,12 +19,12 @@ package versions for a release.
   a Standard Schema (as before); a `{ schema, jsonSchema }` pair, where `jsonSchema` is a JSON
   Schema object or an `{ input, output }` converter — the supported path for zod 3
   (`zod-to-json-schema`) and valibot (`@valibot/to-json-schema`); or a raw JSON Schema object,
-  detected by the absence of `~standard` and required to carry at least one JSON Schema
-  keyword (`type`, `properties`, `$ref`, `anyOf`, `allOf`, `oneOf`, `enum`, `const`),
-  published verbatim and passed to the handler unvalidated. A Standard Schema may be an
-  object or a callable, so arktype's `Type` is accepted. Anything that is none of the three
-  — including an object mentioning `schema`/`jsonSchema` that is not a valid pair — throws a
-  `TypeError` at registration instead of being published as the tool's shape. Handler argument/result inference is unchanged for zod 4, follows the pair's
+  detected by the absence of `~standard` and required to be a plain object whose `type`, if
+  present, is a JSON Schema type name, published verbatim and passed to the handler
+  unvalidated. A Standard Schema may be an object or a callable, so arktype's `Type` is
+  accepted. Anything that is none of the three — a class instance, an object mentioning
+  `schema`/`jsonSchema` that is not a valid pair — throws a `TypeError` at registration
+  instead of being published as the tool's shape. Handler argument/result inference is unchanged for zod 4, follows the pair's
   `schema` for pairs, and is `Record<string, unknown>` for a bare raw schema or `T` when
   tagged with the new type-level `jsonSchema<T>()` helper. No runtime dependency was added:
   Cordierite still bundles no JSON Schema validator, which is why a raw schema is not enforced.

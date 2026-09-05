@@ -12,7 +12,11 @@ import { z as z3 } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { z as z4 } from "zod4";
 
-import type { CordieriteRuntimeSchema } from "../Cordierite.types";
+import type {
+  CordieriteRuntimeSchema,
+  InferToolArgs,
+  InferToolResult,
+} from "../Cordierite.types";
 import { jsonSchema } from "../Cordierite.types";
 import type { CordierePublicApi } from "../public-api";
 
@@ -139,6 +143,71 @@ describe("handler inference across every accepted schema form (issue #27)", () =
         exactType<{ a: number }>()(args);
       },
     }).remove();
+
+    expect(true).toBe(true);
+  });
+
+  test("a two-parameter CordieriteRuntimeSchema<In, Out> keeps the sides apart", async () => {
+    const { registerTool } = await import("../noop");
+
+    // With distinct input and output types the two sides must not collapse into `In | Out`: an
+    // `inputSchema` handler receives the *output* (post-validation) type, an `outputSchema` handler
+    // returns the *input* (pre-validation) one. A raw member carrying a single phantom slot would
+    // widen both to the union.
+    const coercing: CordieriteRuntimeSchema<string, number> = {
+      "~standard": {
+        version: 1,
+        vendor: "test",
+        validate: (value: unknown) => ({ value: Number(value) }),
+      },
+    } as CordieriteRuntimeSchema<string, number>;
+
+    registerTool({
+      name: "two-param-input",
+      description: "d",
+      inputSchema: coercing,
+      handler: (args) => {
+        exactType<number>()(args);
+      },
+    }).remove();
+
+    registerTool({
+      name: "two-param-output",
+      description: "d",
+      outputSchema: coercing,
+      handler: () => {
+        return "42";
+      },
+    }).remove();
+
+    // `registerTool` above only proves the handler's return is *assignable*; these assert the two
+    // sides are exactly `number` and `string`, so a collapse to `string | number` fails to compile.
+    exactType<number>()(null as unknown as InferToolArgs<typeof coercing>);
+    exactType<string>()(null as unknown as InferToolResult<typeof coercing>);
+
+    // Same annotation, satisfied by a raw JSON Schema rather than a Standard Schema.
+    const coercingRaw = {} as CordieriteRuntimeSchema<string, number>;
+
+    registerTool({
+      name: "two-param-raw-input",
+      description: "d",
+      inputSchema: coercingRaw,
+      handler: (args) => {
+        exactType<number>()(args);
+      },
+    }).remove();
+
+    registerTool({
+      name: "two-param-raw-output",
+      description: "d",
+      outputSchema: coercingRaw,
+      handler: () => {
+        return "42";
+      },
+    }).remove();
+
+    exactType<number>()(null as unknown as InferToolArgs<typeof coercingRaw>);
+    exactType<string>()(null as unknown as InferToolResult<typeof coercingRaw>);
 
     expect(true).toBe(true);
   });

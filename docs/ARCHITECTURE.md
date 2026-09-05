@@ -411,18 +411,30 @@ Client behavior:
     published from the supplied JSON Schema object or `{ input, output }` converter. This
     is the supported path for zod 3 (`zod-to-json-schema`) and valibot
     (`@valibot/to-json-schema`).
-  - a **raw JSON Schema object** — no `~standard`, and carrying at least one JSON Schema
-    keyword (`type`, `properties`, `$ref`, `anyOf`, `allOf`, `oneOf`, `enum`, `const`) —
-    published verbatim and handed to the handler **unvalidated**. No JSON Schema validator
-    is bundled: `@cordierite/react-native` keeps zero third-party runtime dependencies
-    (§13). The optional `jsonSchema<T>()` helper is a pure type-level cast that gives such
-    a handler real argument/result types.
+  - a **raw JSON Schema object** — no `~standard`, a *plain* object (prototype
+    `Object.prototype` or `null`), and an own `type`, if present, that is a JSON Schema type
+    name or an array of them — published verbatim and handed to the handler **unvalidated**.
+    `{}` qualifies: it is valid accept-anything JSON Schema. No JSON Schema validator is
+    bundled: `@cordierite/react-native` keeps zero third-party runtime dependencies (§13).
+    The optional `jsonSchema<T>()` helper is a pure type-level cast that gives such a handler
+    real argument/result types.
+
+  The raw test is structural rather than keyword-based on purpose. A keyword probe using `in`
+  walks the prototype chain, and validator instances from libraries predating Standard Schema
+  (yup, joi, superstruct, valibot 0.x) carry a prototype `type` — they would be taken as raw
+  JSON Schema and published as the tool's shape, having previously been rejected outright.
+  Many also hold circular references, so `JSON.stringify` on `tool_registry_snapshot` would
+  throw and lose the whole snapshot, not just that tool.
 
   Everything else throws a `TypeError` at registration rather than being published as the
-  tool's shape: non-objects and arrays, a `~standard` that is not a Standard Schema, and —
-  because `raw` would otherwise be a catch-all — any object mentioning `schema`/`jsonSchema`
-  that is not a valid pair (a malformed pair, not JSON Schema; neither is a JSON Schema
-  keyword) or carrying no JSON Schema keyword at all.
+  tool's shape: non-objects and arrays, a `~standard` that is not a Standard Schema, any
+  object mentioning `schema`/`jsonSchema` that is not a valid pair, and anything failing the
+  plain-object rule. The `jsonSchema` half of a pair and every converter result are held to
+  that same rule, so the forms cannot diverge in what they will publish.
+
+  Separately from all of this, an **input schema should be object-typed at its root** to be
+  usable over MCP — a root `enum`/`const`/`$ref`/`anyOf` is legal JSON Schema but leaves the
+  agent with no named arguments (issue #34). This is documented, not enforced.
 
   Every way a slot can end up with no shape — a missing exporter, an exporter that throws or
   returns a non-object, a paired converter that does either — takes the same route: throw in

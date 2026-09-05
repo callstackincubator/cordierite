@@ -172,7 +172,30 @@ describe("normalizeToolSchema: detection matrix", () => {
   test("throws for a pair missing its jsonSchema half", () => {
     expect(() =>
       normalizeToolSchema({ schema: zod3Schema }, "MySchema"),
-    ).toThrow(/"jsonSchema" is missing or not an object/);
+    ).toThrow(/"jsonSchema" half is not a plain JSON Schema object/);
+  });
+
+  test("throws for a pair whose jsonSchema half is a class instance", () => {
+    // Held to exactly the same standard as a hand-written raw schema, so the two forms cannot
+    // diverge in what they will publish.
+    class FakeSchema {
+      get type() {
+        return "object";
+      }
+    }
+
+    expect(() =>
+      normalizeToolSchema(
+        { schema: zod3Schema, jsonSchema: new FakeSchema() },
+        "MySchema",
+      ),
+    ).toThrow(/"jsonSchema" half is not a plain JSON Schema object/);
+  });
+
+  test("accepts an empty object as the jsonSchema half of a pair", () => {
+    expect(
+      normalizeToolSchema({ schema: zod3Schema, jsonSchema: {} }, "l"),
+    ).toEqual({ kind: "paired", schema: zod3Schema, jsonSchema: {} });
   });
 
   test("throws for a pair whose `schema` half is a JSON Schema, not a Standard Schema", () => {
@@ -192,28 +215,90 @@ describe("normalizeToolSchema: detection matrix", () => {
     ).toThrow(/"schema" is missing or is not a Standard Schema/);
   });
 
-  test("throws for an object carrying no JSON Schema keyword at all", () => {
-    expect(() => normalizeToolSchema({}, "MySchema")).toThrow(
-      /does not look like JSON Schema/,
-    );
-    expect(() => normalizeToolSchema({ city: "Warsaw" }, "MySchema")).toThrow(
-      /does not look like JSON Schema/,
+  test("throws for a validator instance carrying a prototype `type` (yup/joi/superstruct shape)", () => {
+    // The regression this rule exists for. A keyword probe using `in` walks the prototype chain,
+    // so such an instance would be classified raw and published as the tool's shape — and, holding
+    // a circular reference, would then break `JSON.stringify` on the whole registry snapshot, not
+    // just this tool.
+    class LegacyValidator {
+      self: LegacyValidator;
+
+      constructor() {
+        this.self = this;
+      }
+
+      get type() {
+        return "object";
+      }
+    }
+    const instance = new LegacyValidator();
+
+    expect("type" in instance).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(instance, "type")).toBe(false);
+    expect(() => JSON.stringify(instance)).toThrow();
+    expect(() => normalizeToolSchema(instance, "MySchema")).toThrow(
+      /is not a plain JSON Schema object/,
     );
   });
 
-  test("accepts every recognised JSON Schema keyword on its own", () => {
-    for (const keyword of [
-      "type",
-      "properties",
-      "$ref",
-      "anyOf",
-      "allOf",
-      "oneOf",
-      "enum",
-      "const",
+  test("throws for an object whose own `type` is not a JSON Schema type name", () => {
+    expect(() => normalizeToolSchema({ type: "banana" }, "MySchema")).toThrow(
+      /is not a plain JSON Schema object/,
+    );
+    expect(() => normalizeToolSchema({ type: 7 }, "MySchema")).toThrow(
+      /is not a plain JSON Schema object/,
+    );
+    expect(() => normalizeToolSchema({ type: [] }, "MySchema")).toThrow(
+      /is not a plain JSON Schema object/,
+    );
+  });
+
+  test("accepts an empty object — the canonical accept-anything JSON Schema", () => {
+    expect(normalizeToolSchema({}, "l")).toEqual({
+      kind: "raw",
+      jsonSchema: {},
+    });
+  });
+
+  test("accepts a null-prototype object", () => {
+    const schema = Object.assign(Object.create(null), { type: "object" });
+    expect(normalizeToolSchema(schema, "l").kind).toBe("raw");
+  });
+
+  test("accepts schemas built from keywords other than `type`", () => {
+    for (const schema of [
+      { $defs: { a: { type: "string" } } },
+      { required: ["a"] },
+      { items: { type: "string" } },
+      { not: {} },
+      { $ref: "#/$defs/a" },
+      { anyOf: [{ type: "string" }] },
+      { enum: ["a", "b"] },
+      { const: 1 },
+      { description: "anything goes" },
     ]) {
-      expect(normalizeToolSchema({ [keyword]: "x" }, "l").kind).toBe("raw");
+      expect(normalizeToolSchema(schema, "l").kind).toBe("raw");
     }
+  });
+
+  test("accepts every JSON Schema type name, and an array of them", () => {
+    for (const type of [
+      "null",
+      "boolean",
+      "object",
+      "array",
+      "number",
+      "string",
+      "integer",
+    ]) {
+      expect(normalizeToolSchema({ type }, "l").kind).toBe("raw");
+    }
+    expect(normalizeToolSchema({ type: ["string", "null"] }, "l").kind).toBe(
+      "raw",
+    );
+    expect(() =>
+      normalizeToolSchema({ type: ["string", "banana"] }, "MySchema"),
+    ).toThrow(/is not a plain JSON Schema object/);
   });
 
   test("throws for non-objects and arrays", () => {
@@ -340,7 +425,12 @@ describe("exportToolSchema: Standard Schema without an exporter", () => {
     ).toThrow(TypeError);
   });
 
-  test("outside dev it warns once per tool name and registers shapeless", () => {
+  test("outside dev it warns once per tool *and slot*, and registers shapeless", () => {
+    const matching = (warnings: string[][], needle: string) =>
+      warnings.filter((args) =>
+        args.some((arg) => arg.includes(needle) && arg.includes("shapeless")),
+      );
+
     const warnings = withWarningsCaptured(() => {
       withDev(false, () => {
         const normalized = normalizeToolSchema(shapelessSchema, "l");
@@ -354,12 +444,24 @@ describe("exportToolSchema: Standard Schema without an exporter", () => {
       });
     });
 
-    const matching = warnings.filter((args) =>
-      args.some(
-        (arg) => arg.includes("prod-tool") && arg.includes("shapeless"),
+    // Input and output are two separate things to fix, so both are reported; keying the dedupe on
+    // the tool name alone would hide the second.
+    expect(matching(warnings, "prod-tool")).toHaveLength(2);
+    expect(
+      matching(warnings, "prod-tool").filter((args) =>
+        args.some((arg) => arg.includes("inputSchema")),
       ),
-    );
-    expect(matching).toHaveLength(1);
+    ).toHaveLength(1);
+
+    // Re-registering the same tool does not warn again for a slot already reported.
+    const repeated = withWarningsCaptured(() => {
+      withDev(false, () => {
+        const normalized = normalizeToolSchema(shapelessSchema, "l");
+        exportToolSchema(normalized, "input", "prod-tool");
+        exportToolSchema(normalized, "output", "prod-tool");
+      });
+    });
+    expect(matching(repeated, "prod-tool")).toHaveLength(0);
   });
 
   test("does not warn or throw when no schema is provided at all", () => {
@@ -475,6 +577,43 @@ describe("exportToolSchema: paired schemas", () => {
     expect(() =>
       withDev(true, () => exportToolSchema(normalized, "input", "array-pair")),
     ).toThrow(/returned an array instead of a JSON Schema object/);
+  });
+
+  test("a paired converter returning a non-plain object is reported too", () => {
+    // Converter *results* are held to the same plain-object rule as a hand-written raw schema.
+    class FakeSchema {
+      get type() {
+        return "object";
+      }
+    }
+    const normalized = normalizeToolSchema(
+      {
+        schema: zod3Schema,
+        jsonSchema: {
+          input: () => new FakeSchema(),
+          output: () => ({ type: "object" }),
+        },
+      },
+      "l",
+    );
+
+    expect(() =>
+      withDev(true, () =>
+        exportToolSchema(normalized, "input", "instance-pair"),
+      ),
+    ).toThrow(/returned an object that is not plain JSON Schema/);
+  });
+
+  test("a converter returning an empty object is accepted", () => {
+    const normalized = normalizeToolSchema(
+      {
+        schema: zod3Schema,
+        jsonSchema: { input: () => ({}), output: () => ({}) },
+      },
+      "l",
+    );
+
+    expect(exportToolSchema(normalized, "input", "empty-pair")).toEqual({});
   });
 
   test("a paired schema never warns or throws in dev", () => {

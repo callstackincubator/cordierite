@@ -255,18 +255,26 @@ export type CordieriteToolHandler<TArgs = unknown, TResult = unknown> = (
  * is no wrapper to import. It is forwarded to the daemon verbatim and **never validated app-side**:
  * a handler with a raw input schema receives `tool_call.args` exactly as the caller sent them.
  *
- * The type parameter is phantom (never present at runtime). It is set only by the `jsonSchema<T>()`
- * helper below, which is how a raw schema still gets real handler argument/result types; a bare
- * object literal infers `Record<string, unknown>` instead. There is one phantom slot, carrying the
- * type the *handler* sees for whichever of the two slots the schema is used in.
+ * The type parameters are phantom (never present at runtime). They are set only by the
+ * `jsonSchema<T>()` helper below, which is how a raw schema still gets real handler argument/result
+ * types; a bare object literal infers `Record<string, unknown>` instead. They mirror Standard
+ * Schema's own two: `Input` is the pre-validation type an `outputSchema` handler may *return*,
+ * `Output` the post-validation type an `inputSchema` handler *receives* — so the raw member of
+ * {@link CordieriteRuntimeSchema} tracks both sides of an annotation instead of collapsing them.
  *
  * A JSON Schema value typed as an interface (`JSONSchema7` from `@types/json-schema`, say) is not
  * assignable to `Record<string, unknown>` — TypeScript gives implicit index signatures to type
  * aliases, not interfaces. Wrap it in `jsonSchema<T>()` or cast it.
  */
-export type CordieriteJsonSchemaObject<T = unknown> = Record<string, unknown> & {
+export type CordieriteJsonSchemaObject<
+  Input = unknown,
+  Output = Input,
+> = Record<string, unknown> & {
   /** Phantom marker; `jsonSchema<T>()` only casts, it never writes this property. */
-  readonly "~cordieriteJsonSchemaType"?: T;
+  readonly "~cordieriteJsonSchemaTypes"?: {
+    readonly input: Input;
+    readonly output: Output;
+  };
 };
 
 /**
@@ -274,7 +282,8 @@ export type CordieriteJsonSchemaObject<T = unknown> = Record<string, unknown> & 
  * `~standard.jsonSchema`. Accepted as the `jsonSchema` half of a {@link CordieritePairedSchema} so
  * one converter (e.g. a `zod-to-json-schema` wrapper) can serve both slots.
  */
-export type CordieriteJsonSchemaConverter = StandardSchemaV1JsonSchema.Converter;
+export type CordieriteJsonSchemaConverter =
+  StandardSchemaV1JsonSchema.Converter;
 
 /**
  * A Standard Schema paired with the JSON Schema to publish for it — the supported form for
@@ -296,14 +305,15 @@ export type CordieritePairedSchema<Input = unknown, Output = Input> = {
  * without a `~standard.jsonSchema` exporter), a `{ schema, jsonSchema }` pair, or a raw JSON Schema
  * object.
  *
- * All three members carry the annotation's types, so an explicitly annotated
- * `CordieriteRuntimeSchema<Args>` still gives the handler exactly `Args` — the raw member is
- * parameterized precisely so it cannot widen that back to `Record<string, unknown>`.
+ * All three members carry *both* of the annotation's types, so an annotated
+ * `CordieriteRuntimeSchema<In, Out>` gives a handler exactly `Out` for its arguments and exactly
+ * `In` for its result. The raw member is parameterized precisely so it cannot widen either back to
+ * `Record<string, unknown>`, nor collapse the two into `In | Out`.
  */
 export type CordieriteRuntimeSchema<Input = unknown, Output = Input> =
   | StandardSchemaV1<Input, Output>
   | CordieritePairedSchema<Input, Output>
-  | CordieriteJsonSchemaObject<Output>;
+  | CordieriteJsonSchemaObject<Input, Output>;
 
 /**
  * Tags a raw JSON Schema object with the argument/result type its handler should see. Purely a
@@ -319,8 +329,9 @@ export type CordieriteRuntimeSchema<Input = unknown, Output = Input> =
  * ```
  */
 export const jsonSchema = <T = Record<string, unknown>>(
-  schema: Record<string, unknown>
-): CordieriteJsonSchemaObject<T> => schema as CordieriteJsonSchemaObject<T>;
+  schema: Record<string, unknown>,
+): CordieriteJsonSchemaObject<T, T> =>
+  schema as CordieriteJsonSchemaObject<T, T>;
 
 /**
  * Runtime shape an `inputSchema`/`outputSchema` takes once `normalizeToolSchema` (`schema.ts`) has
@@ -351,10 +362,10 @@ export type InferToolArgs<TSchema> = TSchema extends StandardSchemaV1
   ? StandardSchemaV1.InferOutput<TSchema>
   : TSchema extends { readonly schema: infer S extends StandardSchemaV1 }
     ? StandardSchemaV1.InferOutput<S>
-    : TSchema extends CordieriteJsonSchemaObject<infer T>
-      ? unknown extends T
+    : TSchema extends CordieriteJsonSchemaObject<unknown, infer Output>
+      ? unknown extends Output
         ? Record<string, unknown>
-        : T
+        : Output
       : undefined;
 
 /**
@@ -365,10 +376,10 @@ export type InferToolResult<TSchema> = TSchema extends StandardSchemaV1
   ? StandardSchemaV1.InferInput<TSchema>
   : TSchema extends { readonly schema: infer S extends StandardSchemaV1 }
     ? StandardSchemaV1.InferInput<S>
-    : TSchema extends CordieriteJsonSchemaObject<infer T>
-      ? unknown extends T
+    : TSchema extends CordieriteJsonSchemaObject<infer Input, unknown>
+      ? unknown extends Input
         ? Record<string, unknown>
-        : T
+        : Input
       : void;
 
 export type CordieriteToolDefinition<

@@ -53,7 +53,9 @@ const reportShapelessSchema = (
     );
   }
 
-  const warningKey = toolName ?? "<unnamed>";
+  // Keyed by slot as well as tool: a tool whose input and output schemas both fail has two
+  // distinct problems to fix, and reporting only the first would hide the second.
+  const warningKey = `${toolName ?? "<unnamed>"}:${mode}`;
   if (!shapelessToolWarningsSeen.has(warningKey)) {
     shapelessToolWarningsSeen.add(warningKey);
     logger.warn(
@@ -79,6 +81,9 @@ const isIndexable = (value: unknown): value is Record<string, unknown> =>
 const hasStandardProperty = (value: unknown): boolean =>
   isIndexable(value) && "~standard" in value;
 
+const hasOwn = (value: object, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
 const asStandardSchema = (value: unknown): StandardSchemaV1 | undefined => {
   if (!isIndexable(value)) {
     return undefined;
@@ -99,21 +104,57 @@ const isJsonSchemaConverter = (
   typeof value.input === "function" &&
   typeof value.output === "function";
 
+/** The seven type names draft 2020-12 defines. `type` may also be an array of them. */
+const JSON_SCHEMA_TYPE_NAMES = [
+  "null",
+  "boolean",
+  "object",
+  "array",
+  "number",
+  "string",
+  "integer",
+];
+
+const isValidJsonSchemaType = (type: unknown): boolean =>
+  Array.isArray(type)
+    ? type.length > 0 &&
+      type.every(
+        (entry) =>
+          typeof entry === "string" && JSON_SCHEMA_TYPE_NAMES.includes(entry),
+      )
+    : typeof type === "string" && JSON_SCHEMA_TYPE_NAMES.includes(type);
+
 /**
- * Keywords that make an object recognisable as JSON Schema. A raw schema must carry at least one:
- * without it, "raw" is a catch-all that would happily publish a mistyped pair or an unrelated
- * object as the tool's shape.
+ * Whether `value` can be published verbatim as JSON Schema.
+ *
+ * Structural, not keyword-based, and deliberately so. A keyword probe using `in` walks the
+ * prototype chain, and validator instances from libraries that predate Standard Schema (yup, joi,
+ * superstruct, valibot 0.x) carry a prototype `type` — they would be classified as raw JSON Schema
+ * and published as the tool's shape, where before they were rejected outright. Many also hold
+ * circular references, so `JSON.stringify` on the registry snapshot would throw and take the whole
+ * snapshot down with it, not just that one tool.
+ *
+ * So: a plain object (`{}` or `Object.create(null)` — no class, no prototype methods) whose own
+ * `type`, if it has one, is a real JSON Schema type name. `{}` is valid JSON Schema (it accepts
+ * anything), and is accepted.
  */
-const JSON_SCHEMA_KEYWORDS = [
-  "type",
-  "properties",
-  "$ref",
-  "anyOf",
-  "allOf",
-  "oneOf",
-  "enum",
-  "const",
-] as const;
+const isPlainJsonSchemaObject = (value: unknown): boolean => {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  if (prototype !== Object.prototype && prototype !== null) {
+    return false;
+  }
+
+  return !hasOwn(value, "type") || isValidJsonSchemaType(value.type);
+};
+
+const NOT_JSON_SCHEMA_ADVICE =
+  'Pass a plain JSON Schema object such as `{ "type": "object", "properties": { … } }`, a ' +
+  "Standard Schema, or a { schema, jsonSchema } pair. A validator instance from a library without " +
+  "Standard Schema support (yup, joi, superstruct) is none of those.";
 
 /**
  * Classifies a user-supplied `inputSchema`/`outputSchema` into the three accepted forms
@@ -122,13 +163,11 @@ const JSON_SCHEMA_KEYWORDS = [
  * - `standard` — anything (object *or* callable, e.g. arktype) exposing `~standard.validate`;
  * - `paired` — `{ schema, jsonSchema }`, where `schema` is a Standard Schema and `jsonSchema` is a
  *   JSON Schema object or an `{ input, output }` converter;
- * - `raw` — a plain object carrying at least one JSON Schema keyword, passed through unvalidated.
+ * - `raw` — a plain JSON Schema object (see `isPlainJsonSchemaObject`), passed through unvalidated.
  *
- * Everything else throws a `TypeError`, rather than being published as the tool's shape: non-objects
- * and arrays, a `~standard` that is not a Standard Schema, a `{ schema }` pair missing or
- * mistyping its `jsonSchema` half, and any object that mentions `schema`/`jsonSchema` without
- * being a valid pair (overwhelmingly a malformed pair, not JSON Schema — neither is a JSON Schema
- * keyword).
+ * Everything else throws a `TypeError` rather than being published as the tool's shape: non-objects
+ * and arrays, a `~standard` that is not a Standard Schema, a malformed `{ schema, jsonSchema }`
+ * pair, and any class instance or object whose `type` is not a JSON Schema type.
  */
 export const normalizeToolSchema = (
   value: unknown,
@@ -148,7 +187,8 @@ export const normalizeToolSchema = (
     );
   }
 
-  const looksLikePair = "schema" in value || "jsonSchema" in value;
+  // Own properties only, for the same prototype-chain reason `isPlainJsonSchemaObject` explains.
+  const looksLikePair = hasOwn(value, "schema") || hasOwn(value, "jsonSchema");
   if (looksLikePair) {
     const pairedSchema = asStandardSchema(value.schema);
     if (!pairedSchema) {
@@ -160,27 +200,27 @@ export const normalizeToolSchema = (
     }
 
     const { jsonSchema } = value;
-    if (!isRecord(jsonSchema)) {
+    if (isJsonSchemaConverter(jsonSchema)) {
+      return { kind: "paired", schema: pairedSchema, jsonSchema };
+    }
+
+    if (!isPlainJsonSchemaObject(jsonSchema)) {
       throw new TypeError(
-        `${label} looks like a { schema, jsonSchema } pair but its "jsonSchema" is missing or not an object. ` +
-          "Supply a JSON Schema object or an { input, output } converter.",
+        `${label} looks like a { schema, jsonSchema } pair but its "jsonSchema" half is not a plain ` +
+          `JSON Schema object or an { input, output } converter. ${NOT_JSON_SCHEMA_ADVICE}`,
       );
     }
 
     return {
       kind: "paired",
       schema: pairedSchema,
-      jsonSchema: isJsonSchemaConverter(jsonSchema)
-        ? jsonSchema
-        : (jsonSchema as Record<string, unknown>),
+      jsonSchema: jsonSchema as Record<string, unknown>,
     };
   }
 
-  const keyword = JSON_SCHEMA_KEYWORDS.find((candidate) => candidate in value);
-  if (keyword === undefined) {
+  if (!isPlainJsonSchemaObject(value)) {
     throw new TypeError(
-      `${label} is not a Standard Schema and does not look like JSON Schema: it has none of ` +
-        `${JSON_SCHEMA_KEYWORDS.join(", ")}. ${SHAPE_REMEDY}`,
+      `${label} is not a Standard Schema and is not a plain JSON Schema object. ${NOT_JSON_SCHEMA_ADVICE}`,
     );
   }
 
@@ -204,11 +244,25 @@ const hasJsonSchemaExporter = (
 type ConverterOutcome =
   { ok: true; schema: ToolSchemaDescriptor } | { ok: false; reason: string };
 
+const describe = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    return "an array";
+  }
+  if (value === null) {
+    return "null";
+  }
+  if (isRecord(value)) {
+    return "an object that is not plain JSON Schema";
+  }
+  return typeof value;
+};
+
 /**
- * Runs one half of a JSON Schema converter. A converter that throws or returns a non-object is a
- * failure to be *reported*, never swallowed: silently returning `undefined` here would put back
- * exactly the shapeless-tool failure this contract exists to remove — and for pair users, who
- * chose the pair form precisely to avoid it.
+ * Runs one half of a JSON Schema converter. A converter that throws, or hands back anything that is
+ * not a plain JSON Schema object, is a failure to be *reported*, never swallowed: silently
+ * returning `undefined` here would put back exactly the shapeless-tool failure this contract exists
+ * to remove — and for pair users, who chose the pair form precisely to avoid it. The result is held
+ * to the same standard as a hand-written raw schema, so the two forms cannot diverge.
  */
 const exportFromConverter = (
   converter: CordieriteJsonSchemaConverter,
@@ -223,13 +277,13 @@ const exportFromConverter = (
     return { ok: false, reason: `its ${source} threw (${detail})` };
   }
 
-  return isRecord(exported)
-    ? { ok: true, schema: exported }
+  return isPlainJsonSchemaObject(exported)
+    ? { ok: true, schema: exported as ToolSchemaDescriptor }
     : {
         ok: false,
-        reason: `its ${source} returned ${
-          Array.isArray(exported) ? "an array" : typeof exported
-        } instead of a JSON Schema object`,
+        reason: `its ${source} returned ${describe(
+          exported,
+        )} instead of a JSON Schema object`,
       };
 };
 

@@ -329,10 +329,10 @@ describe("createCordieriteClient: claim handshake", () => {
     const tools = snapshot?.tools as { name: string; input_schema?: unknown }[];
 
     expect(tools.find((tool) => tool.name === "weather")?.input_schema).toEqual(
-      rawInput
+      rawInput,
     );
     expect(
-      tools.find((tool) => tool.name === "sum")?.input_schema
+      tools.find((tool) => tool.name === "sum")?.input_schema,
     ).toMatchObject({
       type: "object",
       properties: { a: { type: "number" } },
@@ -391,7 +391,7 @@ describe("createCordieriteClient: claim handshake", () => {
         description: "zod 3 without an exporter",
         inputSchema: z3.object({ a: z3.number() }),
         handler: () => undefined,
-      })
+      }),
     ).toThrow(/schema, jsonSchema/);
 
     expect(client.getRegisteredTools()).toEqual([]);

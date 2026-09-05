@@ -135,6 +135,10 @@ A bare Zod 3 / plain valibot schema (Standard Schema, no exporter) **throws in `
 it would otherwise register a shapeless tool that `tools/list` reports as taking any
 object. Pair it, or pass raw JSON Schema.
 
+An input schema must be **object-typed at its root** to be callable over MCP: a root
+`enum`, `const`, `$ref` or `anyOf` is legal JSON Schema but gives the agent no named
+arguments to pass (issue #34).
+
 ## Notes
 
 - Use **`--json`** for structured CLI output in agent flows; runtime failures in
