@@ -300,7 +300,9 @@ they cannot drift. First match wins:
 
 1. the `--scheme` flag (or the equivalent programmatic option)
 2. the `CORDIERITE_SCHEME` environment variable
-3. the nearest `.cordierite/config.json`, walking up from the working directory
+3. the nearest `.cordierite/config.json`, walking up from the working directory (the walk skips
+   `~/.cordierite` and the state directory in use — those are *global* config, and matching them
+   here would apply them one tier above their own)
 4. `scheme` in the state directory's `config.json`
 5. `<cwd>/app.json`'s `expo.scheme` (a string, or the first entry of an array — the same
    normalization `app.plugin.js` applies; no walk-up)

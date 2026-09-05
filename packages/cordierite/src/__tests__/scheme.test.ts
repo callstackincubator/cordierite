@@ -4,8 +4,9 @@
  * `cordierite/client`'s `link()` and `cordierite_connect`.
  */
 
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
@@ -185,15 +186,43 @@ describe("findProjectConfig", () => {
     expect(findProjectConfig(path.parse(dir).root)).toBeUndefined();
   });
 
-  test("skips the state directory so a global ~/.cordierite is never taken for a project config", async () => {
-    const home = await makeDir();
-    const stateDir = path.join(home, ".cordierite");
-    await writeProjectConfig(home, { scheme: "global" });
-    const projectDir = path.join(home, "app");
+  test("skips the state directory in use, so it can never shadow itself at the project tier", async () => {
+    const parent = await makeDir();
+    const stateDir = path.join(parent, ".cordierite");
+    await writeProjectConfig(parent, { scheme: "global" });
+    const projectDir = path.join(parent, "app");
     await mkdir(projectDir, { recursive: true });
 
     expect(findProjectConfig(projectDir)).toBe(path.join(stateDir, "config.json"));
     expect(findProjectConfig(projectDir, stateDir)).toBeUndefined();
+  });
+
+  // `~/.cordierite` is the *default state dir*, and essentially every project lives under the home
+  // directory. Finding it during the walk-up would apply the global config one precedence tier
+  // above the state dir's own — and with `--state-dir` elsewhere, would shadow the operator's
+  // explicit choice with an unrelated file.
+  test("never treats ~/.cordierite as a project config, even with an unrelated state dir", async () => {
+    const home = homedir();
+    const globalConfig = path.join(home, ".cordierite", "config.json");
+    const existedBefore = existsSync(globalConfig);
+
+    if (!existedBefore) {
+      await mkdir(path.dirname(globalConfig), { recursive: true });
+      await writeFile(globalConfig, JSON.stringify({ scheme: "global" }), "utf8");
+    }
+
+    try {
+      const projectDir = path.join(home, "cordierite-scheme-test-project");
+      await mkdir(projectDir, { recursive: true });
+      directories.push(projectDir);
+
+      // An unrelated state dir: the guard must not depend on it pointing at ~/.cordierite.
+      expect(findProjectConfig(projectDir, path.join(await makeDir(), "state"))).toBeUndefined();
+    } finally {
+      if (!existedBefore) {
+        await rm(path.join(home, ".cordierite"), { force: true, recursive: true });
+      }
+    }
   });
 });
 

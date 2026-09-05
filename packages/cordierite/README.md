@@ -49,7 +49,7 @@ Every command that targets a session accepts an optional `selector` (a session i
 
 1. `--scheme <s>`
 2. the `CORDIERITE_SCHEME` environment variable
-3. the nearest `.cordierite/config.json` (its `scheme` key), walking up from the working directory
+3. the nearest `.cordierite/config.json` (its `scheme` key), walking up from the working directory — the walk skips `~/.cordierite` and the state dir in use, so global config is never mistaken for a project's
 4. `scheme` in `<state-dir>/config.json`
 5. `<cwd>/app.json`'s `expo.scheme` — a string, or the first entry of an array
 6. otherwise an error naming every location above

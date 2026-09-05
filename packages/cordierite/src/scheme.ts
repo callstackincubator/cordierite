@@ -11,7 +11,8 @@
  *
  *   1. an explicit flag/option (`--scheme`)
  *   2. the `CORDIERITE_SCHEME` environment variable
- *   3. the nearest `.cordierite/config.json`, walking up from the working directory
+ *   3. the nearest `.cordierite/config.json`, walking up from the working directory (never
+ *      `~/.cordierite` or the state dir in use — see {@link findProjectConfig})
  *   4. `scheme` in the state directory's `config.json` (the pre-#29 behaviour)
  *   5. `<cwd>/app.json`'s `expo.scheme` (no walk-up — an app root is where you run these commands)
  *
@@ -27,6 +28,7 @@
 
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { usageError } from "./errors.js";
@@ -153,19 +155,29 @@ export const discoverExpoScheme = async (dir: string): Promise<string | undefine
  * drive root) — it cannot escape above it, and it never follows `..` out of a caller-supplied
  * path because every candidate is derived from the resolved absolute `startDir`.
  *
- * `stateDirRoot`, when given, is skipped: with the default `~/.cordierite` state dir, *any* cwd
- * under the home directory would otherwise find the global config during the walk-up and report it
- * as a project config — and worse, with `--state-dir` pointing elsewhere it would silently apply
- * the unrelated global file as if it were the project's.
+ * Two directories are never treated as a project root, because a hit there would silently apply a
+ * *global* file at the project tier — one step above the state dir's own config, inverting the
+ * documented precedence:
+ *
+ * - `~/.cordierite`, the default state dir. Essentially every project lives somewhere under the
+ *   home directory, so without this a plain `cordierite link` in any repo would pick up the global
+ *   `config.json` as if it were the project's — and with `--state-dir` pointing elsewhere it would
+ *   shadow the state dir the operator explicitly chose.
+ * - `stateDirRoot`, the state dir actually in use, for the same reason when it is not the default.
  */
 export const findProjectConfig = (startDir: string, stateDirRoot?: string): string | undefined => {
-  const stateRoot = stateDirRoot === undefined ? undefined : resolve(stateDirRoot);
+  const excluded = new Set([join(homedir(), PROJECT_CONFIG_DIR)]);
+
+  if (stateDirRoot !== undefined) {
+    excluded.add(resolve(stateDirRoot));
+  }
+
   let dir = resolve(startDir);
 
   for (;;) {
     const projectDir = join(dir, PROJECT_CONFIG_DIR);
 
-    if (stateRoot === undefined || projectDir !== stateRoot) {
+    if (!excluded.has(projectDir)) {
       const candidate = join(projectDir, PROJECT_CONFIG_FILENAME);
 
       if (existsSync(candidate)) {
