@@ -163,7 +163,12 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  */
 const oldestRetainedStamp = (now: Date, retentionDays: number): string => {
   const todayUtcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  return dayStamp(new Date(todayUtcMidnight - retentionDays * MS_PER_DAY));
+  const cutoff = new Date(todayUtcMidnight - retentionDays * MS_PER_DAY);
+
+  // `auditRetentionDays` is validated as a positive integer, not a *small* one: a window wide
+  // enough to run off the end of the `Date` range would make `toISOString` throw. That config
+  // means "keep everything", so answer with a stamp no real day file can sort before.
+  return Number.isNaN(cutoff.getTime()) ? "0000-00-00" : dayStamp(cutoff);
 };
 
 const auditFilePathForDate = (auditDir: string, date: Date): string => {

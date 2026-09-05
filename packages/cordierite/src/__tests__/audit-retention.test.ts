@@ -179,6 +179,22 @@ describe("audit retention: pruning", () => {
     ]);
   });
 
+  test("a retention window wider than the Date range keeps everything instead of throwing", async () => {
+    const auditDir = await makeAuditDir();
+    const clock = createTestClock("2026-09-05T12:00:00.000Z");
+
+    await writeDayFile(auditDir, "1970-01-01.jsonl");
+    await writeDayFile(auditDir, "2026-09-05.jsonl");
+
+    // A positive integer, so config validation accepts it — but far enough back to run off the
+    // end of the representable `Date` range.
+    const logger = createLogger(auditDir, clock, Number.MAX_SAFE_INTEGER);
+
+    await expect(logger.prune()).resolves.toEqual({ deleted: 0, failed: 0 });
+    expect(await listNames(auditDir)).toEqual(["1970-01-01.jsonl", "2026-09-05.jsonl"]);
+    expect(logger.failedPrunes()).toBe(0);
+  });
+
   test("an empty or missing audit directory prunes to a no-op", async () => {
     const auditDir = await makeAuditDir();
     const clock = createTestClock("2026-09-05T12:00:00.000Z");

@@ -4,7 +4,12 @@
  * truncate it — the only safe moment is just before a *new* daemon is spawned, while no writer
  * holds the file open. {@link rotateDaemonLogIfNeeded} is therefore called from the spawn path
  * (`rpc/client.ts`'s `defaultSpawn`, which is also what `cordierite daemon start` spawns through),
- * never from the daemon itself.
+ * never from the daemon itself. The spawn path is reached only when no daemon answered the socket
+ * and this process won the exclusive spawn lock, so in practice nothing is holding the log. The
+ * one gap is the pre-existing double-spawn window (the lock is released once the child is
+ * spawned, before its socket is up): a second spawner there could rename the log of a daemon that
+ * is still booting, which keeps writing into `daemon.log.1` through its inherited fd. Bounded and
+ * benign — no lines are lost, and a just-booted daemon's log is far below any sane cap anyway.
  *
  * One backup is enough (`daemon.log.1`): the point is a bounded footprint, not a full history. A
  * rotation failure is warned and swallowed — a daemon that cannot rotate its log must still start.
