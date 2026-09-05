@@ -23,6 +23,8 @@ import {
   deliverToOpenTarget,
   detectBootedTargets,
   isOpenTarget,
+  isValidBundleId,
+  invalidBundleIdMessage,
   usesLoopbackAddress,
   MISSING_BUNDLE_ID_MESSAGE,
   type ExecFn,
@@ -78,8 +80,8 @@ export const CONNECT_TOOL_DESCRIPTOR = {
     "explicitly, or target \"none\" to force the human flow. Target \"ios-device\" is an " +
     "experimental, never-auto-detected path that delivers to a paired physical iPhone/iPad via " +
     "xcrun devicectl; it needs \"bundleId\" (or \"iosBundleId\" in config.json), iOS 17+, Xcode " +
-    "15+, a trusted device with Developer Mode on, a dev-signed build installed, and the phone on " +
-    "the same network as this machine — and it may relaunch the app. Only when no device is " +
+    "15+, a connected and trusted device with Developer Mode on, a dev-signed build installed, and " +
+    "the phone on the same network as this machine — and it relaunches the app. Only when no device is " +
     "detected (or target is \"none\") does this return a QR code for a human to scan, along with " +
     "an \"instructions\" field saying what to do with it. Follow up with " +
     "cordierite_wait_for_session to know when the device has connected.",
@@ -126,6 +128,18 @@ export class McpBuiltinToolError extends Error {
     this.name = "McpBuiltinToolError";
   }
 }
+
+/**
+ * The same deep-link shape `link.ts` composes, `&pin=` included. It was missing here: an app whose
+ * effective trust is `"link"` (a debug build with no build-time `cliPins`) has no way to pin the
+ * daemon's certificate without it, so an agent-minted link could only connect where a CLI-minted
+ * one could. That is invisible on the loopback targets — a simulator build normally carries
+ * embedded pins — and becomes load-bearing for `ios-device`, the first MCP path that puts a link on
+ * a physical phone over the LAN. The pin is standard base64 (`+`/`/`/`=`), so it is percent-encoded
+ * exactly as in `link.ts`; apps that do not know the param keep ignoring it.
+ */
+const composeDeepLink = (scheme: string, result: LinkCreateResult): string =>
+  `${scheme}:///?cordierite=${result.deepLinkPayload}&pin=${encodeURIComponent(result.pin)}`;
 
 const asRecord = (value: unknown): Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -306,12 +320,20 @@ export const handleConnectTool = async (
     );
   }
 
+  // Captured after the check so the closures below carry the narrowing (a mutable property does
+  // not stay narrowed across one).
+  const scheme = deps.scheme;
+
   const { delivery, note } = await resolveDelivery(requestedTarget, device, bundleId, deps);
 
   // Rejected before minting, so a call that cannot possibly deliver does not strand a pending
   // session behind it.
   if (delivery?.target === "ios-device" && !delivery.bundleId) {
     throw new McpBuiltinToolError("invalid_request", MISSING_BUNDLE_ID_MESSAGE);
+  }
+
+  if (delivery?.bundleId !== undefined && !isValidBundleId(delivery.bundleId)) {
+    throw new McpBuiltinToolError("invalid_request", invalidBundleIdMessage(delivery.bundleId));
   }
 
   // A link's advertised address is fixed at mint time: `127.0.0.1` only when it is being handed to
@@ -326,7 +348,7 @@ export const handleConnectTool = async (
   };
 
   const asQrResult = (result: LinkCreateResult, qrNote?: string): ConnectToolResult => {
-    const deepLink = `${deps.scheme}:///?cordierite=${result.deepLinkPayload}`;
+    const deepLink = composeDeepLink(scheme, result);
 
     return {
       sessionId: result.sessionId,
@@ -343,7 +365,7 @@ export const handleConnectTool = async (
   }
 
   const result = await mint(usesLoopbackAddress(delivery.target));
-  const deepLink = `${deps.scheme}:///?cordierite=${result.deepLinkPayload}`;
+  const deepLink = composeDeepLink(scheme, result);
 
   try {
     await deliverToOpenTarget({

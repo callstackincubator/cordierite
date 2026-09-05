@@ -264,6 +264,7 @@ describe("link --open ios-device: the LAN address, not 127.0.0.1", () => {
         "launch",
         "--device",
         "00008030-AAAA",
+        "--terminate-existing",
         "--payload-url",
         result.data.deepLink,
         "com.example.playground",
@@ -319,5 +320,66 @@ describe("link --open ios-device: the LAN address, not 127.0.0.1", () => {
     await expect(handleLinkCommand({ open: "ios" }, { stateDir })).rejects.toThrow(
       /"android", "ios-sim", "ios-device"/u,
     );
+  });
+
+  test("a --bundle-id that could be read as a devicectl option is rejected before minting", async () => {
+    const { stateDir } = await startTestDaemon();
+
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(calls, [{ udid: "00008030-AAAA", name: "My iPhone" }]);
+
+    await expect(
+      handleLinkCommand({ open: "ios-device", bundleId: "--console" }, { stateDir, exec }),
+    ).rejects.toThrow(/not a valid iOS bundle id/u);
+
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("client link({ target: \"ios-device\" })", () => {
+  test("the programmatic client takes the same path as the CLI: LAN address, devicectl launch", async () => {
+    const { stateDir } = await startTestDaemon({ iosBundleId: "com.example.playground" });
+
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(calls, [{ udid: "00008030-AAAA", name: "My iPhone" }]);
+
+    // `cordierite/client`'s `link()` is what a test's globalSetup calls; it must not drift from
+    // `cordierite link` (both go through `mintLink`, and this is the test that says so).
+    const { link } = await import("../client/bootstrap.js");
+    const result = await link({ stateDir, target: "ios-device", exec, autoSpawn: false });
+
+    expect(result.delivered).toBe(true);
+    expect(result.target).toBe("ios-device");
+
+    const decoded = decodeBootstrap(result.deepLink.split("cordierite=")[1]!.split("&")[0]!);
+    expect(decoded!.address).toBe("203.0.113.9");
+
+    expect(calls[1]!.args).toEqual([
+      "devicectl",
+      "device",
+      "process",
+      "launch",
+      "--device",
+      "00008030-AAAA",
+      "--terminate-existing",
+      "--payload-url",
+      result.deepLink,
+      "com.example.playground",
+    ]);
+  });
+
+  test("the programmatic client surfaces a missing bundle id as a CordieriteError", async () => {
+    const { stateDir } = await startTestDaemon();
+
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(calls, [{ udid: "00008030-AAAA", name: "My iPhone" }]);
+
+    const { link } = await import("../client/bootstrap.js");
+
+    await expect(
+      link({ stateDir, target: "ios-device", exec, autoSpawn: false }),
+    ).rejects.toThrow(/iosBundleId/u);
+
+    expect(calls).toEqual([]);
   });
 });

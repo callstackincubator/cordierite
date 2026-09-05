@@ -603,7 +603,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     expect(data.instructions).toMatch(/show the user the "qr" field/iu);
     expect(data.instructions).toMatch(/cordierite_wait_for_session/u);
 
-    const payload = data.deepLink.split("cordierite=")[1]!;
+    const payload = data.deepLink.split("cordierite=")[1]!.split("&")[0]!;
     const decoded = decodeBootstrap(payload);
     expect(decoded).not.toBeNull();
     expect(decoded!.sessionId).toBe(data.sessionId);
@@ -797,7 +797,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
 
     // The link a physical iPhone gets must carry the machine's LAN address: there is no
     // `adb reverse` equivalent, so `127.0.0.1` would point the phone at itself (issue #31).
-    const decoded = decodeBootstrap(data.deepLink.split("cordierite=")[1]!);
+    const decoded = decodeBootstrap(data.deepLink.split("cordierite=")[1]!.split("&")[0]!);
     expect(decoded).not.toBeNull();
     expect(decoded!.address).toBe("203.0.113.9");
 
@@ -810,10 +810,86 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
       "launch",
       "--device",
       "00008030-AAAA",
+      "--terminate-existing",
       "--payload-url",
       data.deepLink,
       "com.example.playground",
     ]);
+  });
+
+  test('an explicit "ios-device" whose delivery fails errors the call rather than falling back to a QR', async () => {
+    const { stateDir } = await startTestDaemon();
+
+    const exec: ExecFn = async (command, args) => {
+      const jsonOutputIndex = args.indexOf("--json-output");
+
+      if (jsonOutputIndex !== -1) {
+        await writeFile(
+          args[jsonOutputIndex + 1]!,
+          JSON.stringify({
+            result: {
+              devices: [
+                {
+                  deviceProperties: { name: "My iPhone" },
+                  hardwareProperties: { udid: "00008030-AAAA", platform: "iOS" },
+                  connectionProperties: { tunnelState: "connected", pairingState: "paired" },
+                },
+              ],
+            },
+          }),
+          "utf8",
+        );
+        return { stdout: "", stderr: "" };
+      }
+
+      throw Object.assign(new Error("Command failed"), {
+        stderr: "The application com.example.playground is not installed on the device",
+      });
+    };
+
+    const handle = await createMcpHandle(stateDir, exec);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      {
+        method: "tools/call",
+        params: {
+          name: "cordierite_connect",
+          arguments: { target: "ios-device", bundleId: "com.example.playground" },
+        },
+      },
+      CallToolResultSchema,
+    );
+
+    // The QR fallback is reserved for an *auto-detected* device nobody asked for. A target the
+    // caller named explicitly must surface its failure, not quietly become a QR code — otherwise
+    // "the app isn't installed on that phone" reads as "scan this".
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(/is not installed on the device/u);
+    expect(result.structuredContent).toBeUndefined();
+  });
+
+  test("every cordierite_connect deep link carries the &pin= param, like the CLI's", async () => {
+    const { stateDir } = await startTestDaemon();
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: {} } },
+      CallToolResultSchema,
+    );
+
+    const data = result.structuredContent as { deepLink: string };
+
+    // Without this, an app whose effective trust is "link" (a debug build with no embedded
+    // cliPins) cannot pin the daemon from an agent-minted link, though it can from a CLI-minted
+    // one. It matters most for ios-device, the first MCP path reaching a phone over the LAN.
+    const query = new URLSearchParams(data.deepLink.slice(data.deepLink.indexOf("?") + 1));
+    expect(query.get("pin")).toMatch(/^sha256\//u);
+
+    // ...and the bootstrap blob still decodes: the pin is a separate param appended after it, so
+    // anything slicing to the end of the string instead of stopping at "&" would corrupt it.
+    expect(decodeBootstrap(data.deepLink.split("cordierite=")[1]!.split("&")[0]!)).not.toBeNull();
   });
 
   test('target "ios-device" falls back to config.json\'s iosBundleId when no bundleId is passed', async () => {
@@ -932,7 +1008,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     );
     const { sessionId, deepLink } = connectResult.structuredContent as { sessionId: string; deepLink: string };
 
-    const payload = deepLink.split("cordierite=")[1]!;
+    const payload = deepLink.split("cordierite=")[1]!.split("&")[0]!;
     const decoded = decodeBootstrap(payload)!;
 
     const waitPromise = client.request(
@@ -1011,7 +1087,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
 
     // The fallback link has to be a fresh mint: the first one was minted for 127.0.0.1 on the
     // assumption it was going to a local simulator, which is the wrong address for a scanner.
-    expect(decodeBootstrap(data.deepLink.split("cordierite=")[1]!)).not.toBeNull();
+    expect(decodeBootstrap(data.deepLink.split("cordierite=")[1]!.split("&")[0]!)).not.toBeNull();
   });
 
   test("cordierite_wait_for_session returns immediately for a session claimed before it was called", async () => {
