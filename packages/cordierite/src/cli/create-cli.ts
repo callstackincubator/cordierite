@@ -1,19 +1,18 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { cac } from "cac";
 
-const version: string = JSON.parse(
-  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../package.json"), "utf8"),
-).version;
+import { getPackageVersion } from "../package-version.js";
 
 export const createCli = () => {
+  const version = getPackageVersion();
   const cli = cac("cordierite");
 
   cli.option("--json", "Print machine-readable JSON (NDJSON for streaming commands).");
   cli.option("--no-color", "Disable terminal color in human-readable output.");
   cli.option("--state-dir <path>", "Override the Cordierite state directory (default: ~/.cordierite).");
+  cli.option(
+    "--daemon-restart",
+    "On a daemon/CLI version mismatch, restart the daemon even though that drops live sessions.",
+  );
 
   cli
     .command("keygen", "Generate a Cordierite host private key and print its app fingerprint.")

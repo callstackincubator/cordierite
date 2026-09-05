@@ -6,11 +6,11 @@
 
 import { connect, type Socket } from "node:net";
 import { spawn as spawnChildProcess } from "node:child_process";
-import { open, readFile, rm } from "node:fs/promises";
+import { open, readFile, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { RpcErrorData } from "@cordierite/shared";
+import { RPC_METHODS, type DaemonStatusResult, type RpcErrorData } from "@cordierite/shared";
 
 import { getStateDirPaths, type StateDirPaths } from "../daemon/state-dir.js";
 
@@ -43,6 +43,39 @@ export class DaemonUnavailableError extends Error {
   }
 }
 
+/**
+ * Raised when the daemon this client reached is running a different Cordierite version and could
+ * not be restarted safely — i.e. it still has live sessions and no force knob was given (issue
+ * #30). Restarting drops every session (resume tokens are in-memory; ARCHITECTURE.md §4), so the
+ * caller is told rather than silently costing the operator their connected devices.
+ */
+export class DaemonVersionMismatchError extends Error {
+  constructor(
+    readonly daemonVersion: string,
+    readonly clientVersion: string,
+    readonly sessionCount: number,
+  ) {
+    super(
+      `The running Cordierite daemon is version ${daemonVersion}, but this client is version ${clientVersion}. ` +
+        `It was not restarted automatically because ${sessionCount} session(s) are still connected and a restart drops them. ` +
+        `Run "cordierite daemon stop" once the sessions are expendable, or force it with "--daemon-restart".`,
+    );
+    this.name = "DaemonVersionMismatchError";
+  }
+}
+
+/**
+ * Opt-in daemon/client version check (issue #30). Passed by the CLI dispatcher and the MCP
+ * server's startup stream; deliberately *not* passed by `cordierite/client`, whose callers are
+ * test processes that must never have a daemon restarted out from under a live app session.
+ */
+export type VersionCheckOptions = {
+  /** The version this client actually is — always the real package version, never an override. */
+  clientVersion: string;
+  /** Restart on mismatch even when sessions are live (`--daemon-restart`, config, env). */
+  forceRestart?: boolean;
+};
+
 export type CallDaemonOptions = {
   stateDir: string;
   /** Auto-spawn a daemon on `ENOENT`/`ECONNREFUSED`. Defaults to `true`. */
@@ -54,6 +87,13 @@ export type CallDaemonOptions = {
   spawnWaitTimeoutMs?: number;
   /** Poll interval while waiting for the socket to become ready. Defaults to 100ms. */
   spawnPollIntervalMs?: number;
+  /**
+   * When set, the first call from this process to a given daemon socket compares the daemon's
+   * version with {@link VersionCheckOptions.clientVersion} and restarts the daemon when they
+   * differ and doing so is safe. The result is cached per socket path, so this costs one extra
+   * `daemon.status` round-trip per process — not per request.
+   */
+  checkVersion?: VersionCheckOptions;
 };
 
 const isConnectionMissingError = (error: unknown): boolean => {
@@ -232,6 +272,48 @@ const defaultSpawn: SpawnFn = async (args, context) => {
   }
 };
 
+type SpawnDaemonOptions = {
+  /**
+   * Runs while this caller holds the exclusive spawn-lock, before the stale-socket cleanup and the
+   * spawn itself. Returning `false` skips the spawn (the lock is still released and the socket is
+   * still awaited) — the restart path uses that to bail out when another process turned out to
+   * have already replaced the daemon while this one was queued on the lock.
+   */
+  beforeSpawn?: () => Promise<boolean>;
+  /**
+   * When this caller loses the spawn-lock race, wait for the lock to be released before polling
+   * the socket. The default (`false`) only polls the socket, which is right for a plain spawn —
+   * any listener at the path is the daemon we wanted. It is wrong for a *restart*, where the
+   * socket may still belong to the very daemon the lock holder is in the middle of replacing.
+   */
+  awaitLockRelease?: boolean;
+};
+
+const pollUntilLockReleased = async (
+  lockPath: string,
+  timeoutMs: number,
+  pollIntervalMs: number,
+): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (!(await pathExists(lockPath))) {
+      return;
+    }
+
+    await sleep(pollIntervalMs);
+  }
+};
+
+const pathExists = async (target: string): Promise<boolean> => {
+  try {
+    await stat(target);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Takes the exclusive spawn-lock, spawns `daemon run` detached if this caller wins the race
  * (the loser just polls), then waits for the socket to become ready.
@@ -241,6 +323,7 @@ const spawnDaemonAndWait = async (
   spawn: SpawnFn,
   waitTimeoutMs: number,
   pollIntervalMs: number,
+  options: SpawnDaemonOptions = {},
 ): Promise<void> => {
   let acquiredLock = false;
 
@@ -256,11 +339,17 @@ const spawnDaemonAndWait = async (
 
   if (acquiredLock) {
     try {
-      await unlinkStaleSocketIfDaemonDead(paths);
-      await spawn(["daemon", "run"], { stateDir: paths.root, logFilePath: paths.logFilePath });
+      const shouldSpawn = options.beforeSpawn ? await options.beforeSpawn() : true;
+
+      if (shouldSpawn) {
+        await unlinkStaleSocketIfDaemonDead(paths);
+        await spawn(["daemon", "run"], { stateDir: paths.root, logFilePath: paths.logFilePath });
+      }
     } finally {
       await rm(paths.spawnLockPath, { force: true });
     }
+  } else if (options.awaitLockRelease) {
+    await pollUntilLockReleased(paths.spawnLockPath, waitTimeoutMs, pollIntervalMs);
   }
 
   const ready = await pollForSocket(paths.socketPath, waitTimeoutMs, pollIntervalMs);
@@ -270,6 +359,257 @@ const spawnDaemonAndWait = async (
       `Timed out waiting for the Cordierite daemon socket at "${paths.socketPath}".`,
     );
   }
+};
+
+// ---------------------------------------------------------------------------------------------
+// Daemon/client version drift (issue #30, ARCHITECTURE.md §4)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * One in-flight-or-settled check per daemon socket path, so the extra `daemon.status` costs one
+ * round-trip per process and concurrent callers (e.g. the MCP server's stream plus a first
+ * `tools.list`) share a single check and a single restart rather than racing each other.
+ */
+const versionChecks = new Map<string, Promise<void>>();
+
+/** Test seam: drops the per-process check cache so each test case starts from a clean slate. */
+export const resetDaemonVersionChecks = (): void => {
+  versionChecks.clear();
+};
+
+/** How many times the check will re-read status and restart before giving up and reporting the
+ * mismatch. >1 only matters when several processes race to replace the same daemon. */
+const MAX_VERSION_CHECK_ATTEMPTS = 3;
+
+type VersionCheckContext = {
+  paths: StateDirPaths;
+  spawn: SpawnFn;
+  autoSpawn: boolean;
+  requestTimeoutMs: number;
+  waitTimeoutMs: number;
+  pollIntervalMs: number;
+  check: VersionCheckOptions;
+};
+
+/** `daemon.status`, auto-spawning a daemon first when nothing is listening. */
+const readStatusSpawningIfNeeded = async (context: VersionCheckContext): Promise<DaemonStatusResult> => {
+  try {
+    return await sendRequest<DaemonStatusResult>(
+      context.paths.socketPath,
+      RPC_METHODS.daemonStatus,
+      {},
+      context.requestTimeoutMs,
+    );
+  } catch (error) {
+    if (!context.autoSpawn || !isConnectionMissingError(error)) {
+      throw error;
+    }
+
+    await spawnDaemonAndWait(context.paths, context.spawn, context.waitTimeoutMs, context.pollIntervalMs);
+
+    return sendRequest<DaemonStatusResult>(
+      context.paths.socketPath,
+      RPC_METHODS.daemonStatus,
+      {},
+      context.requestTimeoutMs,
+    );
+  }
+};
+
+/** `daemon.status` against whatever is listening right now; `undefined` when nothing is. */
+const readStatusIfReachable = async (
+  context: VersionCheckContext,
+): Promise<DaemonStatusResult | undefined> => {
+  try {
+    return await sendRequest<DaemonStatusResult>(
+      context.paths.socketPath,
+      RPC_METHODS.daemonStatus,
+      {},
+      context.requestTimeoutMs,
+    );
+  } catch (error) {
+    if (isDaemonUnreachableError(error)) {
+      return undefined;
+    }
+
+    throw error;
+  }
+};
+
+/**
+ * True once nothing can answer at the socket *and* the pidfile no longer names a live process.
+ * Both halves matter: the daemon closes its listener before releasing the pidfile, so a fresh
+ * daemon spawned on "socket is gone" alone can lose the pidfile's `O_EXCL` race against the
+ * outgoing one and die with `DaemonAlreadyRunningError`.
+ */
+const isDaemonGone = async (paths: StateDirPaths): Promise<boolean> => {
+  if (await isSocketConnectable(paths.socketPath)) {
+    return false;
+  }
+
+  let pid: number | undefined;
+
+  try {
+    pid = Number.parseInt((await readFile(paths.pidFilePath, "utf8")).trim(), 10);
+  } catch {
+    return true;
+  }
+
+  return pid === undefined || Number.isNaN(pid) || !isPidAlive(pid);
+};
+
+const pollUntilDaemonGone = async (
+  paths: StateDirPaths,
+  timeoutMs: number,
+  pollIntervalMs: number,
+): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (await isDaemonGone(paths)) {
+      return true;
+    }
+
+    await sleep(pollIntervalMs);
+  }
+
+  return isDaemonGone(paths);
+};
+
+/**
+ * Replaces the running daemon with one spawned from this client's build. Runs under the same
+ * exclusive spawn-lock as a cold-start spawn, so two upgraded CLIs starting at once produce one
+ * replacement daemon, not two — and the loser waits for the lock rather than for a socket that
+ * may still be the outgoing daemon's.
+ */
+const restartDaemon = async (context: VersionCheckContext): Promise<void> => {
+  await spawnDaemonAndWait(
+    context.paths,
+    context.spawn,
+    context.waitTimeoutMs,
+    context.pollIntervalMs,
+    {
+      awaitLockRelease: true,
+      beforeSpawn: async () => {
+        // Re-read under the lock: another process may have replaced the daemon while this one was
+        // queued, and a session may have been claimed since the status read that decided a restart
+        // was safe. (Not fully atomic — the daemon has no compare-and-shutdown — but it closes the
+        // window that a slow lock wait would otherwise leave wide open.)
+        const status = await readStatusIfReachable(context);
+
+        if (status === undefined) {
+          return true;
+        }
+
+        if (status.version === context.check.clientVersion) {
+          return false;
+        }
+
+        if (status.sessions.length > 0 && !context.check.forceRestart) {
+          throw new DaemonVersionMismatchError(
+            status.version,
+            context.check.clientVersion,
+            status.sessions.length,
+          );
+        }
+
+        try {
+          await sendRequest(
+            context.paths.socketPath,
+            RPC_METHODS.daemonShutdown,
+            {},
+            context.requestTimeoutMs,
+          );
+        } catch (error) {
+          // `daemon.shutdown` answers before teardown finishes, so a dropped connection here is
+          // an ordinary outcome; the poll below is what actually establishes the daemon is gone.
+          if (!isDaemonUnreachableError(error)) {
+            throw error;
+          }
+        }
+
+        if (!(await pollUntilDaemonGone(context.paths, context.waitTimeoutMs, context.pollIntervalMs))) {
+          throw new DaemonUnavailableError(
+            `The Cordierite daemon at "${context.paths.socketPath}" did not shut down in time; run "cordierite daemon stop" and retry.`,
+          );
+        }
+
+        return true;
+      },
+    },
+  );
+};
+
+const runVersionCheck = async (context: VersionCheckContext): Promise<void> => {
+  let lastStatus: DaemonStatusResult | undefined;
+
+  for (let attempt = 0; attempt < MAX_VERSION_CHECK_ATTEMPTS; attempt += 1) {
+    const status = await readStatusSpawningIfNeeded(context);
+    lastStatus = status;
+
+    if (status.version === context.check.clientVersion) {
+      return;
+    }
+
+    if (status.sessions.length > 0 && !context.check.forceRestart) {
+      throw new DaemonVersionMismatchError(
+        status.version,
+        context.check.clientVersion,
+        status.sessions.length,
+      );
+    }
+
+    await restartDaemon(context);
+  }
+
+  throw new DaemonVersionMismatchError(
+    lastStatus?.version ?? "unknown",
+    context.check.clientVersion,
+    lastStatus?.sessions.length ?? 0,
+  );
+};
+
+/**
+ * Runs {@link runVersionCheck} at most once per process per daemon socket. A mismatch that could
+ * not be resolved stays cached (every later call in this process would reach the same daemon and
+ * fail the same way); a transient failure does not, so a retry can still succeed.
+ */
+const ensureDaemonVersion = async (
+  paths: StateDirPaths,
+  options: CallDaemonOptions,
+  spawn: SpawnFn,
+): Promise<void> => {
+  const check = options.checkVersion;
+
+  if (!check) {
+    return;
+  }
+
+  const cached = versionChecks.get(paths.socketPath);
+
+  if (cached) {
+    return cached;
+  }
+
+  const pending = runVersionCheck({
+    paths,
+    spawn,
+    autoSpawn: options.autoSpawn ?? true,
+    requestTimeoutMs: options.requestTimeoutMs ?? 10_000,
+    waitTimeoutMs: options.spawnWaitTimeoutMs ?? 5000,
+    pollIntervalMs: options.spawnPollIntervalMs ?? 100,
+    check,
+  }).catch((error: unknown) => {
+    if (!(error instanceof DaemonVersionMismatchError)) {
+      versionChecks.delete(paths.socketPath);
+    }
+
+    throw error;
+  });
+
+  versionChecks.set(paths.socketPath, pending);
+
+  return pending;
 };
 
 /** Calls a daemon RPC method, auto-spawning the daemon on a missing/refused connection. */
@@ -282,6 +622,10 @@ export const callDaemon = async <TResult>(
   const autoSpawn = options.autoSpawn ?? true;
   const spawn = options.spawn ?? defaultSpawn;
   const requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
+
+  // Runs before the request so this call is answered by a daemon of the right version — never
+  // half-answered by the outgoing one.
+  await ensureDaemonVersion(paths, options, spawn);
 
   try {
     return await sendRequest<TResult>(paths.socketPath, method, params, requestTimeoutMs);
@@ -344,6 +688,10 @@ export const openDaemonStream = async (
       socket.once("error", onError);
     });
   };
+
+  // Resolved before the stream's socket is opened, so the connection this stream keeps for its
+  // whole life belongs to a daemon of the right version and no caller ever observes two daemons.
+  await ensureDaemonVersion(paths, options, spawn);
 
   let socket: Socket;
 

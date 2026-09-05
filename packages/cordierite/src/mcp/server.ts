@@ -10,10 +10,6 @@
  * `tool_call_started` event that reveals the call's `callId` is unambiguous.
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
@@ -28,7 +24,8 @@ import { RPC_METHODS, type EventKind, type EventNotification, type SessionsListR
 
 import type { ExecFn } from "../cli/open-target.js";
 import { clampTimeout, deriveCallTransportTimeoutMs } from "../daemon/calls.js";
-import { DaemonRpcError, openDaemonStream, type SpawnFn } from "../rpc/client.js";
+import { getPackageVersion } from "../package-version.js";
+import { DaemonRpcError, openDaemonStream, type SpawnFn, type VersionCheckOptions } from "../rpc/client.js";
 import {
   CONNECT_TOOL_DESCRIPTOR,
   CONNECT_TOOL_NAME,
@@ -50,9 +47,7 @@ import {
 import { createMcpToolMapper, emitsMcpOutputSchema } from "./tool-mapping.js";
 import { findNamespacedTool, namespacedToolsSnapshotKey, type NamespacedTool } from "./tool-namespace.js";
 
-const packageVersion: string = JSON.parse(
-  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../package.json"), "utf8"),
-).version;
+const packageVersion = getPackageVersion();
 
 export const SESSIONS_RESOURCE_URI = "cordierite://sessions";
 
