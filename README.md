@@ -32,8 +32,10 @@ useCordieriteTool({
 });
 ```
 
-The hook registers once per mount — re-rendering costs nothing, and the handler always sees the
-latest state it closes over.
+The hook registers once per mount — re-rendering costs nothing for a schema that exports JSON
+Schema (Zod 4, ArkType) or is hoisted out of the component, and the handler always sees the latest
+state it closes over. The [package README](packages/react-native/README.md#5-define-tools-in-app-startup-code)
+covers the one exception, schemas that cannot export JSON Schema.
 
 Call it from your terminal:
 

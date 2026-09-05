@@ -782,6 +782,53 @@ describe("createUseCordieriteTool", () => {
       expect(registrations[1]?.removed).toBe(false);
     });
 
+    test("a disabled hook never exports JSON Schema, however often it re-renders", async () => {
+      const { registerTool, registrations } = makeRegisterTool();
+      const { createUseCordieriteTool } = await import("../useCordieriteTool");
+      const useCordieriteTool = createUseCordieriteTool(
+        registerTool,
+        realEntryOptions,
+      );
+
+      // A disabled tool never reaches `registerTool`, so there is nothing for a registration key
+      // to describe -- deriving one would export JSON Schema every render for no reason.
+      let exportCount = 0;
+      const render = () =>
+        host.render(() =>
+          useCordieriteTool(
+            {
+              name: "t",
+              description: "test tool",
+              // Rebuilt inline every render, so identity never hits the memo.
+              inputSchema: {
+                "~standard": {
+                  version: 1,
+                  vendor: "test",
+                  validate: (value: unknown) => ({ value }),
+                  jsonSchema: {
+                    input: () => {
+                      exportCount += 1;
+                      return { type: "object" };
+                    },
+                    output: () => ({ type: "object" }),
+                  },
+                },
+              } as unknown as CordieriteRuntimeSchema,
+              handler: () => undefined,
+            },
+            undefined,
+            { enabled: false },
+          ),
+        );
+
+      render();
+      render();
+      render();
+
+      expect(registrations).toHaveLength(0);
+      expect(exportCount).toBe(0);
+    });
+
     test("unmounting while disabled is a no-op — nothing was registered, so there is nothing to remove", async () => {
       const { registerTool, registrations } = makeRegisterTool();
       const { createUseCordieriteTool } = await import("../useCordieriteTool");

@@ -392,8 +392,10 @@ Client behavior:
   enforcement point inside the app's own trust boundary (§12). The JSON Schema exporter is
   injected into `createUseCordieriteTool` by the `.` entry and deliberately omitted by
   `./noop`, whose registrar registers nothing: the inert entry keys the effect off
-  `enabled` alone and never imports schema export at all. Signature, arity and observable
-  behavior stay identical, which is what `__tests__/noop-parity.test.ts` pins.
+  `enabled` alone and never imports schema export at all. `__tests__/noop-parity.test.ts`
+  pins the API shape and arity; the behavioral half — that the inert entry never exports,
+  and still honors `enabled` — is pinned by the "inert entry" cases in
+  `__tests__/use-cordierite-tool.test.ts`.
 - `postEvent(name, payload?)` — emits an `event` frame when active; silently drops (dev
   warning) otherwise.
 - Unified listener: `addCordieriteListener(kind, cb)` with kinds `stateChange`,

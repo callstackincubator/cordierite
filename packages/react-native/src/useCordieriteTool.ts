@@ -188,10 +188,18 @@ export function createUseCordieriteTool(
     // spreading it.
     const hasDeps = deps !== undefined && deps !== null;
 
-    // The key is only derived when `deps` is omitted: a caller who passed `deps` opted out of it
-    // entirely and should not pay for a JSON Schema export they did not ask for.
+    // Which branch the dependency array takes -- deliberately independent of `enabled`, so the
+    // array's length never changes between renders. The key is only derived when `deps` is
+    // omitted: a caller who passed `deps` opted out of it entirely and should not pay for a JSON
+    // Schema export they did not ask for.
     const derivesKey = !hasDeps && exportSchema !== undefined;
-    const inputSchemaKey = derivesKey
+
+    // Whether to actually do that work this render. A disabled tool never reaches `registerTool`,
+    // so there is nothing for a key to describe: leave every entry `undefined` and skip the
+    // export. Re-enabling always re-runs the effect anyway, because `enabled` is itself a
+    // dependency, and the memos are untouched meanwhile so an unchanged schema still hits them.
+    const derivesKeyNow = derivesKey && enabled;
+    const inputSchemaKey = derivesKeyNow
       ? schemaKey(
           definition.inputSchema,
           "input",
@@ -199,7 +207,7 @@ export function createUseCordieriteTool(
           schemaKeyMemosRef.current.input,
         )
       : undefined;
-    const outputSchemaKey = derivesKey
+    const outputSchemaKey = derivesKeyNow
       ? schemaKey(
           definition.outputSchema,
           "output",
@@ -208,7 +216,7 @@ export function createUseCordieriteTool(
         )
       : undefined;
     const annotationsKey =
-      derivesKey && definition.annotations !== undefined
+      derivesKeyNow && definition.annotations !== undefined
         ? JSON.stringify(definition.annotations)
         : undefined;
 
