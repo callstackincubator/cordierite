@@ -10,6 +10,20 @@ package versions for a release.
 
 ## Unreleased
 
+- **New: the CLI and MCP server detect a daemon left running on an older version, and restart it
+  when that is safe.** The daemon is long-lived and never exits on its own, so
+  `npm i -g cordierite@<newer>` left every later command talking to the previous build — a 0.6.0
+  CLI against a 0.5.x daemon got an opaque "method not found" for `cordierite events --since` or
+  `cordierite_wait_for_event`, with nothing pointing at `cordierite daemon stop`. Each CLI/MCP
+  process now compares `daemon.status`'s `version` with its own once, on its first connection
+  (cached per daemon socket, so one extra round-trip per process, not per request). With no live
+  sessions the daemon is replaced transparently; with sessions connected the command fails with a
+  `connection_error` naming both versions, the session count, and the remedy, because a restart
+  drops every session (resume tokens live in daemon memory). Force the restart with the new global
+  `--daemon-restart` flag, `CORDIERITE_DAEMON_RESTART=1`, or `config.json`'s new
+  `restartDaemonOnVersionMismatch`. `cordierite daemon status` reports drift as a warning and never
+  restarts the daemon it was asked about; `daemon run`/`stop` and the `cordierite/client` test SDK
+  opt out entirely. See `docs/ARCHITECTURE.md` §4, "Version drift".
 - **New: `inputSchema`/`outputSchema` accept a `{ schema, jsonSchema }` pair and raw JSON
   Schema objects.** Previously a tool schema had to be a Standard Schema *and* implement the
   non-standard `~standard.jsonSchema` exporter to give agents a real shape; zod 3 and plain

@@ -90,7 +90,8 @@ The daemon refuses to load a key file that is group/world-readable.
   "eventBufferSize": 256,
   "policy": { "default": "allow", "destructive": "allow" },
   "advertisedIp": null,
-  "scheme": null
+  "scheme": null,
+  "restartDaemonOnVersionMismatch": false
 }
 ```
 
@@ -98,6 +99,8 @@ The daemon refuses to load a key file that is group/world-readable.
 payloads. `scheme` is the deep-link URI scheme composed into `cordierite link`'s output
 when `--scheme` is not passed (§10) — set it once here instead of on every invocation.
 `eventBufferSize` caps the per-session `events.since` retention buffer (§5).
+`restartDaemonOnVersionMismatch` makes version-drift restarts unconditional rather than
+only-when-no-sessions-are-live (§4, "Version drift").
 
 ## 4. Daemon lifecycle
 
@@ -115,6 +118,31 @@ when `--scheme` is not passed (§10) — set it once here instead of on every in
   liveness with `process.kill(pid, 0)` and take over only if dead).
 - SIGINT/SIGTERM: close all device sockets with code 1001, remove `daemon.sock` and
   `daemon.pid`, flush audit, exit 0.
+- **Version drift:** the daemon outlives the CLI that spawned it, so `npm i -g cordierite@<newer>`
+  leaves the *old* daemon serving every later command — and a client that speaks a newer RPC
+  surface (0.6.0's `tools.cancel`/`events.since`, say) gets an opaque "method not found" instead of
+  a usable diagnosis. On its first connection, a CLI or MCP process therefore reads
+  `daemon.status`'s `version` once and compares it with its own package version. One extra
+  round-trip per process, not per request: the outcome is cached per daemon socket, and concurrent
+  callers share a single check.
+  - **Matching** — proceed, nothing else happens.
+  - **Mismatched, no live sessions** — the daemon is replaced transparently: `daemon.shutdown`,
+    poll until both the socket and the pidfile are released (the daemon answers `shutdown` before
+    tearing down, and releases the pidfile *after* the socket, so "socket gone" alone would race
+    the replacement's `O_EXCL` pidfile acquisition), then the normal auto-spawn path. The whole
+    sequence runs under the same exclusive spawn-lock as a cold start, and re-checks the version
+    and session count while holding it, so racing upgraded clients produce one replacement daemon.
+  - **Mismatched, with live sessions** — the command fails with a `connection_error` naming both
+    versions, the session count, and the remedies. Restarting would drop every session: resume
+    tokens are in-daemon memory (§3, §6), so an app's resume after a restart fails closed with
+    1008. Force it with the global `--daemon-restart` flag, `CORDIERITE_DAEMON_RESTART=1`, or
+    `config.json`'s `restartDaemonOnVersionMismatch` (§3).
+  - `daemon run` is the daemon; `daemon stop` is already the remedy; `daemon status` reports drift
+    as a `warning` and never restarts the daemon it was asked to describe. `keygen` and `doctor`
+    never open a daemon connection. The `cordierite/client` test SDK deliberately opts out, so a
+    spec can never have the daemon restarted out from under a live app session.
+  - Out of scope: drift introduced *after* a long-lived MCP server has started. Nothing re-checks
+    an established connection; the operator restarts the MCP server.
 
 ## 5. Control plane RPC (UDS)
 
@@ -365,7 +393,7 @@ server can't drift in behavior: they are the same calls.
 
 The per-command reference lives in the [`cordierite` package README](../packages/cordierite/README.md),
 which is where it stays current. Global flags: `--json` (machine output, NDJSON for streams),
-`--no-color`, `--state-dir`. The `--scheme` used to compose a deep link comes from the flag,
+`--no-color`, `--state-dir`, `--daemon-restart` (force a version-drift restart, §4). The `--scheme` used to compose a deep link comes from the flag,
 else `config.json`, else a clear error.
 
 `cordierite invoke`: a SIGINT while the call is still pending cancels it (§5's
