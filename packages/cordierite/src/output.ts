@@ -277,11 +277,13 @@ const renderDaemonStatusData = (colors: ColorPalette, data: DaemonStatusCommandD
       ["Overrides", data.policy.tools ? Object.keys(data.policy.tools).length : 0],
     ]),
     "",
+    // The retention rows drop out entirely against a daemon that predates them (`renderFields`
+    // skips `undefined`), rather than printing "undefined" or an invented zero.
     ...renderFields("Audit", [
       ["Path", data.audit.path],
-      ["Retention", `${data.audit.retention_days} days`],
+      ["Retention", data.audit.retention_days === undefined ? undefined : `${data.audit.retention_days} days`],
       ["Files", data.audit.files],
-      ["Size", formatByteSize(data.audit.bytes)],
+      ["Size", data.audit.bytes === undefined ? undefined : formatByteSize(data.audit.bytes)],
       ["Failed writes", data.audit.failed_writes],
       ["Failed prunes", data.audit.failed_prunes],
     ]),

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 
+import type { DaemonStatusCommandData } from "../cli/result-types.js";
 import { renderEventLine, renderEventsCursorLine, renderResult } from "../output.js";
 import { FIXED_NOW } from "./fixtures.js";
 
@@ -325,5 +326,76 @@ describe("renderEventsCursorLine", () => {
     const line = renderEventsCursorLine(42, { json: false, color: false });
     expect(line).toContain("42");
     expect(line).toContain("--since 42");
+  });
+});
+
+describe("daemon status rendering", () => {
+  const renderStatus = (audit: DaemonStatusCommandData["audit"]): string => {
+    return renderResult(
+      {
+        ok: true,
+        data: {
+          daemon: {
+            version: "0.7.0",
+            pid: 4242,
+            started_at: FIXED_NOW.toISOString(),
+            wss_port: 8443,
+            pinned_keys: ["sha256/abc"],
+            session_count: 1,
+          },
+          policy: { default: "allow", destructive: "deny" },
+          audit,
+        } satisfies DaemonStatusCommandData,
+        meta: { command: "daemon status", timestamp: FIXED_NOW.toISOString(), duration_ms: 4 },
+      },
+      { command: "daemon status", json: false, color: false },
+    ).stdout ?? "";
+  };
+
+  test("renders the audit footprint with a human-readable size", () => {
+    const stdout = renderStatus({
+      path: "/tmp/state/audit",
+      failed_writes: 0,
+      failed_prunes: 2,
+      retention_days: 30,
+      files: 12,
+      bytes: 1_572_864,
+    });
+
+    expect(stdout).toContain("Retention      30 days");
+    expect(stdout).toContain("Files          12");
+    expect(stdout).toContain("Size           1.5 MiB");
+    expect(stdout).toContain("Failed prunes  2");
+    expect(stdout).toMatchSnapshot();
+  });
+
+  test("scales byte sizes through the binary units, and leaves raw bytes undecorated", () => {
+    // Matched loosely on the gap: `renderFields` pads labels to the widest *visible* one, which
+    // changes with the rows this particular status happens to carry.
+    const sizeRow = (bytes: number): string => {
+      return /^ {2}Size +(.+)$/mu.exec(renderStatus({ path: "/a", failed_writes: 0, bytes, files: 1 }))?.[1] ?? "";
+    };
+
+    expect(sizeRow(0)).toBe("0 B");
+    expect(sizeRow(512)).toBe("512 B");
+    expect(sizeRow(1023)).toBe("1023 B");
+    expect(sizeRow(1024)).toBe("1.0 KiB");
+    expect(sizeRow(1536)).toBe("1.5 KiB");
+    expect(sizeRow(10 * 1024 ** 3)).toBe("10.0 GiB");
+    // Saturates at the largest unit rather than inventing one past TiB.
+    expect(sizeRow(5 * 1024 ** 5)).toBe("5120.0 TiB");
+  });
+
+  test("omits the retention rows entirely for a daemon that predates them", () => {
+    const stdout = renderStatus({ path: "/tmp/state/audit", failed_writes: 3 });
+
+    // Never "undefined", and never an invented zero — the rows simply are not there.
+    expect(stdout).not.toContain("undefined");
+    expect(stdout).not.toContain("Retention");
+    expect(stdout).not.toContain("Files");
+    expect(stdout).not.toContain("Size");
+    expect(stdout).not.toContain("Failed prunes");
+    expect(stdout).toContain("Failed writes  3");
+    expect(stdout).toMatchSnapshot();
   });
 });

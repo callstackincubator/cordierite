@@ -123,6 +123,13 @@ export const handleDaemonStatusCommand = async (
     { stateDir: context.stateDir, autoSpawn: true, spawn: context.spawn },
   );
 
+  // The wire type declares the retention fields required, as it must for any daemon built from
+  // this tree — but the daemon on the other end of the socket may predate them, and a running
+  // daemon outlives the CLI upgrade that would replace it. Reading them through a partial view
+  // keeps that possibility in the types instead of in a comment, and leaves each one `undefined`
+  // rather than `0` when it was never reported.
+  const retention: Partial<DaemonStatusResult["audit"]> = status.audit;
+
   return {
     ok: true,
     data: {
@@ -138,10 +145,10 @@ export const handleDaemonStatusCommand = async (
       audit: {
         path: status.audit.path,
         failed_writes: status.audit.failedWrites,
-        failed_prunes: status.audit.failedPrunes,
-        retention_days: status.audit.retentionDays,
-        files: status.audit.files,
-        bytes: status.audit.bytes,
+        failed_prunes: retention.failedPrunes,
+        retention_days: retention.retentionDays,
+        files: retention.files,
+        bytes: retention.bytes,
       },
     },
   };
