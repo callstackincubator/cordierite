@@ -457,15 +457,17 @@ describe("daemon: audit retention", () => {
       }
 
       // Reported as absent, not as zero: the CLI was never told, and "0 files retained" would be
-      // a different (and false) claim. `--json` drops the keys entirely.
-      expect(result.data.audit).toEqual({
-        path: paths.auditDir,
-        failed_writes: 3,
-        failed_prunes: undefined,
-        retention_days: undefined,
-        files: undefined,
-        bytes: undefined,
-      });
+      // a different (and false) claim. Asserted as *missing keys* rather than as keys holding
+      // `undefined`, since `toEqual` treats those as interchangeable and would pass just as
+      // happily against a build that fabricated zeroes... no, worse: against one that read the
+      // fields straight through and got `undefined` by accident. The distinction this test exists
+      // to protect is the one `toHaveProperty` can see.
+      expect(result.data.audit).not.toHaveProperty("failed_prunes");
+      expect(result.data.audit).not.toHaveProperty("retention_days");
+      expect(result.data.audit).not.toHaveProperty("files");
+      expect(result.data.audit).not.toHaveProperty("bytes");
+      expect(result.data.audit.path).toBe(paths.auditDir);
+      expect(result.data.audit.failed_writes).toBe(3);
       expect(JSON.parse(JSON.stringify(result.data.audit))).toEqual({
         path: paths.auditDir,
         failed_writes: 3,

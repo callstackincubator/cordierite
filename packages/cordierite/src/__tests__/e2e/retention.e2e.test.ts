@@ -38,16 +38,25 @@ describe("e2e: state-dir retention", () => {
       await writeFile(paths.logFilePath, stale, { mode: 0o600 });
       expect(stale.length).toBeGreaterThan(1024);
 
-      // An audit day file the daemon must keep (inside the window) and one it must delete.
-      const today = new Date().toISOString().slice(0, 10);
+      // A day file the startup sweep must delete. Written before the daemon starts, so the sweep
+      // actually sees it.
       const { mkdir } = await import("node:fs/promises");
       await mkdir(paths.auditDir, { recursive: true });
-      await writeFile(path.join(paths.auditDir, `${today}.jsonl`), "{}\n", { mode: 0o600 });
       await writeFile(path.join(paths.auditDir, "2020-01-01.jsonl"), "{}\n", { mode: 0o600 });
 
-      const start = await runCliJson<{ daemon: { pid: number } }>(["daemon", "start"], stateDir);
+      const start = await runCliJson<{ daemon: { pid: number; started_at: string } }>(
+        ["daemon", "start"],
+        stateDir,
+      );
       expect(start.ok).toBe(true);
       trackDaemonPid(start.data!.daemon.pid);
+
+      // "Today" comes from the daemon's own clock (`started_at`), not this process's, so the
+      // fixture is dated by the same clock that decides what to prune — no UTC-rollover window
+      // between the two. Written after startup, which is safe: the sweep has already run and the
+      // next one is 24 h away, and today's file is one pruning can never take regardless.
+      const today = start.data!.daemon.started_at.slice(0, 10);
+      await writeFile(path.join(paths.auditDir, `${today}.jsonl`), "{}\n", { mode: 0o600 });
 
       // Rotated aside before the freshly spawned daemon opened its own log.
       const backupPath = `${paths.logFilePath}.1`;
@@ -56,6 +65,16 @@ describe("e2e: state-dir retention", () => {
       expect((await stat(paths.logFilePath)).size).toBeLessThan(stale.length);
       expect((await stat(paths.logFilePath)).mode & 0o777).toBe(0o600);
       expect(await exists(`${backupPath}.1`)).toBe(false);
+
+      // The startup sweep is fire-and-forget, so wait for its effect rather than assuming it has
+      // landed by the time the status call returns.
+      const stalePath = path.join(paths.auditDir, "2020-01-01.jsonl");
+      const deadline = Date.now() + 5000;
+      while ((await exists(stalePath)) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(await exists(stalePath)).toBe(false);
+      expect(await exists(path.join(paths.auditDir, `${today}.jsonl`))).toBe(true);
 
       const status = await runCliJson<{
         audit: { path: string; retention_days: number; files: number; bytes: number; failed_prunes: number };
@@ -67,11 +86,8 @@ describe("e2e: state-dir retention", () => {
         retention_days: 7,
         failed_prunes: 0,
       });
-      // The startup sweep deleted the 2020 file and kept today's.
       expect(status.data!.audit.files).toBe(1);
       expect(status.data!.audit.bytes).toBeGreaterThan(0);
-      expect(await exists(path.join(paths.auditDir, "2020-01-01.jsonl"))).toBe(false);
-      expect(await exists(path.join(paths.auditDir, `${today}.jsonl`))).toBe(true);
 
       const stop = await runCliJson(["daemon", "stop"], stateDir);
       expect(stop.ok).toBe(true);

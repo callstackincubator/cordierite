@@ -114,6 +114,12 @@ export const handleDaemonStopCommand = async (
   }
 };
 
+/** Drops the entries whose value is `undefined`, so spreading the result adds only keys that
+ * carry an actual answer. */
+const definedOnly = <T extends Record<string, unknown>>(fields: T): Partial<T> => {
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) as Partial<T>;
+};
+
 export const handleDaemonStatusCommand = async (
   context: DaemonCommandContext,
 ): Promise<CliResult<DaemonStatusCommandData>> => {
@@ -145,10 +151,16 @@ export const handleDaemonStatusCommand = async (
       audit: {
         path: status.audit.path,
         failed_writes: status.audit.failedWrites,
-        failed_prunes: retention.failedPrunes,
-        retention_days: retention.retentionDays,
-        files: retention.files,
-        bytes: retention.bytes,
+        // Spread so an unreported field is a *missing key*, not a key holding `undefined`. The two
+        // serialize identically, but only the first is honestly shaped: a caller can ask whether
+        // the daemon answered, and `--json` consumers see the same absence in-process as on the
+        // wire.
+        ...definedOnly({
+          failed_prunes: retention.failedPrunes,
+          retention_days: retention.retentionDays,
+          files: retention.files,
+          bytes: retention.bytes,
+        }),
       },
     },
   };

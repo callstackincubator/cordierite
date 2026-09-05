@@ -387,15 +387,29 @@ describe("daemon status rendering", () => {
   });
 
   test("omits the retention rows entirely for a daemon that predates them", () => {
-    const stdout = renderStatus({ path: "/tmp/state/audit", failed_writes: 3 });
+    const populated = renderStatus({
+      path: "/tmp/state/audit",
+      failed_writes: 3,
+      failed_prunes: 0,
+      retention_days: 30,
+      files: 1,
+      bytes: 10,
+    });
+    const legacy = renderStatus({ path: "/tmp/state/audit", failed_writes: 3 });
 
-    // Never "undefined", and never an invented zero — the rows simply are not there.
-    expect(stdout).not.toContain("undefined");
-    expect(stdout).not.toContain("Retention");
-    expect(stdout).not.toContain("Files");
-    expect(stdout).not.toContain("Size");
-    expect(stdout).not.toContain("Failed prunes");
-    expect(stdout).toContain("Failed writes  3");
-    expect(stdout).toMatchSnapshot();
+    // Never "undefined", and never an invented zero — the labels simply are not there.
+    expect(legacy).not.toContain("undefined");
+    for (const label of ["Retention", "Files", "Size", "Failed prunes"]) {
+      expect(legacy).not.toContain(label);
+      expect(populated).toContain(label);
+    }
+
+    // The two must actually render differently: an implementation that printed the retention rows
+    // unconditionally, or dropped them from both, would satisfy either check alone.
+    expect(legacy).not.toBe(populated);
+    expect(legacy.split("\n").length).toBeLessThan(populated.split("\n").length);
+
+    expect(legacy).toContain("Failed writes  3");
+    expect(legacy).toMatchSnapshot();
   });
 });
