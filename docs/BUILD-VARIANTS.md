@@ -78,7 +78,15 @@ CORDIERITE_ENABLED=0 npx expo prebuild && CORDIERITE_ENABLED=0 npx expo run:ios 
 ```
 
 Accepted values are `1`/`true` and `0`/`false`, case-insensitive; unset or empty means the
-dev-only default described above. Any other value is a config error, raised at prebuild.
+dev-only default described above.
+
+**A value that is neither is only caught on the Expo path.** The config plugin throws at
+prebuild, but nothing else does, and the two platforms then disagree: autolinking's
+`react-native.config.js` swallows the parse error and falls back to linking Cordierite into
+**every** build, while `android/build.gradle` treats anything but `1`/`true` as off and
+compiles the `release` stub. A bare-RN pipeline gets no error at all — check the built
+artifact with `cordierite doctor` ([`CI.md`](CI.md#release-gate-cordierite-doctor)) rather
+than trusting the variable's spelling.
 
 **One variable, every surface.** Cordierite ships its own `react-native.config.js` that
 reads the variable and sets `ios.configurations` in autolinking accordingly;
@@ -225,7 +233,8 @@ module.exports = withCordierite(config);
 
 With no options it reads `CORDIERITE_ENABLED` itself, so the same variable that drops the
 native module strips the JS. Pass `{ include: false }` to force the strip, or
-`{ include: <your own predicate> }` to key it off something else entirely.
+`{ include: yourCondition }` with a boolean you compute yourself to key it off something
+else entirely — `include` is a boolean, not a callback.
 
 When stripping, every specifier this package exposes as a real JS module entry point
 (derived from `package.json`'s `exports`, not a hardcoded `.`/`/auto` list, so a future

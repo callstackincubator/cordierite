@@ -16,7 +16,7 @@ The **`cordierite`** package is the operator/agent side of Cordierite: a long-li
 ## Getting started
 
 ```bash
-npm install cordierite
+npm install -g cordierite
 cordierite link --scheme myapp --qr
 ```
 
@@ -118,7 +118,7 @@ const { events, cursor } = await app.events();               // pull: what alrea
 const next = await app.waitForEvent("checkout_done", { since: cursor });
 ```
 
-For everything else, the package exports `runCli` and the command handlers from [`src/index.ts`](src/index.ts), so you can embed the same behavior in Node or Bun scripts without shelling out.
+For everything else, the package exports `runCli` and the command handlers from [`src/index.ts`](https://github.com/callstackincubator/cordierite/blob/main/packages/cordierite/src/index.ts), so you can embed the same behavior in Node or Bun scripts without shelling out.
 
 ## Keys and pins
 
@@ -153,8 +153,8 @@ Exit codes, what it inspects per platform, the Android marker-only detection rul
 
 ## Related packages
 
-- **[@cordierite/react-native](../react-native/README.md)** — native app client + Expo plugin.
-- **[@cordierite/shared](../shared/README.md)** — wire protocol v2 types used by this package and the React Native client.
+- **[@cordierite/react-native](https://github.com/callstackincubator/cordierite/blob/main/packages/react-native/README.md)** — native app client + Expo plugin.
+- **[@cordierite/shared](https://github.com/callstackincubator/cordierite/blob/main/packages/shared/README.md)** — wire protocol v2 types used by this package and the React Native client.
 
 ## Documentation
 
@@ -163,7 +163,7 @@ Exit codes, what it inspects per platform, the Android marker-only detection rul
 - [Security model & key rotation][security]
 - [Build variants][build-variants]
 - [CI and the release gate][ci]
-- [Monorepo README](../../README.md)
+- [Monorepo README](https://github.com/callstackincubator/cordierite/blob/main/README.md)
 
 ## Made with ❤️ at Callstack
 

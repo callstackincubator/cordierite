@@ -144,6 +144,6 @@ export function getCordieriteBuildConfig(): CordieriteBuildConfig {
  * `useEffect` wrapper around `registerTool`: registers on mount and whenever `deps` changes,
  * disposing the previous registration first (identity-safe — see `registerTool`'s doc comment).
  * `options.enabled` (default `true`) gates registration without breaking the rules of hooks —
- * see the README's "Define tools in app startup code" section.
+ * see `docs/SECURITY.md`'s "Gating a tool by build variant" section.
  */
 export const useCordieriteTool = createUseCordieriteTool(registerTool);

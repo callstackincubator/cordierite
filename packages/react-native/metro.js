@@ -82,8 +82,9 @@ function deriveRedirectSpecifiers(exportsField) {
  * called twice for the same resolution. When no existing resolver is set, falls back to
  * `context.resolveRequest`, matching Metro's own default-resolver convention.
  *
- * **Call this last**, after anything else that sets `config.resolver.resolveRequest` (see the
- * README). The existing resolver is captured by reference at call time, not read lazily, so
+ * **Call this last**, after anything else that sets `config.resolver.resolveRequest` (see
+ * `docs/BUILD-VARIANTS.md`'s "JS -- swap the module at bundle time" section). The existing
+ * resolver is captured by reference at call time, not read lazily, so
  * `config.resolver.resolveRequest = myResolver` *after* `withCordierite` silently discards the
  * strip rather than erroring — there is no way to detect that misordering from in here, since a
  * later assignment to the returned config object is invisible to this function.

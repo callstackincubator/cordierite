@@ -45,10 +45,12 @@ cordierite doctor ./build/MyApp.ipa --assert-absent
 cordierite doctor ./build/app-release.apk --assert-absent
 ```
 
-It inspects a built `.app`/`.ipa`/`.apk`/`.aab` for Cordierite's native code — the
-`RCTNativeCordierite` Objective-C class and the plugin-authored `Info.plist` keys on iOS;
-the `com.callstackincubator.cordierite` dex package and `AndroidManifest.xml` meta-data
-keys on Android — and reports `present`/`absent`.
+It inspects a built `.app`/`.ipa`/`.apk`/`.aab` for Cordierite's native code and reports
+`present`/`absent`. On iOS it looks for the `RCTNativeCordierite` Objective-C class and the
+plugin-authored `Info.plist` keys. On Android the verdict is decided by the
+`CordieriteNativeMarker` keep-rule signal alone; the `com.callstackincubator.cordierite`
+dex package and the `AndroidManifest.xml` meta-data keys are reported alongside it but
+cannot flip it (see [Android detection](#android-detection)).
 
 | Exit code | Meaning |
 | --- | --- |

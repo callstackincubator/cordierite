@@ -7,9 +7,12 @@
  *   - reference definitions `[label]: ./path/to.md#anchor`
  *   - reference usages `[text][label]` / `[label][]` resolve to a definition
  *   - same-file anchors `[text](#anchor)`
+ *   - empty destinations `[text]()`
  *
  * Absolute URLs (`https:`, `mailto:`, …) are skipped deliberately: this check must stay
- * offline and deterministic. Fenced and inline code spans are ignored so snippets can't
+ * offline and deterministic — except this repository's own `blob/main` / `tree/main` URLs, which
+ * package READMEs must use (a relative path 404s on npmjs.com) and which are rewritten back to
+ * repo-relative paths so their anchors stay verified. Fenced and inline code spans are ignored so snippets can't
  * produce phantom links.
  *
  * Usage: node scripts/check-md-links.mjs [rootDir]
@@ -45,12 +48,17 @@ const EXTERNAL = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
  * link; nothing is fetched.
  */
 const SELF_BLOB =
-  /^https:\/\/github\.com\/callstackincubator\/cordierite\/blob\/main\/(.+)$/i;
+  /^https:\/\/(?:www\.)?github\.com\/callstackincubator\/cordierite\/(?:blob|tree)\/main(?:\/(.*)|(#.*))?$/i;
 
-/** Repo-relative form of a self-referencing blob URL, or null if it is a genuinely external one. */
+/**
+ * Repo-relative form of a self-referencing URL, or null if it is a genuinely external one.
+ * Returns "" for a link at the repository root (`.../tree/main`, or `.../blob/main/#anchor`),
+ * which callers resolve against the repo root rather than against the linking file.
+ */
 function selfRelative(url) {
   const match = SELF_BLOB.exec(url);
-  return match ? match[1] : null;
+  if (!match) return null;
+  return match[1] ?? match[2] ?? "";
 }
 
 /** Collect every `.md` file under `dir`, skipping generated/vendored trees. */
@@ -204,10 +212,18 @@ for (const file of files) {
     // A link into this repo's own tree is checkable even when written absolutely.
     const selfPath = selfRelative(raw);
     let base = here;
+    // Where a bare `#anchor` resolves: the linking file normally, the repo's root README for a
+    // rewritten self-link that carried no path of its own.
+    let anchorHome = file;
     if (selfPath !== null) {
       raw = selfPath;
       base = ROOT;
-    } else if (!raw || EXTERNAL.test(raw)) {
+      anchorHome = join(ROOT, "README.md");
+    } else if (EXTERNAL.test(raw)) {
+      continue;
+    } else if (!raw) {
+      // `[text]()` renders as a link that goes nowhere — almost always a dropped destination.
+      problems.push(`${rel}:${lineOf(source, index)}  empty link destination`);
       continue;
     }
     if (!raw) continue;
@@ -217,7 +233,7 @@ for (const file of files) {
     const pathPart = hashAt === -1 ? raw : raw.slice(0, hashAt);
     const anchor = hashAt === -1 ? "" : decodeURIComponent(raw.slice(hashAt + 1)).toLowerCase();
 
-    let targetPath = file;
+    let targetPath = anchorHome;
     if (pathPart) {
       targetPath = resolve(base, decodeURIComponent(pathPart));
       let stats;
