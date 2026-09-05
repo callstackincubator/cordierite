@@ -6,14 +6,19 @@
 
 import { connect, type Socket } from "node:net";
 import { spawn as spawnChildProcess } from "node:child_process";
-import { chmod, open, readFile, rm } from "node:fs/promises";
+import { open, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { RpcErrorData } from "@cordierite/shared";
 
-import { rotateDaemonLogIfNeeded, resolveDaemonLogMaxBytes } from "../daemon/log-rotation.js";
+import {
+  ensureDaemonLogMode,
+  resolveDaemonLogMaxBytes,
+  rotateDaemonLogIfNeeded,
+} from "../daemon/log-rotation.js";
 import { isProcessAlive } from "../daemon/pidfile.js";
+import { isSocketConnectable } from "../daemon/socket-probe.js";
 import { getStateDirPaths, type StateDirPaths } from "../daemon/state-dir.js";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -159,22 +164,6 @@ const sendRequest = <TResult>(
   });
 };
 
-const isSocketConnectable = (socketPath: string): Promise<boolean> => {
-  return new Promise((resolve) => {
-    const socket = connect(socketPath);
-
-    socket.once("connect", () => {
-      socket.destroy();
-      resolve(true);
-    });
-
-    socket.once("error", () => {
-      socket.destroy();
-      resolve(false);
-    });
-  });
-};
-
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const pollForSocket = async (
@@ -214,19 +203,22 @@ const defaultSpawn: SpawnFn = async (args, context) => {
   // afterwards the daemon holds the fd for its whole life. `cordierite daemon start` spawns
   // through this same path, so it rotates too. Reaching here means nothing answered the socket,
   // which is *usually* but not always the same as "no daemon is writing this log" — hence the
-  // pidfile guard inside, which declines to rotate under a process that is still alive.
+  // pidfile and socket guards inside, which decline to rotate under a daemon that is still there.
+  const paths = getStateDirPaths(context.stateDir);
+
   await rotateDaemonLogIfNeeded({
     logFilePath: context.logFilePath,
     maxBytes: await resolveDaemonLogMaxBytes(context.stateDir),
-    pidFilePath: getStateDirPaths(context.stateDir).pidFilePath,
+    pidFilePath: paths.pidFilePath,
+    socketPath: paths.socketPath,
   });
 
   const logFd = await open(context.logFilePath, "a", 0o600);
 
   try {
-    // `open`'s mode applies only at creation and is subject to the umask; chmod explicitly so the
-    // freshly rotated-in log lands at the ARCHITECTURE.md §3 mode like every other state file.
-    await chmod(context.logFilePath, 0o600);
+    // Best-effort, never fatal: this is the auto-spawn path, and a log mode that cannot be
+    // tightened is not a reason to fail every command that needs a daemon. See the helper.
+    await ensureDaemonLogMode(context.logFilePath);
 
     const child = spawnChildProcess(process.execPath, [defaultBinPath, ...args], {
       detached: true,

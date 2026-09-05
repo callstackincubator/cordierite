@@ -5,22 +5,49 @@
  */
 
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { DEFAULT_DAEMON_LOG_MAX_BYTES } from "../daemon/config.js";
 import {
   daemonLogBackupPath,
+  ensureDaemonLogMode,
   resolveDaemonLogMaxBytes,
   rotateDaemonLogIfNeeded,
 } from "../daemon/log-rotation.js";
 import { getStateDirPaths } from "../daemon/state-dir.js";
 
+/**
+ * `chmod` is mocked only for paths explicitly armed by a test — the "the rename succeeded but the
+ * mode could not follow" case, which a real filesystem will not produce on demand for a file this
+ * process just created and owns (and which root could not be denied anyway). Every other call,
+ * here and in the code under test, reaches the real implementation.
+ */
+const mocked = vi.hoisted(() => ({ chmodFailsFor: new Set<string>() }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+
+  return {
+    ...actual,
+    chmod: async (target: Parameters<typeof actual.chmod>[0], mode: Parameters<typeof actual.chmod>[1]) => {
+      if (typeof target === "string" && mocked.chmodFailsFor.has(target)) {
+        throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+      }
+
+      return actual.chmod(target, mode);
+    },
+  };
+});
+
 const stateDirs: string[] = [];
 
 afterEach(async () => {
+  mocked.chmodFailsFor.clear();
+
   while (stateDirs.length > 0) {
     await rm(stateDirs.pop()!, { force: true, recursive: true });
   }
@@ -153,6 +180,70 @@ describe("daemon.log rotation", () => {
     });
   });
 
+  test("refuses to rotate when the control socket still accepts a connection", async () => {
+    const stateDir = await makeStateDir();
+    const { logFilePath, socketPath } = getStateDirPaths(stateDir);
+    const warnings: string[] = [];
+    const contents = "held by a daemon whose pidfile we cannot see\n".repeat(100);
+    await writeFile(logFilePath, contents, { mode: 0o600 });
+
+    // No pidfile at all — the case the pidfile guard alone cannot catch: a daemon that has its
+    // log fd and its socket up but has not written (or has already removed) daemon.pid.
+    const server = createNetServer();
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+
+    try {
+      await expect(
+        rotateDaemonLogIfNeeded({
+          logFilePath,
+          maxBytes: 10,
+          socketPath,
+          warn: (message) => warnings.push(message),
+        }),
+      ).resolves.toEqual({ rotated: false, skipped: "daemon_running" });
+
+      expect(await readFile(logFilePath, "utf8")).toBe(contents);
+      expect(await exists(daemonLogBackupPath(logFilePath))).toBe(false);
+      expect(warnings.length).toBe(1);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    // Once the listener is gone the same call rotates: nothing holds the log any more.
+    await expect(rotateDaemonLogIfNeeded({ logFilePath, maxBytes: 10, socketPath })).resolves.toMatchObject({
+      rotated: true,
+    });
+  });
+
+  test("a chmod failure after a successful rename still reports the rotation", async () => {
+    const stateDir = await makeStateDir();
+    const { logFilePath } = getStateDirPaths(stateDir);
+    const warnings: string[] = [];
+    await writeFile(logFilePath, "d".repeat(64), { mode: 0o600 });
+
+    // EPERM on the backup only: the rename lands, the mode fix cannot follow — what a
+    // drvfs/NFS/SMB-backed state dir does.
+    const backupPath = daemonLogBackupPath(logFilePath);
+    mocked.chmodFailsFor.add(backupPath);
+
+    const result = await rotateDaemonLogIfNeeded({
+      logFilePath,
+      maxBytes: 10,
+      warn: (message) => warnings.push(message),
+    });
+
+    // The rename happened, so the rotation is reported as one — a chmod that could not follow must
+    // not turn a completed rotation into "rotated: false" under a warning about the wrong step.
+    expect(result).toEqual({ rotated: true, rotatedBytes: 64 });
+    expect(await exists(logFilePath)).toBe(false);
+    expect(await readFile(backupPath, "utf8")).toBe("d".repeat(64));
+    expect(warnings.length).toBe(1);
+    // Names the step that actually failed, not the rotation.
+    expect(warnings[0]).toContain("could not set 0600");
+    expect(warnings[0]).toContain("rotated");
+    expect(warnings[0]).not.toContain("failed to rotate");
+  });
+
   test("a live pidfile does not stop a within-cap log from being left alone", async () => {
     const stateDir = await makeStateDir();
     const { logFilePath, pidFilePath } = getStateDirPaths(stateDir);
@@ -195,6 +286,33 @@ describe("daemon.log rotation", () => {
     expect(warnings[0]).toContain(logFilePath);
     // The log itself survives a failed rotation — nothing is lost.
     expect((await readFile(logFilePath, "utf8")).length).toBe(64);
+  });
+});
+
+describe("daemon.log mode enforcement", () => {
+  test("sets 0600 on a log that was created too permissively", async () => {
+    const stateDir = await makeStateDir();
+    const { logFilePath } = getStateDirPaths(stateDir);
+    const warnings: string[] = [];
+    await writeFile(logFilePath, "x", { mode: 0o644 });
+    await chmod(logFilePath, 0o644); // defeat any umask narrowing above
+
+    await expect(ensureDaemonLogMode(logFilePath, (message) => warnings.push(message))).resolves.toBe(true);
+    expect((await stat(logFilePath)).mode & 0o777).toBe(0o600);
+    expect(warnings).toEqual([]);
+  });
+
+  test("warns and carries on when the mode cannot be set", async () => {
+    const stateDir = await makeStateDir();
+    const { logFilePath } = getStateDirPaths(stateDir);
+    const warnings: string[] = [];
+
+    // A missing file stands in for the EPERM/ENOTSUP a drvfs/NFS/SMB-backed state dir or a
+    // root-owned log produces: the point is that *any* chmod error is survivable here, because
+    // this sits on the auto-spawn path that every CLI and MCP command goes through.
+    await expect(ensureDaemonLogMode(logFilePath, (message) => warnings.push(message))).resolves.toBe(false);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain(logFilePath);
   });
 });
 
