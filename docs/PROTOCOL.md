@@ -240,9 +240,11 @@ exporter (zod v4's built-in one, for example), the JSON Schema half of a
 `{ schema, jsonSchema }` pair, or a raw JSON Schema object passed straight through — see
 `docs/ARCHITECTURE.md` §11. A Standard Schema whose library has no exporter still registers
 the tool, without `input_schema`/`output_schema`, so agents see a shapeless (`{}`) schema;
-the app-side SDK throws on that in development rather than letting it ship silently.
-`annotations` map 1:1 to MCP tool
-annotations and drive the daemon's policy engine (`docs/ARCHITECTURE.md` §12):
+the app-side SDK throws on that in development rather than letting it ship silently. The
+daemon never inspects a schema's internals — only that it is a JSON object.
+
+`annotations` map 1:1 to MCP tool annotations and drive the daemon's policy engine
+(`docs/ARCHITECTURE.md` §12):
 `destructiveHint: true` routes a call through `policy.destructive` instead of
 `policy.default`.
 

@@ -19,8 +19,12 @@ package versions for a release.
   a Standard Schema (as before); a `{ schema, jsonSchema }` pair, where `jsonSchema` is a JSON
   Schema object or an `{ input, output }` converter — the supported path for zod 3
   (`zod-to-json-schema`) and valibot (`@valibot/to-json-schema`); or a raw JSON Schema object,
-  detected by the absence of `~standard`, published verbatim and passed to the handler
-  unvalidated. Handler argument/result inference is unchanged for zod 4, follows the pair's
+  detected by the absence of `~standard` and required to carry at least one JSON Schema
+  keyword (`type`, `properties`, `$ref`, `anyOf`, `allOf`, `oneOf`, `enum`, `const`),
+  published verbatim and passed to the handler unvalidated. A Standard Schema may be an
+  object or a callable, so arktype's `Type` is accepted. Anything that is none of the three
+  — including an object mentioning `schema`/`jsonSchema` that is not a valid pair — throws a
+  `TypeError` at registration instead of being published as the tool's shape. Handler argument/result inference is unchanged for zod 4, follows the pair's
   `schema` for pairs, and is `Record<string, unknown>` for a bare raw schema or `T` when
   tagged with the new type-level `jsonSchema<T>()` helper. No runtime dependency was added:
   Cordierite still bundles no JSON Schema validator, which is why a raw schema is not enforced.
@@ -29,10 +33,13 @@ package versions for a release.
   `__DEV__`.** `registerTool`/`useCordieriteTool` used to accept a bare zod 3 or plain valibot
   schema, emit a dev warning, and register the tool with no schema at all — a silent failure,
   since the tool looked registered but no agent could work out what to pass it. That case now
-  throws a `TypeError` naming the two supported forms above. **Release builds are unaffected
-  in kind**: the tool still registers without a schema, now with one `console.warn` per tool
-  name (previously dev-only), so an app already shipping such a tool is not broken by
-  upgrading. Fix by pairing the schema with a JSON Schema, or passing raw JSON Schema.
+  throws a `TypeError` naming the two supported forms above. The same applies to every other
+  way a slot can end up shapeless, which previously all returned quietly: an exporter or a
+  paired converter that throws, or that returns something other than a JSON Schema object.
+  **Release builds are unaffected in kind**: the tool still registers without a schema, now
+  with one `console.warn` per tool name (previously dev-only), so an app already shipping
+  such a tool is not broken by upgrading. Fix by pairing the schema with a JSON Schema, or
+  passing raw JSON Schema.
 - **Type change:** `CordieriteRuntimeSchema` is now a union of the three accepted forms rather
   than an alias for `StandardSchemaV1`, and `CordieriteRegisteredTool.inputSchema`/
   `.outputSchema` hold the normalized `CordieriteNormalizedToolSchema` rather than the raw

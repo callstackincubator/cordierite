@@ -257,7 +257,12 @@ export type CordieriteToolHandler<TArgs = unknown, TResult = unknown> = (
  *
  * The type parameter is phantom (never present at runtime). It is set only by the `jsonSchema<T>()`
  * helper below, which is how a raw schema still gets real handler argument/result types; a bare
- * object literal infers `Record<string, unknown>` instead.
+ * object literal infers `Record<string, unknown>` instead. There is one phantom slot, carrying the
+ * type the *handler* sees for whichever of the two slots the schema is used in.
+ *
+ * A JSON Schema value typed as an interface (`JSONSchema7` from `@types/json-schema`, say) is not
+ * assignable to `Record<string, unknown>` — TypeScript gives implicit index signatures to type
+ * aliases, not interfaces. Wrap it in `jsonSchema<T>()` or cast it.
  */
 export type CordieriteJsonSchemaObject<T = unknown> = Record<string, unknown> & {
   /** Phantom marker; `jsonSchema<T>()` only casts, it never writes this property. */
@@ -290,11 +295,15 @@ export type CordieritePairedSchema<Input = unknown, Output = Input> = {
  * Everything `inputSchema`/`outputSchema` accept (ARCHITECTURE.md §11): a Standard Schema (with or
  * without a `~standard.jsonSchema` exporter), a `{ schema, jsonSchema }` pair, or a raw JSON Schema
  * object.
+ *
+ * All three members carry the annotation's types, so an explicitly annotated
+ * `CordieriteRuntimeSchema<Args>` still gives the handler exactly `Args` — the raw member is
+ * parameterized precisely so it cannot widen that back to `Record<string, unknown>`.
  */
 export type CordieriteRuntimeSchema<Input = unknown, Output = Input> =
   | StandardSchemaV1<Input, Output>
   | CordieritePairedSchema<Input, Output>
-  | CordieriteJsonSchemaObject;
+  | CordieriteJsonSchemaObject<Output>;
 
 /**
  * Tags a raw JSON Schema object with the argument/result type its handler should see. Purely a
@@ -330,7 +339,13 @@ export type CordieriteNormalizedToolSchema =
 /**
  * Handler argument type for an `inputSchema`. Paired and plain Standard Schemas both infer the
  * schema's *output* (post-validation) type; a raw JSON Schema infers whatever `jsonSchema<T>()`
- * declared, or `Record<string, unknown>` for a bare object; no schema at all infers `undefined`.
+ * declared, or `Record<string, unknown>` for a bare object.
+ *
+ * `InferToolArgs<undefined>` is `undefined`. Note that a registration that simply *omits*
+ * `inputSchema` gives its handler `unknown`, not `undefined`: with no property to infer from,
+ * `registerTool`'s type parameter falls back to its constraint
+ * (`CordieriteRuntimeSchema | undefined`), and this type distributes over that union. That has
+ * always been the behaviour and is unchanged here.
  */
 export type InferToolArgs<TSchema> = TSchema extends StandardSchemaV1
   ? StandardSchemaV1.InferOutput<TSchema>

@@ -154,9 +154,11 @@ An agent can only use a tool it can see the shape of, so every form below except
 | A raw JSON Schema object (no `~standard` property) | **nothing** — args reach the handler as sent | the object, verbatim | `Record<string, unknown>`, or `T` via `jsonSchema<T>()` |
 | Standard Schema **without** an exporter — bare zod 3, plain valibot | `~standard.validate` | **nothing** — throws in dev (see below) | the schema's own type |
 
+A Standard Schema does not have to be a plain object: arktype's `Type` is callable, and is detected the same way (anything carrying `~standard.validate`).
+
 Cordierite has no runtime dependencies and does not bundle a JSON Schema validator, so a raw JSON Schema describes the tool for the agent but never enforces anything. Use a pair when you want both a real shape *and* real validation.
 
-Different libraries emit different JSON Schema for the same shape (draft version, `additionalProperties`, how `default` is handled). Whatever you supply is forwarded as-is; Cordierite does not normalize it.
+The wire field is documented as draft 2020-12, but Cordierite forwards whatever you supply as-is — it does not normalize, re-target, or check the dialect, and different libraries emit different JSON Schema for the same shape (draft version, `additionalProperties`, how `default` is handled). Pick the target closest to 2020-12 that your converter offers.
 
 **Zod 3** — pair the schema with `zod-to-json-schema`:
 
@@ -169,7 +171,12 @@ const sumInput = z.object({ a: z.number(), b: z.number() });
 registerTool({
   name: "sum",
   description: "Add two numeric values",
-  inputSchema: { schema: sumInput, jsonSchema: zodToJsonSchema(sumInput) },
+  // `zod-to-json-schema` has no 2020-12 target; 2019-09 is the closest it offers, and its
+  // default (`jsonSchema7`) stamps a draft-07 `$schema`. Either is understood in practice.
+  inputSchema: {
+    schema: sumInput,
+    jsonSchema: zodToJsonSchema(sumInput, { target: "jsonSchema2019-09" }),
+  },
   handler: async ({ a, b }) => undefined, // `a` and `b` are still typed `number`
 });
 ```
@@ -201,6 +208,10 @@ registerTool({
   handler: async ({ city }) => fetchWeather(city),
 });
 ```
+
+If your JSON Schema value is typed as an *interface* (`JSONSchema7` from `@types/json-schema`, for instance) TypeScript will not accept it directly: interfaces do not get the implicit index signature that `Record<string, unknown>` requires. Pass it through `jsonSchema<T>()`, or cast it.
+
+**What is rejected.** A raw schema must actually look like JSON Schema: it needs at least one of `type`, `properties`, `$ref`, `anyOf`, `allOf`, `oneOf`, `enum`, `const`. An object mentioning `schema` or `jsonSchema` that is not a valid pair is rejected too — `{ schema: someJsonSchema, jsonSchema }` and a lone `{ jsonSchema }` are malformed pairs, and publishing them verbatim would make the wrapper itself the tool's advertised shape. Both throw a `TypeError` at registration naming what to fix.
 
 **A Standard Schema with no exporter throws in development.** Passing a bare zod 3 or plain valibot schema used to register the tool with no shape at all, which agents saw as "takes any object" — the tool looked fine and was unusable. In `__DEV__` that now throws at `registerTool` with a message pointing at the two forms above — including when the call comes from `useCordieriteTool`, where the throw surfaces from the component's effect. Release builds keep the old behaviour (one console warning per tool name, tool registered without a schema) so an app already shipping such a tool is not broken by upgrading.
 

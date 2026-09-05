@@ -47,6 +47,26 @@ const shapelessSchema: StandardSchemaV1 = {
   },
 };
 
+/**
+ * A *callable* Standard Schema. arktype's `Type` is a function object carrying `~standard`, so
+ * `typeof` reports `"function"` — detection must not require a plain object.
+ */
+const callableStandardSchema = (): StandardSchemaV1 => {
+  const schema = (value: unknown) => value;
+  Object.assign(schema, {
+    "~standard": {
+      version: 1,
+      vendor: "arktype-like",
+      validate: (value: unknown) => success(value),
+      jsonSchema: {
+        input: () => ({ type: "object", title: "callable-in" }),
+        output: () => ({ type: "object", title: "callable-out" }),
+      },
+    },
+  });
+  return schema as unknown as StandardSchemaV1;
+};
+
 const withJsonSchemaExporter = (): StandardSchemaV1 => ({
   "~standard": {
     version: 1,
@@ -116,13 +136,23 @@ describe("normalizeToolSchema: detection matrix", () => {
     };
     const normalized = normalizeToolSchema(
       { schema: zod3Schema, jsonSchema: converter },
-      "l"
+      "l",
     );
 
     expect(normalized).toEqual({
       kind: "paired",
       schema: zod3Schema,
       jsonSchema: converter,
+    });
+  });
+
+  test("a callable Standard Schema (the arktype shape) is detected as kind 'standard'", () => {
+    const schema = callableStandardSchema();
+
+    expect(typeof schema).toBe("function");
+    expect(normalizeToolSchema(schema, "l")).toEqual({
+      kind: "standard",
+      schema,
     });
   });
 
@@ -133,32 +163,64 @@ describe("normalizeToolSchema: detection matrix", () => {
     });
   });
 
-  test("a JSON Schema whose own keywords include `schema` is still raw", () => {
-    const schemaKeyword = { type: "object", schema: { type: "string" } };
-
-    expect(normalizeToolSchema(schemaKeyword, "l")).toEqual({
-      kind: "raw",
-      jsonSchema: schemaKeyword,
-    });
-  });
-
   test("throws when ~standard is present but not a Standard Schema", () => {
     expect(() => normalizeToolSchema({ "~standard": {} }, "MySchema")).toThrow(
-      /must expose "~standard.validate"/
+      /must expose "~standard.validate"/,
     );
   });
 
   test("throws for a pair missing its jsonSchema half", () => {
-    expect(() => normalizeToolSchema({ schema: zod3Schema }, "MySchema")).toThrow(
-      /"jsonSchema" is missing or not an object/
+    expect(() =>
+      normalizeToolSchema({ schema: zod3Schema }, "MySchema"),
+    ).toThrow(/"jsonSchema" is missing or not an object/);
+  });
+
+  test("throws for a pair whose `schema` half is a JSON Schema, not a Standard Schema", () => {
+    // The easy mistake: putting JSON Schema in both halves. Silently publishing this object
+    // verbatim would make `{ schema: ..., jsonSchema: ... }` the tool's advertised shape.
+    expect(() =>
+      normalizeToolSchema(
+        { schema: { type: "object" }, jsonSchema: rawJsonSchema },
+        "MySchema",
+      ),
+    ).toThrow(/"schema" is missing or is not a Standard Schema/);
+  });
+
+  test("throws for a lone `jsonSchema` wrapper with no `schema` half", () => {
+    expect(() =>
+      normalizeToolSchema({ jsonSchema: rawJsonSchema }, "MySchema"),
+    ).toThrow(/"schema" is missing or is not a Standard Schema/);
+  });
+
+  test("throws for an object carrying no JSON Schema keyword at all", () => {
+    expect(() => normalizeToolSchema({}, "MySchema")).toThrow(
+      /does not look like JSON Schema/,
     );
+    expect(() => normalizeToolSchema({ city: "Warsaw" }, "MySchema")).toThrow(
+      /does not look like JSON Schema/,
+    );
+  });
+
+  test("accepts every recognised JSON Schema keyword on its own", () => {
+    for (const keyword of [
+      "type",
+      "properties",
+      "$ref",
+      "anyOf",
+      "allOf",
+      "oneOf",
+      "enum",
+      "const",
+    ]) {
+      expect(normalizeToolSchema({ [keyword]: "x" }, "l").kind).toBe("raw");
+    }
   });
 
   test("throws for non-objects and arrays", () => {
     expect(() => normalizeToolSchema("nope", "MySchema")).toThrow(TypeError);
     expect(() => normalizeToolSchema(null, "MySchema")).toThrow(TypeError);
     expect(() => normalizeToolSchema([{ type: "object" }], "MySchema")).toThrow(
-      TypeError
+      TypeError,
     );
   });
 
@@ -184,7 +246,20 @@ describe("exportToolSchema: Standard Schema with an exporter", () => {
     expect(warnings).toEqual([]);
   });
 
-  test("returns undefined when the exporter itself throws", () => {
+  test("a callable Standard Schema exports through its ~standard.jsonSchema", () => {
+    const normalized = normalizeToolSchema(callableStandardSchema(), "l");
+
+    expect(exportToolSchema(normalized, "input", "callable-tool")).toEqual({
+      type: "object",
+      title: "callable-in",
+    });
+    expect(exportToolSchema(normalized, "output", "callable-tool")).toEqual({
+      type: "object",
+      title: "callable-out",
+    });
+  });
+
+  test("an exporter that throws is reported, not silently swallowed", () => {
     const throwing = {
       "~standard": {
         version: 1,
@@ -192,16 +267,56 @@ describe("exportToolSchema: Standard Schema with an exporter", () => {
         validate: (value: unknown) => success(value),
         jsonSchema: {
           input: () => {
-            throw new Error("nope");
+            throw new Error("exporter blew up");
           },
           output: () => ({ type: "object" }),
         },
       },
     };
+    const normalized = normalizeToolSchema(throwing, "l");
 
+    expect(() =>
+      withDev(true, () =>
+        exportToolSchema(normalized, "input", "throwing-tool"),
+      ),
+    ).toThrow(/exporter blew up/);
+
+    const warnings = withWarningsCaptured(() => {
+      withDev(false, () => {
+        expect(
+          exportToolSchema(normalized, "input", "throwing-prod-tool"),
+        ).toBeUndefined();
+      });
+    });
     expect(
-      exportToolSchema(normalizeToolSchema(throwing, "l"), "input", "t")
-    ).toBeUndefined();
+      warnings.some((args) =>
+        args.some((arg) => arg.includes("exporter blew up")),
+      ),
+    ).toBe(true);
+  });
+
+  test("an exporter that returns a non-object is reported too", () => {
+    const notAnObject = {
+      "~standard": {
+        version: 1,
+        vendor: "test",
+        validate: (value: unknown) => success(value),
+        jsonSchema: {
+          input: () => "not a schema",
+          output: () => ({ type: "object" }),
+        },
+      },
+    };
+
+    expect(() =>
+      withDev(true, () =>
+        exportToolSchema(
+          normalizeToolSchema(notAnObject, "l"),
+          "input",
+          "string-tool",
+        ),
+      ),
+    ).toThrow(/returned string instead of a JSON Schema object/);
   });
 });
 
@@ -210,18 +325,18 @@ describe("exportToolSchema: Standard Schema without an exporter", () => {
     const normalized = normalizeToolSchema(zod3Schema, "l");
 
     expect(() =>
-      withDev(true, () => exportToolSchema(normalized, "input", "zod3-tool"))
+      withDev(true, () => exportToolSchema(normalized, "input", "zod3-tool")),
     ).toThrow(/zod3-tool/);
     expect(() =>
-      withDev(true, () => exportToolSchema(normalized, "input", "zod3-tool"))
+      withDev(true, () => exportToolSchema(normalized, "input", "zod3-tool")),
     ).toThrow(/schema, jsonSchema/);
   });
 
   test("throws in dev even when no tool name is available", () => {
     expect(() =>
       withDev(true, () =>
-        exportToolSchema(normalizeToolSchema(shapelessSchema, "l"), "input")
-      )
+        exportToolSchema(normalizeToolSchema(shapelessSchema, "l"), "input"),
+      ),
     ).toThrow(TypeError);
   });
 
@@ -230,22 +345,28 @@ describe("exportToolSchema: Standard Schema without an exporter", () => {
       withDev(false, () => {
         const normalized = normalizeToolSchema(shapelessSchema, "l");
 
-        expect(exportToolSchema(normalized, "input", "prod-tool")).toBeUndefined();
         expect(
-          exportToolSchema(normalized, "output", "prod-tool")
+          exportToolSchema(normalized, "input", "prod-tool"),
+        ).toBeUndefined();
+        expect(
+          exportToolSchema(normalized, "output", "prod-tool"),
         ).toBeUndefined();
       });
     });
 
     const matching = warnings.filter((args) =>
-      args.some((arg) => arg.includes("prod-tool") && arg.includes("shapeless"))
+      args.some(
+        (arg) => arg.includes("prod-tool") && arg.includes("shapeless"),
+      ),
     );
     expect(matching).toHaveLength(1);
   });
 
   test("does not warn or throw when no schema is provided at all", () => {
     const warnings = withWarningsCaptured(() => {
-      expect(exportToolSchema(undefined, "input", "no-schema-tool")).toBeUndefined();
+      expect(
+        exportToolSchema(undefined, "input", "no-schema-tool"),
+      ).toBeUndefined();
     });
 
     expect(warnings).toEqual([]);
@@ -261,7 +382,7 @@ describe("exportToolSchema: paired schemas", () => {
           target: "jsonSchema2019-09",
         }) as Record<string, unknown>,
       },
-      "l"
+      "l",
     );
 
     const exported = exportToolSchema(normalized, "input", "zod3-paired");
@@ -289,7 +410,7 @@ describe("exportToolSchema: paired schemas", () => {
           },
         },
       },
-      "l"
+      "l",
     );
 
     expect(exportToolSchema(normalized, "input", "t")).toEqual({
@@ -303,6 +424,59 @@ describe("exportToolSchema: paired schemas", () => {
     expect(targets).toEqual(["draft-2020-12", "draft-2020-12"]);
   });
 
+  test("a paired converter that throws is reported, not silently swallowed", () => {
+    // The pair form exists precisely to avoid a shapeless tool, so failing quietly here would put
+    // the original bug back for exactly the users who took the documented way out of it.
+    const normalized = normalizeToolSchema(
+      {
+        schema: zod3Schema,
+        jsonSchema: {
+          input: () => {
+            throw new Error("converter blew up");
+          },
+          output: () => ({ type: "object" }),
+        },
+      },
+      "l",
+    );
+
+    expect(() =>
+      withDev(true, () => exportToolSchema(normalized, "input", "bad-pair")),
+    ).toThrow(/converter blew up/);
+
+    const warnings = withWarningsCaptured(() => {
+      withDev(false, () => {
+        expect(
+          exportToolSchema(normalized, "input", "bad-pair-prod"),
+        ).toBeUndefined();
+      });
+    });
+    expect(
+      warnings.some((args) =>
+        args.some(
+          (arg) => arg.includes("bad-pair-prod") && arg.includes("shapeless"),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  test("a paired converter returning a non-object is reported too", () => {
+    const normalized = normalizeToolSchema(
+      {
+        schema: zod3Schema,
+        jsonSchema: {
+          input: () => [1, 2, 3],
+          output: () => ({ type: "object" }),
+        },
+      },
+      "l",
+    );
+
+    expect(() =>
+      withDev(true, () => exportToolSchema(normalized, "input", "array-pair")),
+    ).toThrow(/returned an array instead of a JSON Schema object/);
+  });
+
   test("a paired schema never warns or throws in dev", () => {
     const warnings = withWarningsCaptured(() => {
       withDev(true, () => {
@@ -310,11 +484,11 @@ describe("exportToolSchema: paired schemas", () => {
           exportToolSchema(
             normalizeToolSchema(
               { schema: zod3Schema, jsonSchema: rawJsonSchema },
-              "l"
+              "l",
             ),
             "input",
-            "paired-tool"
-          )
+            "paired-tool",
+          ),
         ).toEqual(rawJsonSchema);
       });
     });
@@ -330,10 +504,10 @@ describe("exportToolSchema: raw JSON Schema", () => {
         const normalized = normalizeToolSchema(rawJsonSchema, "l");
 
         expect(exportToolSchema(normalized, "input", "raw-tool")).toEqual(
-          rawJsonSchema
+          rawJsonSchema,
         );
         expect(exportToolSchema(normalized, "output", "raw-tool")).toEqual(
-          rawJsonSchema
+          rawJsonSchema,
         );
       });
     });
@@ -361,7 +535,7 @@ describe("validateToolSchema", () => {
   test("a paired schema validates through its `schema` half", async () => {
     const normalized = normalizeToolSchema(
       { schema: zod3Schema, jsonSchema: rawJsonSchema },
-      "l"
+      "l",
     );
 
     const failure = await validateToolSchema(normalized, { a: "no" });
@@ -373,7 +547,7 @@ describe("validateToolSchema", () => {
 
     // Deliberately does not match `rawJsonSchema`: there is no app-side JSON Schema validator.
     await expect(
-      validateToolSchema(normalized, { totally: "unrelated" })
+      validateToolSchema(normalized, { totally: "unrelated" }),
     ).resolves.toEqual({ ok: true, value: { totally: "unrelated" } });
     await expect(validateToolSchema(normalized, 42)).resolves.toEqual({
       ok: true,
@@ -390,7 +564,7 @@ describe("toToolDescriptor", () => {
         description: "d",
         inputSchema: normalizeToolSchema(rawJsonSchema, "l"),
         outputSchema: normalizeToolSchema({ type: "string" }, "l"),
-      })
+      }),
     ).toEqual({
       name: "raw-registered",
       description: "d",
@@ -410,7 +584,7 @@ describe("toToolDescriptor", () => {
             target: "jsonSchema2019-09",
           }) as Record<string, unknown>,
         },
-        "l"
+        "l",
       ),
     });
 
@@ -430,7 +604,7 @@ describe("toToolDescriptor", () => {
             description: "d",
             inputSchema: normalizeToolSchema(shapelessSchema, "l"),
             outputSchema: normalizeToolSchema(shapelessSchema, "l"),
-          })
+          }),
         ).toEqual({ name: "shapeless-registered", description: "d" });
       });
     });

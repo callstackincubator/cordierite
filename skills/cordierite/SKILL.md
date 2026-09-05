@@ -129,7 +129,7 @@ registerTool({
 | --- | --- | --- |
 | Standard Schema with a JSON Schema exporter (**Zod v4**, arktype) | yes | its exporter's output |
 | `{ schema, jsonSchema }` pair — for Zod 3 (`zod-to-json-schema`), valibot (`@valibot/to-json-schema`) | yes | the supplied JSON Schema |
-| A raw JSON Schema object (no `~standard`) | **no** — args pass through | the object, verbatim |
+| A raw JSON Schema object (no `~standard`, at least one JSON Schema keyword) | **no** — args pass through | the object, verbatim |
 
 A bare Zod 3 / plain valibot schema (Standard Schema, no exporter) **throws in `__DEV__`**:
 it would otherwise register a shapeless tool that `tools/list` reports as taking any

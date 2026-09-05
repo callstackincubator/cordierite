@@ -403,21 +403,31 @@ Client behavior:
 - Schema handling: Standard Schema stays the only runtime-validation contract, but
   `inputSchema`/`outputSchema` accept three forms, classified once at registration by
   `normalizeToolSchema` (`schema.ts`) into `standard` / `paired` / `raw`:
-  - a **Standard Schema** — validated with `~standard.validate`, published from
+  - a **Standard Schema** — anything carrying `~standard.validate`, object or callable
+    (arktype's `Type` is a function) — validated with `~standard.validate`, published from
     `~standard.jsonSchema` (the Standard JSON Schema companion spec; zod 4 and arktype
-    implement it, zod 3 and plain valibot do not). With no exporter this **throws in
-    `__DEV__`**, naming the two forms below; outside dev it warns once per tool name and
-    registers with no `input_schema`/`output_schema`, as it always did, so a shipped app
-    is not bricked by an upgrade.
+    implement it, zod 3 and plain valibot do not).
   - a **`{ schema, jsonSchema }` pair** — validated with `schema["~standard"].validate`,
     published from the supplied JSON Schema object or `{ input, output }` converter. This
     is the supported path for zod 3 (`zod-to-json-schema`) and valibot
     (`@valibot/to-json-schema`).
-  - a **raw JSON Schema object**, detected purely by the absence of `~standard` —
+  - a **raw JSON Schema object** — no `~standard`, and carrying at least one JSON Schema
+    keyword (`type`, `properties`, `$ref`, `anyOf`, `allOf`, `oneOf`, `enum`, `const`) —
     published verbatim and handed to the handler **unvalidated**. No JSON Schema validator
-    is bundled: `@cordierite/react-native` keeps zero runtime dependencies (§13). The
-    optional `jsonSchema<T>()` helper is a pure type-level cast that gives such a handler
-    real argument/result types.
+    is bundled: `@cordierite/react-native` keeps zero third-party runtime dependencies
+    (§13). The optional `jsonSchema<T>()` helper is a pure type-level cast that gives such
+    a handler real argument/result types.
+
+  Everything else throws a `TypeError` at registration rather than being published as the
+  tool's shape: non-objects and arrays, a `~standard` that is not a Standard Schema, and —
+  because `raw` would otherwise be a catch-all — any object mentioning `schema`/`jsonSchema`
+  that is not a valid pair (a malformed pair, not JSON Schema; neither is a JSON Schema
+  keyword) or carrying no JSON Schema keyword at all.
+
+  Every way a slot can end up with no shape — a missing exporter, an exporter that throws or
+  returns a non-object, a paired converter that does either — takes the same route: throw in
+  `__DEV__`, warn once per tool name and register shapeless otherwise, so a shipped app is
+  not bricked by an upgrade. Nothing is swallowed silently.
 
   Exported JSON Schema is not normalized or checked against a target dialect, and vendors
   differ in what they emit (`default` handling, `additionalProperties`, draft version), so
@@ -502,7 +512,9 @@ packages/
     src/rpc/       RPC client library (connect-or-spawn), shared by cli/ and mcp/
     src/cli/       command definitions + renderers (keep DI/testability patterns)
     src/mcp/       stdio MCP server
-  react-native/    @cordierite/react-native (entries: ., /auto, /noop)
+  react-native/    @cordierite/react-native (entries: ., /auto, /noop). Depends only on
+                   @cordierite/shared — no third-party runtime deps, which is why no
+                   JSON Schema validator ships with it (§11's raw schema form).
 playground/        reference app (Expo dev build)
 ```
 

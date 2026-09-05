@@ -9,9 +9,10 @@
  */
 import { describe, expect, test, vi } from "vitest";
 import { z as z3 } from "zod";
-import { z as z4 } from "zod4";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { z as z4 } from "zod4";
 
+import type { CordieriteRuntimeSchema } from "../Cordierite.types";
 import { jsonSchema } from "../Cordierite.types";
 import type { CordierePublicApi } from "../public-api";
 
@@ -36,7 +37,9 @@ type Equals<A, B> =
 /** Compiles only when `A` is *exactly* `Expected` — not merely assignable in either direction. */
 const exactType =
   <Expected>() =>
-  <A>(_value: A & (Equals<A, Expected> extends true ? unknown : never)): void => {};
+  <A>(
+    _value: A & (Equals<A, Expected> extends true ? unknown : never),
+  ): void => {};
 
 describe("handler inference across every accepted schema form (issue #27)", () => {
   test("compiles against the shared public API type", async () => {
@@ -96,6 +99,44 @@ describe("handler inference across every accepted schema form (issue #27)", () =
       handler: (args) => {
         exactType<{ city: string }>()(args);
         return { temp: args.city.length };
+      },
+    }).remove();
+
+    expect(true).toBe(true);
+  });
+
+  test("an explicitly annotated CordieriteRuntimeSchema<T> stays exactly T", async () => {
+    const { registerTool } = await import("../noop");
+
+    // Annotating the schema (rather than letting it be inferred from the value) must not widen the
+    // handler argument: every member of the union — Standard Schema, pair, and raw — carries the
+    // annotation's own type, so the raw member cannot leak `Record<string, unknown>` back in.
+    const annotated: CordieriteRuntimeSchema<{ a: number }> = z4.object({
+      a: z4.number(),
+    });
+
+    registerTool({
+      name: "annotated",
+      description: "d",
+      inputSchema: annotated,
+      outputSchema: annotated,
+      handler: (args) => {
+        exactType<{ a: number }>()(args);
+        return { a: args.a };
+      },
+    }).remove();
+
+    // The same annotation satisfied by a raw JSON Schema rather than a Standard Schema.
+    const annotatedRaw: CordieriteRuntimeSchema<{ a: number }> = jsonSchema<{
+      a: number;
+    }>({ type: "object", properties: { a: { type: "number" } } });
+
+    registerTool({
+      name: "annotated-raw",
+      description: "d",
+      inputSchema: annotatedRaw,
+      handler: (args) => {
+        exactType<{ a: number }>()(args);
       },
     }).remove();
 
