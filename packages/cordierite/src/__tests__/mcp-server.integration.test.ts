@@ -447,6 +447,41 @@ describe("mcp: tools/list and tools/call", () => {
     app.socket.close();
   });
 
+  // The issue's own example of a result that breaks the `structuredContent` contract.
+  test("an object output schema paired with a null result is a tool_output_validation_error", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    await snapshotTools(daemon, app, [
+      { name: "nullish", description: "Claims an object, returns null.", output_schema: { type: "object" } },
+    ]);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+
+      if (msg.type === "tool_call") {
+        app.socket.send(
+          JSON.stringify({ type: "tool_result", session_id: app.sessionId, id: msg.id, result: null }),
+        );
+      }
+    });
+
+    await client.listTools();
+    const result = await client.callTool({ name: "nullish", arguments: {} });
+
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0]!.text;
+    expect(text).toContain("tool_output_validation_error");
+    expect(text).toContain("returned null");
+    // Never the raw `typeof` wording: "a object" / "a undefined" would read as a bug in the tool.
+    expect(text).not.toContain("a undefined");
+    expect(text).not.toContain("a object");
+
+    app.socket.close();
+  });
+
   test("tool_call_progress frames map to MCP progress notifications when the client sends a progressToken", async () => {
     const { daemon, stateDir, port } = await startTestDaemon();
     const app = await claimApp(daemon, port);

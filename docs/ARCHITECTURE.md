@@ -289,7 +289,12 @@ proxies daemon RPC (auto-spawning the daemon like any client):
   `tool_output_validation_error` content rather than as an opaque client-side protocol error. A
   tool whose schema was dropped, or that never had one, is unconstrained: its result is always
   JSON text content, and additionally `structuredContent` when the result happens to be an
-  object — allowed, because the client has no schema to validate it against.
+  object — allowed, because the client has no schema to validate it against. One caveat is
+  inherent to MCP: a client caches output schemas from the `tools/list` it last read, so if a
+  tool's `output_schema` stops being emitted (the app re-registers it with a shape MCP rejects),
+  a client still holding the older listing keeps demanding `structuredContent` for it until it
+  re-lists. `notifications/tools/list_changed` fires on exactly that change, so the window is the
+  client's own refresh latency, not something the server can close.
 - Two built-in management tools, `cordierite_connect` and `cordierite_wait_for_session`,
   let an agent mint a bootstrap link, deliver it to an emulator/simulator, and wait for the
   claim — without shell access. This is what makes the agent path self-service.

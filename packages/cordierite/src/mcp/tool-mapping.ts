@@ -81,8 +81,16 @@ export const emitsMcpOutputSchema = (schema: ToolSchemaDescriptor | undefined): 
 
 /** stderr only — stdout carries the MCP transport's protocol frames (ARCHITECTURE.md §9). */
 const defaultWarn = (message: string): void => {
-  console.error(`[cordierite] ${message}`);
+  console.error(`cordierite mcp: ${message}`);
 };
+
+/**
+ * Upper bound on remembered notices. A key embeds the offending schema, and an app is free to
+ * build a schema from live data (a `z.enum` over rows it just fetched), so an unbounded set would
+ * grow with every distinct broken schema for the life of the process. Past the cap the oldest key
+ * is evicted, which at worst re-prints a notice the operator has already seen.
+ */
+const MAX_REMEMBERED_NOTICES = 256;
 
 export type McpToolMapper = (tool: NamespacedTool, clientHonorsRequiresUserInteraction: boolean) => McpToolSchema;
 
@@ -108,6 +116,15 @@ export const createMcpToolMapper = (warn: (message: string) => void = defaultWar
 
     if (warned.has(key)) {
       return;
+    }
+
+    // A `Set` iterates in insertion order, so the first key is the oldest.
+    if (warned.size >= MAX_REMEMBERED_NOTICES) {
+      const oldest = warned.values().next();
+
+      if (!oldest.done) {
+        warned.delete(oldest.value);
+      }
     }
 
     warned.add(key);

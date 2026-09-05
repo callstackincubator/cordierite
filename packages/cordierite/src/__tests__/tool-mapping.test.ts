@@ -5,7 +5,7 @@
  * tests cannot quietly drift from what the SDK actually accepts if the pinned version changes.
  */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { ToolSchema } from "@modelcontextprotocol/sdk/types.js";
 
@@ -221,6 +221,39 @@ describe("degradation notices", () => {
     expect(notices).toHaveLength(2);
     expect(notices.filter((notice) => notice.includes("input schema"))).toHaveLength(1);
     expect(notices.filter((notice) => notice.includes("output schema"))).toHaveLength(1);
+  });
+
+  test("remembers a bounded number of notices, so a schema built from live data cannot grow it forever", () => {
+    const { map: mapper, notices } = mapperWithNotices();
+
+    // Each iteration is a *distinct* broken schema for the same tool, which is what an app
+    // building a schema from fetched rows would produce. Far past the 256-key cap.
+    for (let index = 0; index < 400; index += 1) {
+      mapper(namespacedTool({ name: "from-live-data", output_schema: { type: "string", const: `v${index}` } }), false);
+    }
+
+    expect(notices).toHaveLength(400);
+
+    // The oldest keys have been evicted, so the very first schema warns again...
+    mapper(namespacedTool({ name: "from-live-data", output_schema: { type: "string", const: "v0" } }), false);
+    expect(notices).toHaveLength(401);
+
+    // ...while a recent one is still remembered and stays quiet.
+    mapper(namespacedTool({ name: "from-live-data", output_schema: { type: "string", const: "v399" } }), false);
+    expect(notices).toHaveLength(401);
+  });
+
+  test("the default sink writes to stderr with the same prefix as the rest of the MCP server", () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      createMcpToolMapper()(namespacedTool({ name: "list-todos", output_schema: ARRAY_SCHEMA }), false);
+
+      expect(stderr).toHaveBeenCalledTimes(1);
+      expect(String(stderr.mock.calls[0]![0])).toMatch(/^cordierite mcp: /);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 
   test("stays silent for accepted and absent schemas", () => {

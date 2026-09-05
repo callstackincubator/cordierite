@@ -1,6 +1,11 @@
 import { describe, expect, test } from "vitest";
 
-import { isToolDescriptor, MAX_TOOL_DESCRIPTION_LENGTH, TOOL_NAME_PATTERN } from "../domains/tool-descriptor.js";
+import {
+  isObjectRootedSchema,
+  isToolDescriptor,
+  MAX_TOOL_DESCRIPTION_LENGTH,
+  TOOL_NAME_PATTERN,
+} from "../domains/tool-descriptor.js";
 
 const valid = () => ({
   name: "read_file",
@@ -83,5 +88,67 @@ describe("isToolDescriptor", () => {
 
   test("rejects a bare primitive", () => {
     expect(isToolDescriptor("not-an-object")).toBe(false);
+  });
+});
+
+/**
+ * The root-type gate behind the app-side dev warning for issue #26. Deliberately *not* the whole
+ * MCP rule — the server re-checks with the SDK's own `ToolSchema` (`mcp/tool-mapping.ts`), which
+ * this package cannot import — so the last case below pins that narrowness as intended, not a bug.
+ */
+describe("isObjectRootedSchema", () => {
+  test('accepts a schema rooted at the literal type "object"', () => {
+    expect(isObjectRootedSchema({ type: "object" })).toBe(true);
+    expect(
+      isObjectRootedSchema({
+        type: "object",
+        properties: { echoed: { type: "string" } },
+        required: ["echoed"],
+        additionalProperties: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("accepts the shapes zod exports for a passthrough object and a record", () => {
+    expect(isObjectRootedSchema({ type: "object", properties: {}, additionalProperties: {} })).toBe(true);
+    expect(
+      isObjectRootedSchema({
+        type: "object",
+        propertyNames: { type: "string" },
+        additionalProperties: { type: "number" },
+      }),
+    ).toBe(true);
+  });
+
+  test.each([
+    ["array", { type: "array", items: { type: "string" } }],
+    ["string", { type: "string" }],
+    ["number", { type: "number" }],
+    ["boolean", { type: "boolean" }],
+    ["null", { type: "null" }],
+  ])("rejects a %s schema", (_label, schema) => {
+    expect(isObjectRootedSchema(schema)).toBe(false);
+  });
+
+  test.each([
+    ["union (anyOf)", { anyOf: [{ type: "object" }, { type: "object" }] }],
+    ["discriminated union (oneOf)", { oneOf: [{ type: "object" }, { type: "object" }] }],
+    ["intersection (allOf)", { allOf: [{ type: "object" }, { type: "object" }] }],
+  ])("rejects a %s schema even though every branch is an object", (_label, schema) => {
+    expect(isObjectRootedSchema(schema)).toBe(false);
+  });
+
+  test('rejects a union type that merely includes "object"', () => {
+    expect(isObjectRootedSchema({ type: ["object", "null"] })).toBe(false);
+  });
+
+  test("rejects a schema with no type at all, and undefined", () => {
+    expect(isObjectRootedSchema({})).toBe(false);
+    expect(isObjectRootedSchema(undefined)).toBe(false);
+  });
+
+  test("is only the root-type gate: object-rooted shapes MCP still rejects pass here", () => {
+    expect(isObjectRootedSchema({ type: "object", properties: { a: true } })).toBe(true);
+    expect(isObjectRootedSchema({ type: "object", required: "name" })).toBe(true);
   });
 });

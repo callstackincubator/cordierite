@@ -77,6 +77,13 @@ const describeJsonValue = (value: unknown): string => {
     return "null";
   }
 
+  // Defensive: the daemon rejects a `tool_result` frame with no `result`, so nothing on today's
+  // wire path yields `undefined` here. Spelled out anyway so a future one reads as "returned no
+  // value" rather than the `typeof` wording, "returned a undefined".
+  if (value === undefined) {
+    return "no value";
+  }
+
   if (Array.isArray(value)) {
     return "an array";
   }
