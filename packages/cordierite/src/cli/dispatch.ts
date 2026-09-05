@@ -18,9 +18,9 @@ import { handleToolsCommand } from "../commands/tools.js";
 import { loadConfig } from "../daemon/config.js";
 import { getStateDirPaths, resolveStateDir } from "../daemon/state-dir.js";
 import { usageError } from "../errors.js";
+import { renderEventLine, renderEventsCursorLine } from "../output.js";
 import { getPackageVersion } from "../package-version.js";
 import { ensureDaemonVersionMatches, type VersionCheckOptions } from "../rpc/client.js";
-import { renderEventLine, renderEventsCursorLine } from "../output.js";
 import {
   parseJsonInputOption,
   parseNonNegativeIntegerOption,

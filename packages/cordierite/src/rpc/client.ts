@@ -468,6 +468,16 @@ const isDaemonGone = async (paths: StateDirPaths): Promise<boolean> => {
   return pid === undefined || Number.isNaN(pid) || !isPidAlive(pid);
 };
 
+/**
+ * How many sessions a restart would drop. Defensive about the field's presence rather than
+ * indexing it blindly: a daemon old enough to answer `daemon.status` without `sessions` predates
+ * the persistent daemon entirely, and a `TypeError` from deep inside the version check would be a
+ * far worse diagnosis than the drift it was trying to report.
+ */
+const liveSessionCount = (status: DaemonStatusResult): number => {
+  return Array.isArray(status.sessions) ? status.sessions.length : 0;
+};
+
 const pollUntilDaemonGone = async (
   paths: StateDirPaths,
   timeoutMs: number,
@@ -515,11 +525,11 @@ const restartDaemon = async (context: VersionCheckContext): Promise<void> => {
           return false;
         }
 
-        if (status.sessions.length > 0 && !context.check.forceRestart) {
+        if (liveSessionCount(status) > 0 && !context.check.forceRestart) {
           throw new DaemonVersionMismatchError(
             status.version,
             context.check.clientVersion,
-            status.sessions.length,
+            liveSessionCount(status),
           );
         }
 
@@ -566,11 +576,11 @@ const runVersionCheck = async (context: VersionCheckContext): Promise<void> => {
       return;
     }
 
-    if (status.sessions.length > 0 && !context.check.forceRestart) {
+    if (liveSessionCount(status) > 0 && !context.check.forceRestart) {
       throw new DaemonVersionMismatchError(
         status.version,
         context.check.clientVersion,
-        status.sessions.length,
+        liveSessionCount(status),
       );
     }
 
@@ -580,7 +590,7 @@ const runVersionCheck = async (context: VersionCheckContext): Promise<void> => {
   throw new DaemonVersionMismatchError(
     lastStatus?.version ?? "unknown",
     context.check.clientVersion,
-    lastStatus?.sessions.length ?? 0,
+    lastStatus ? liveSessionCount(lastStatus) : 0,
   );
 };
 
