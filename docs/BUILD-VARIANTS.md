@@ -186,13 +186,14 @@ from the registry instead of resolving the one your build actually uses):
 > `apple` instead (or to both).
 
 > **Excluding on iOS also disables codegen for this package.** `expo-modules-autolinking`
-> only generates `CordieriteSpec` (the TurboModule codegen output `RCTNativeCordierite.mm`
-> imports) for packages it actually autolinks. If your app excludes
-> `@cordierite/react-native` from iOS autolinking but still references the `Cordierite` pod
-> directly — for example to attach an XCTest target, as this repo's own playground does —
-> the build fails because the generated header no longer exists. This only affects setups
-> that both exclude and hand-add the pod; a normal consumer app that just wants Cordierite
-> gone never hits it.
+> only generates `CordieriteSpec` — the TurboModule codegen output `RCTNativeCordierite.mm`
+> imports — for packages it actually autolinks.
+>
+> So if your app excludes `@cordierite/react-native` from iOS autolinking but still
+> references the `Cordierite` pod directly — for example to attach an XCTest target, as this
+> repo's own playground does — the build fails because the generated header no longer
+> exists. This only affects setups that both exclude and hand-add the pod; a normal consumer
+> app that just wants Cordierite gone never hits it.
 
 There is no corresponding plugin option to keep in sync. Earlier 0.4.0 prereleases had an
 `include` option that only *asserted* the plugin's intent matched autolinking; it was

@@ -373,12 +373,16 @@ not as the mechanism that keeps a destructive tool out of reach of a hostile one
   restricts CocoaPods linking to the `Debug` configuration; Android swaps in a no-op
   `CordieritePackage` for `release`. Both are real per-variant decisions, not a
   `debuggable`/`#if DEBUG` gate compiled into every variant, and neither quietly depends on
-  a custom build-type/configuration name being spelled `debug`/`Debug`. A release pipeline
-  that wants Cordierite anyway (an agent-driven, release-signed internal build) sets
-  `CORDIERITE_ENABLED=1`; one that wants it gone even from debug sets `CORDIERITE_ENABLED=0`.
+  a custom build-type/configuration name being spelled `debug`/`Debug`.
+
+  A release pipeline that wants Cordierite anyway (an agent-driven, release-signed internal
+  build) sets `CORDIERITE_ENABLED=1`; one that wants it gone even from debug sets
+  `CORDIERITE_ENABLED=0`.
   [`BUILD-VARIANTS.md`](BUILD-VARIANTS.md#inclusion-is-an-autolinking-decision) has the full
-  mechanism. Verify the outcome against the built artifact (`cordierite doctor`,
-  [`CI.md`](CI.md#release-gate-cordierite-doctor)) — on Android, `doctor` deliberately trusts
+  mechanism.
+
+  Verify the outcome against the built artifact (`cordierite doctor`,
+  [`CI.md`](CI.md#release-gate-cordierite-doctor)). On Android, `doctor` deliberately trusts
   only its `CordieriteNativeMarker` keep-rule signal, since the release-default no-op stub
   shares the real implementation's package name and would otherwise look present to a naive
   scan. When the module genuinely isn't present, the JS public API degrades to the exact
