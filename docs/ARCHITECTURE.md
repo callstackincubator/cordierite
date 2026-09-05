@@ -90,13 +90,16 @@ The daemon refuses to load a key file that is group/world-readable.
   "eventBufferSize": 256,
   "policy": { "default": "allow", "destructive": "allow" },
   "advertisedIp": null,
-  "scheme": null
+  "scheme": null,
+  "iosBundleId": null
 }
 ```
 
 `advertisedIp` overrides auto-detection of the address advertised in minted bootstrap
 payloads. `scheme` is the deep-link URI scheme composed into `cordierite link`'s output
 when `--scheme` is not passed (§10) — set it once here instead of on every invocation.
+`iosBundleId` is the same idea for `--open ios-device` (§8): the app `xcrun devicectl`
+should launch, overridable per invocation by `--bundle-id` / the `bundleId` MCP argument.
 `eventBufferSize` caps the per-session `events.since` retention buffer (§5).
 
 ## 4. Daemon lifecycle
@@ -248,6 +251,21 @@ belong here:
   the `&` — a naive "slice to end of string" swallows the pin and corrupts the payload.
 - The `pin` matters only to a build whose effective `trust` is `"link"` (§11). Embedded pins,
   when configured, always win — see [SECURITY.md](SECURITY.md)'s "Trust modes".
+- **The address baked into the payload is decided by the delivery path, before the link is
+  minted, and cannot be revised afterwards.** `--open android` and `--open ios-sim` force
+  `127.0.0.1` because `adb reverse` and the simulator's shared network stack both make the
+  daemon reachable there; every other path — a QR code, and the experimental `--open
+  ios-device` (issue #31) — keeps the detected LAN address, because a physical phone has no
+  such tunnel. `cli/open-target.ts`'s `usesLoopbackAddress` is the single predicate both
+  `link.ts` and `mcp/connect-tool.ts` consult, so the CLI and MCP paths cannot disagree; it is
+  also why `cordierite_connect` decides on a target *first* and mints a second, correctly
+  addressed link when it falls back to a QR.
+- `--open ios-device` is **explicit opt-in only**: `detectBootedTargets` enumerates booted
+  simulators and attached Android devices and never runs `devicectl`, so a paired iPhone — which
+  is often a personal phone, and which delivery may cold-launch — is never picked automatically.
+  It is experimental: `devicectl`'s `--payload-url` is undocumented by Apple and cannot be
+  exercised in CI, so all of it sits behind the injectable `ExecFn` seam. Prerequisites are in
+  the [`cordierite` package README](../packages/cordierite/README.md).
 
 ## 9. MCP server
 
@@ -271,7 +289,10 @@ proxies daemon RPC (auto-spawning the daemon like any client):
   which point cancelling it is moot).
 - Two built-in management tools, `cordierite_connect` and `cordierite_wait_for_session`,
   let an agent mint a bootstrap link, deliver it to an emulator/simulator, and wait for the
-  claim — without shell access. This is what makes the agent path self-service.
+  claim — without shell access. This is what makes the agent path self-service. `target:
+  "ios-device"` extends that to a paired physical iPhone/iPad (§8), but only when the agent
+  names it and supplies `bundleId`; the "nothing detected" note says so, so an agent that
+  finds no simulator knows the option exists rather than defaulting to a QR nobody scans.
 - Two more built-in tools, `cordierite_events` and `cordierite_wait_for_event` (issue #6),
   give an agent a pull surface over `postEvent()`-pushed `app_event`s: `cordierite_events`
   is a thin proxy over `events.since`; `cordierite_wait_for_event` blocks for a matching

@@ -68,6 +68,18 @@ cordierite link --scheme myapp --open ios-sim     # or: --open android
 With more than one simulator booted (or several devices attached) this errors and lists
 them rather than picking one — re-run with `--device <udid|serial>`.
 
+A paired **physical iPhone/iPad** has an experimental path of its own, never auto-detected
+and always opt-in:
+
+```bash
+cordierite link --scheme myapp --open ios-device --bundle-id com.example.myapp
+```
+
+It goes through `xcrun devicectl`, so it needs iOS 17+, Xcode 15+, the device paired and
+trusted with Developer Mode on, a dev-signed build already installed, and the phone on the
+same network as this machine; it may relaunch the app. If it fails, fall back to the QR
+flow above — that is still the only option on iOS 16 and below.
+
 Then poll (or use `cordierite events <sessionId> --json` to avoid polling) until the
 session shows `state: "active"` in `cordierite ls --json` or
 `cordierite tools <sessionId>` stops erroring.
@@ -86,6 +98,12 @@ like any other MCP tool.
 
 Pass `target: "android"` / `"ios-sim"` (plus `device` — an adb serial or simulator udid) only
 to override that choice, e.g. when several devices are up and the result said so.
+
+`target: "ios-device"` reaches a paired **physical** iPhone/iPad and additionally needs
+`bundleId` (or `iosBundleId` in `config.json`). It is experimental and is never picked
+automatically — a paired iPhone may be someone's personal phone — so ask for it by name only
+when the user has said that is where the app is running, and expect the same prerequisites as
+the CLI flag above.
 
 **If the result has a `qr` field instead of `delivered: true`, nothing was delivered and a
 human has to act.** Do not call `cordierite_wait_for_session` yet — it produces no output

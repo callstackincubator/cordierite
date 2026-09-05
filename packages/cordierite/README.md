@@ -30,7 +30,7 @@ The command writes an unencrypted PEM private key (PKCS#8) to `<state-dir>/key.p
 | Command | Role |
 | --- | --- |
 | `cordierite keygen [--out <path>] [--force]` | generate a daemon private key, print its app pin |
-| `cordierite link [--ttl <s>] [--qr] [--open android\|ios-sim] [--scheme <s>]` | mint a pending session and print its deep link |
+| `cordierite link [--ttl <s>] [--qr] [--open android\|ios-sim\|ios-device] [--device <id>] [--bundle-id <id>] [--scheme <s>]` | mint a pending session and print its deep link |
 | `cordierite ls` | list sessions: alias, state, device, tool count |
 | `cordierite tools [selector] [name] [--full]` | list a session's tools, or show one tool's full schema |
 | `cordierite invoke [selector] <tool> --input '<json>' [--timeout <ms>]` | call a tool |
@@ -41,6 +41,36 @@ The command writes an unencrypted PEM private key (PKCS#8) to `<state-dir>/key.p
 | `cordierite doctor <artifact> [--assert-present\|--assert-absent]` | **release-gate step**: report or assert whether a built `.app`/`.ipa`/`.apk`/`.aab` contains Cordierite |
 
 Every command that targets a session accepts an optional `selector` (a session id or an alias from `cordierite ls`); omit it when exactly one session is active. Global flags: `--json` (machine-readable output), `--no-color`, `--state-dir <path>` (default `~/.cordierite`). Run `cordierite <command> --help` for the exact flags of any command, or `cordierite --help` for the full list.
+
+### Delivering the link to a device
+
+`--open` hands the freshly minted deep link straight to a device, so nothing has to scan a QR code:
+
+| `--open` | Mechanism | Address in the link |
+| --- | --- | --- |
+| `android` | `adb reverse tcp:<port> tcp:<port>`, then `adb shell am start -a android.intent.action.VIEW -d '<link>'` | `127.0.0.1` (the port is forwarded onto the device) |
+| `ios-sim` | `xcrun simctl openurl <udid> <link>` | `127.0.0.1` (the simulator shares the host's network) |
+| `ios-device` **(experimental)** | `xcrun devicectl device process launch --device <udid> --payload-url <link> <bundle-id>` | the machine's detected LAN address — there is no `adb reverse` equivalent on iOS |
+
+With no `--device`, `android` and `ios-sim` require exactly one attached/booted device (`ANDROID_SERIAL` disambiguates the Android side); several is an error naming each one rather than an arbitrary pick.
+
+#### `--open ios-device` (experimental)
+
+A wired iPhone or iPad used to have no automated path at all — only a human scanning the QR code. `--open ios-device` closes that gap through `xcrun devicectl`, but it is **experimental**: `devicectl`'s `--payload-url` flag is not documented by Apple, and it cannot be verified in CI, so treat a failure here as a reason to fall back to the QR flow rather than as a bug in your app.
+
+It needs all of:
+
+- **iOS 17 or newer** on the device, and **Xcode 15 or newer** on the host (`devicectl` does not exist before that). For iOS 16 and below, use the QR/deep-link flow.
+- The device **paired and trusted** by this Mac, with **Developer Mode** enabled on it (Settings → Privacy & Security → Developer Mode).
+- A **development-signed build of your app already installed** — `devicectl` launches an installed app; it does not install one.
+- The phone and this machine **on the same network**, reachable at the daemon's advertised address (`cordierite daemon status` shows it; `advertisedIp` in `config.json` overrides the detection).
+- The app's **bundle id**, from `iosBundleId` in `config.json` or `--bundle-id <id>` on the command line. Without one the command fails with a usage error before minting anything.
+
+```bash
+cordierite link --scheme myapp --open ios-device --bundle-id com.example.myapp
+```
+
+Two behaviours worth knowing: delivery **may relaunch the app** rather than foreground it (Cordierite handles both — a delivered link supersedes a held session), and a paired iPhone is **never auto-detected**. `cordierite link` without `--open`, and `cordierite_connect` without a `target`, only ever consider booted simulators and attached Android devices; a physical iPhone is often someone's personal phone, so it has to be asked for explicitly.
 
 `cordierite link`'s deep link is `<scheme>:///?cordierite=<payload>&pin=<sha256/...>`: the `cordierite` param is the existing binary v2 bootstrap payload (address, session id, token, expiry — unchanged), and `pin` is a separate, out-of-band query param carrying the daemon's current SPKI fingerprint for apps that want to pick it up. An app build with embedded `cliPins` ignores `pin` outright — embedded pins always win. A debug build with no embedded pins trusts it for that session only (see `docs/SECURITY.md`'s "Dev trust mode" section); a release build with the module enabled never accepts it, embedded pins only.
 
@@ -63,7 +93,7 @@ Add `cordierite mcp` to the agent's MCP server config — no separate server pro
 }
 ```
 
-Once configured, the connected app's tools appear as MCP tools automatically: `tools/list` mirrors the live registry (namespaced `<alias>__<name>` when more than one session is active), and `tools/call` proxies straight to the app with progress and errors preserved. Two built-in management tools let an agent bootstrap a session without shell access: `cordierite_connect` mints a link and, by default, delivers it to whichever `android`/`ios-sim` device it detects (pass `target`/`device` to choose, or `target: "none"` to force the human flow) — falling back to a QR code, plus instructions to show it, only when there is nothing to deliver to; and `cordierite_wait_for_session` waits for that session to be claimed. Two more built-in tools give an agent a pull surface over `postEvent()`-pushed app events: `cordierite_events` drains everything retained since a cursor, and `cordierite_wait_for_event` blocks for a matching event (checking what's already retained before waiting live), rejecting with `tool_timeout` if none arrives in time.
+Once configured, the connected app's tools appear as MCP tools automatically: `tools/list` mirrors the live registry (namespaced `<alias>__<name>` when more than one session is active), and `tools/call` proxies straight to the app with progress and errors preserved. Two built-in management tools let an agent bootstrap a session without shell access: `cordierite_connect` mints a link and, by default, delivers it to whichever `android`/`ios-sim` device it detects (pass `target`/`device` to choose, or `target: "none"` to force the human flow) — falling back to a QR code, plus instructions to show it, only when there is nothing to deliver to; and `cordierite_wait_for_session` waits for that session to be claimed. `target: "ios-device"` reaches a paired physical iPhone/iPad, with `bundleId` (or `iosBundleId` in `config.json`) and the [prerequisites above](#--open-ios-device-experimental); it is experimental and never auto-detected, so an agent has to ask for it by name. Two more built-in tools give an agent a pull surface over `postEvent()`-pushed app events: `cordierite_events` drains everything retained since a cursor, and `cordierite_wait_for_event` blocks for a matching event (checking what's already retained before waiting live), rejecting with `tool_timeout` if none arrives in time.
 
 ## Release gate: `cordierite doctor`
 
