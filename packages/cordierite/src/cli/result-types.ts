@@ -74,9 +74,17 @@ export type InitCommandData = {
   /** Absolute path of the project config that was written (or already correct). */
   path: string;
   scheme: string;
-  /** Where `scheme` came from: `--scheme`, the file's own prior value, or `app.json`'s
-   * `expo.scheme`. A recorded scheme outranks `app.json` so a plain re-run stays idempotent. */
-  source: "flag" | "app.json" | "project-config";
+  /**
+   * Where `scheme` came from. These are `init`'s *own* three inputs, deliberately named so they
+   * cannot be read as `scheme.ts`'s resolution tiers: `init` never consults `CORDIERITE_SCHEME`
+   * and never walks up to a parent project config (see `commands/init.ts`).
+   *
+   * - `"--scheme"` — the flag.
+   * - `"app.json"` — `<cwd>/app.json`'s `expo.scheme`.
+   * - `"already-recorded"` — the value this file already held, which a plain re-run keeps so it
+   *   stays idempotent even after `app.json` changes.
+   */
+  source: "--scheme" | "app.json" | "already-recorded";
   /** The project config did not exist before this run. */
   created: boolean;
   /** This run wrote to the file. `false` on an idempotent re-run. */

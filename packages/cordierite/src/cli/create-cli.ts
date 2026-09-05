@@ -17,8 +17,13 @@ export const createCli = () => {
 
   cli
     .command("init", "Set up the current app directory: write .cordierite/config.json and print the MCP snippet.")
-    .option("--scheme <scheme>", "Deep-link URI scheme to write (default: app.json's \"expo.scheme\").")
-    .option("--force", "Overwrite a different scheme already recorded in the project config.");
+    .option(
+      "--scheme <scheme>",
+      "Deep-link URI scheme to write. Only this flag and <cwd>/app.json are consulted — not " +
+        "CORDIERITE_SCHEME, and no walk-up: init decides what to write here, so it never bakes " +
+        "an ambient value into a committed file.",
+    )
+    .option("--force", "Replace the scheme already recorded in the project config.");
 
   cli
     .command("keygen", "Generate a Cordierite host private key and print its app fingerprint.")

@@ -45,6 +45,17 @@ const writeAppJson = async (dir: string, expo: unknown): Promise<void> => {
   await writeJson(path.join(dir, "app.json"), { expo });
 };
 
+/**
+ * Lookup options whose home/state exclusions point at throwaway directories that are on no
+ * walk-up path under test, so a walk can never consult — or depend on the contents of — the real
+ * `$HOME` or `~/.cordierite` of whatever machine runs the suite.
+ */
+const isolatedLookup = async (): Promise<{ homeDir: string; stateDirRoot: string }> => {
+  const dir = await makeDir();
+
+  return { homeDir: dir, stateDirRoot: path.join(dir, "unrelated-state") };
+};
+
 const writeProjectConfig = async (dir: string, value: unknown): Promise<string> => {
   const configPath = path.join(dir, ".cordierite", "config.json");
   await writeJson(configPath, value);
@@ -182,8 +193,8 @@ describe("findProjectConfig", () => {
     const deep = path.join(dir, "a", "b", "c");
     await mkdir(deep, { recursive: true });
 
-    expect(findProjectConfig(deep)).toBeUndefined();
-    expect(findProjectConfig(path.parse(dir).root)).toBeUndefined();
+    expect(findProjectConfig(deep, await isolatedLookup())).toBeUndefined();
+    expect(findProjectConfig(path.parse(dir).root, await isolatedLookup())).toBeUndefined();
   });
 
   test("skips the state directory in use, so it can never shadow itself at the project tier", async () => {
@@ -193,8 +204,12 @@ describe("findProjectConfig", () => {
     const projectDir = path.join(parent, "app");
     await mkdir(projectDir, { recursive: true });
 
-    expect(findProjectConfig(projectDir)).toBe(path.join(stateDir, "config.json"));
-    expect(findProjectConfig(projectDir, { stateDirRoot: stateDir })).toBeUndefined();
+    expect(findProjectConfig(projectDir, await isolatedLookup())).toBe(
+      path.join(stateDir, "config.json"),
+    );
+    expect(
+      findProjectConfig(projectDir, { ...(await isolatedLookup()), stateDirRoot: stateDir }),
+    ).toBeUndefined();
   });
 
   // `<home>/.cordierite` is the *default state dir*, and essentially every project lives under the
@@ -218,7 +233,11 @@ describe("findProjectConfig", () => {
     ).toBeUndefined();
 
     // Control: without the exclusion it *would* have been found, so the assertion above is real.
-    expect(findProjectConfig(projectDir)).toBe(path.join(home, ".cordierite", "config.json"));
+    // The home/state exclusions are still pinned to unrelated temp paths, so what this proves is
+    // the exclusion doing the work — not the runner's own `$HOME` happening to differ.
+    expect(findProjectConfig(projectDir, await isolatedLookup())).toBe(
+      path.join(home, ".cordierite", "config.json"),
+    );
   });
 
   test("collects every config on the path, nearest first", async () => {

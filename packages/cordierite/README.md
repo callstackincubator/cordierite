@@ -58,6 +58,10 @@ So in an Expo app root, none of it needs configuring. `app.config.js` / `app.con
 
 `cordierite init`, run in an app root, writes `.cordierite/config.json` (mode `0600`, in a `0700` directory) with the discovered scheme and prints the MCP server entry to paste plus the `import "@cordierite/react-native/auto"` reminder. It never generates keys or touches daemon state.
 
+**`init` is not the resolver.** It consults exactly two sources — `--scheme` and `<cwd>/app.json` — plus whatever the file already records. It deliberately ignores `CORDIERITE_SCHEME` and does not walk up to a parent `.cordierite/config.json`, because it is deciding what to *write here*: inheriting either would bake an ambient value into a committed file (a shell variable that happened to be exported, or a parent project's scheme silently copied into a sub-package). The precedence list above is what *reads* the result. `--json`'s `source` field reports which of those three inputs won: `"--scheme"`, `"app.json"`, or `"already-recorded"`.
+
+It also refuses to run where `<cwd>/.cordierite` would be the daemon's own state directory (`~/.cordierite`, or a `--state-dir`/`CORDIERITE_STATE_DIR` you point at it) — that directory holds `key.pem` and the audit log, and a config written there is not something to commit.
+
 It is idempotent, and safe to re-run:
 
 - A plain re-run keeps whatever scheme is already recorded. If `app.json` has since changed, the result carries a `note` saying so rather than failing — a command documented as safe to re-run must not start erroring because somebody renamed a scheme.

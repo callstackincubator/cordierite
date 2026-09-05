@@ -45,7 +45,7 @@ Or hand it to an agent:
 }
 ```
 
-Both read your app's deep-link scheme from `app.json`'s `expo.scheme`, so there is nothing to configure. On a machine with several apps, pin it per entry with `--scheme myapp` (or `CORDIERITE_SCHEME`, or run `cordierite init` once in the app root — it writes `.cordierite/config.json` and prints the snippet above with the scheme filled in).
+Both read your app's deep-link scheme from `app.json`'s `expo.scheme`, so from your app's root directory there is nothing to configure. The CLI is normally run from there; an MCP client is not, and it starts the server in whatever working directory it likes — so give that entry its own scheme with `args: ["mcp", "--scheme", "myapp"]`, or set `CORDIERITE_SCHEME`. Running `cordierite init` once in the app root prints exactly that entry with the scheme filled in.
 
 That's the whole idea. Everything else is about which builds include it and what they trust.
 

@@ -158,6 +158,23 @@ export type ProjectConfigLookupOptions = {
 };
 
 /**
+ * The `.cordierite` directories that are *global* state, never a project's own config.
+ *
+ * Shared by the walk-up (which must not read them at the project tier) and `cordierite init`
+ * (which must not *write* into them: it would drop a config next to the daemon's `key.pem` and
+ * call it safe to commit), so the two can never disagree about which directory is which.
+ */
+export const globalConfigDirs = (options: ProjectConfigLookupOptions = {}): Set<string> => {
+  const excluded = new Set([join(resolve(options.homeDir ?? homedir()), PROJECT_CONFIG_DIR)]);
+
+  if (options.stateDirRoot !== undefined) {
+    excluded.add(resolve(options.stateDirRoot));
+  }
+
+  return excluded;
+};
+
+/**
  * Every `<dir>/.cordierite/config.json` on the path from `startDir` up to the filesystem root,
  * nearest first.
  *
@@ -179,12 +196,7 @@ export const findProjectConfigs = (
   startDir: string,
   options: ProjectConfigLookupOptions = {},
 ): string[] => {
-  const excluded = new Set([join(options.homeDir ?? homedir(), PROJECT_CONFIG_DIR)]);
-
-  if (options.stateDirRoot !== undefined) {
-    excluded.add(resolve(options.stateDirRoot));
-  }
-
+  const excluded = globalConfigDirs(options);
   const found: string[] = [];
   let dir = resolve(startDir);
 

@@ -102,10 +102,15 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
       return executeCommand(
         "init",
         () =>
-          handleInitCommand({
-            scheme: typeof parsedOptions.scheme === "string" ? parsedOptions.scheme : undefined,
-            force: Boolean(parsedOptions.force),
-          }),
+          handleInitCommand(
+            {
+              scheme: typeof parsedOptions.scheme === "string" ? parsedOptions.scheme : undefined,
+              force: Boolean(parsedOptions.force),
+            },
+            // `init` never reads the state dir, but it must know which directory it is so it can
+            // refuse to write a "safe to commit" project config into the daemon's own state.
+            { stateDir },
+          ),
         io,
       );
 
