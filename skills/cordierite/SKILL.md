@@ -55,8 +55,10 @@ rebuild, so it isn't a fast in-session action).
 From `link`'s JSON output, use:
 
 - **`data.deepLinkPayload`** to compose the full URL yourself, or just print/relay
-  **`data`**'s rendered deep link (`<scheme>:///?cordierite=<deepLinkPayload>`) for a
-  human to open, or scan the QR from `cordierite link --scheme myapp --qr` on a TTY.
+  **`data`**'s rendered deep link (`<scheme>:///?cordierite=<deepLinkPayload>&pin=<sha256/...>`)
+  for a human to open, or scan the QR from `cordierite link --scheme myapp --qr` on a TTY.
+  Relay the rendered link whole — the `pin` param is what lets a debug build with no embedded
+  pins trust the daemon, and anything re-parsing the payload must stop at the `&`.
 - **`data.sessionId`** — the selector to poll with in the next step.
 
 For a simulator/emulator you control directly, skip the deep link entirely:
@@ -78,8 +80,9 @@ cordierite link --scheme myapp --open ios-device --bundle-id com.example.myapp
 It goes through `xcrun devicectl`, so it needs iOS 17+, Xcode 15+, the device paired,
 trusted and **connected** with Developer Mode on, a dev-signed build already installed, and
 the phone on the same network as this machine (the address is on `link`'s `Endpoint` line).
-It relaunches the app. If it fails, fall back to the QR flow above — that is still the only
-option on iOS 16 and below.
+If the app is already running and the link does not take, add `--relaunch` (it terminates the
+running instance first). If it still fails, fall back to the QR flow above — that is still the
+only option on iOS 16 and below.
 
 Then poll (or use `cordierite events <sessionId> --json` to avoid polling) until the
 session shows `state: "active"` in `cordierite ls --json` or
@@ -101,10 +104,10 @@ Pass `target: "android"` / `"ios-sim"` (plus `device` — an adb serial or simul
 to override that choice, e.g. when several devices are up and the result said so.
 
 `target: "ios-device"` reaches a paired **physical** iPhone/iPad and additionally needs
-`bundleId` (or `iosBundleId` in `config.json`). It is experimental and is never picked
-automatically — a paired iPhone may be someone's personal phone — so ask for it by name only
-when the user has said that is where the app is running, and expect the same prerequisites as
-the CLI flag above.
+`bundleId` (or `iosBundleId` in `config.json`); add `relaunch: true` if the app is already
+running and the link does not take. It is experimental and is never picked automatically — a
+paired iPhone may be someone's personal phone — so ask for it by name only when the user has
+said that is where the app is running, and expect the same prerequisites as the CLI flag above.
 
 **If the result has a `qr` field instead of `delivered: true`, nothing was delivered and a
 human has to act.** Do not call `cordierite_wait_for_session` yet — it produces no output

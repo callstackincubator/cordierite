@@ -266,17 +266,29 @@ belong here:
   It is experimental: `devicectl`'s `--payload-url` is undocumented by Apple and cannot be
   exercised in CI, so all of it sits behind the injectable `ExecFn` seam. Prerequisites are in
   the [`cordierite` package README](../packages/cordierite/README.md).
-- Two `devicectl` details the enumeration has to defend against, since neither is documented:
-  `list devices` returns **every CoreDevice the Mac has ever paired**, across platforms and
-  regardless of whether it is connected — so entries are filtered on `hardwareProperties.platform`
-  and `connectionProperties` before the "exactly one device" rule counts them, or a phone in
-  someone's pocket turns the one connected iPhone into a spurious ambiguity error. Filtering is
-  client-side rather than via `devicectl --filter` so every rule is covered by the `ExecFn` tests
-  instead of by an NSPredicate no test can evaluate; each rule drops an entry only when the field is
-  present and disqualifying, so a `devicectl` that stops emitting one degrades to a loud launch
-  failure rather than to silently finding nothing. And the bundle id is the launch argv's only
-  trailing positional, so it is shape-validated at every entry point — a value starting with `-`
-  would be read by `devicectl` as an option.
+- `devicectl list devices` returns **every CoreDevice the Mac has ever paired**, across platforms
+  and regardless of whether it is connected, so entries are filtered before the "exactly one
+  device" rule counts them — otherwise a paired Watch, or a phone in someone's pocket, turns the
+  one connected iPhone into a spurious ambiguity error. The rules mirror the vendored Expo CLI's
+  own `devicectl` integration (`@expo/cli`'s `AppleDevice.js`): exclude `tunnelState`
+  `"unavailable"` and require `pairingState` `"paired"`, plus an iOS `platform` check. Note that
+  `tunnelState: "disconnected"` is **kept** — a wired, trusted iPhone reports it routinely, since
+  the tunnel is brought up on demand, so excluding it would drop exactly the device this target
+  exists to reach. Filtering is client-side rather than via `devicectl --filter` so every rule is
+  covered by the `ExecFn` tests instead of by an NSPredicate no test can evaluate. Each rule drops
+  an entry only when the field is present and disqualifying — the one deliberate departure from
+  Expo, which tests `pairingState` positively and would therefore find nothing at all if these
+  undocumented keys were ever renamed; here that degrades to a loud launch failure instead.
+- The bundle id is the launch argv's only **trailing positional**, so it is shape-validated
+  (letters, digits, `.`, `-`) at each use site — a value starting with `-` would be read by
+  `devicectl` as an option. It is *not* validated in `daemon/config.ts`, which keeps the plain
+  non-empty-string check `scheme` uses: that loader runs on every daemon start, and a typo in a
+  CLI-side convenience key must not stop the daemon from starting.
+- `ios-device` also **refuses to deliver a loopback link**. `daemon/address.ts` falls back to
+  `127.0.0.1` when it finds no routable interface; delivered to a phone, that link points the
+  phone at itself, and the failure is silent — `wait_for_session` simply blocks for its whole
+  timeout. Both the CLI and MCP paths check the minted `endpoint.address` and raise a usage error
+  naming `advertisedIp` instead.
 
 ## 9. MCP server
 

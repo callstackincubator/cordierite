@@ -30,6 +30,8 @@ export type LinkOptions = {
   /** `--bundle-id` equivalent; only valid with `target: "ios-device"`, where it overrides
    * `config.json`'s `iosBundleId`. */
   bundleId?: string;
+  /** `--relaunch` equivalent; only valid with `target: "ios-device"`. */
+  relaunch?: boolean;
   /** Overrides `config.json`'s `scheme`. */
   scheme?: string;
   exec?: ExecFn;
@@ -50,6 +52,7 @@ export const link = async (options: LinkOptions = {}): Promise<LinkResult> => {
       target: options.target,
       device: options.device,
       bundleId: options.bundleId,
+      relaunch: options.relaunch,
       scheme: options.scheme,
       exec: options.exec,
       env: options.env,

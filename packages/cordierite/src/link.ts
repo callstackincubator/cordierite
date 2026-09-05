@@ -23,6 +23,8 @@ import {
   isOpenTarget,
   isValidBundleId,
   invalidBundleIdMessage,
+  isLoopbackAddress,
+  loopbackAddressMessage,
   usesLoopbackAddress,
   MISSING_BUNDLE_ID_MESSAGE,
   OPEN_TARGETS,
@@ -41,6 +43,18 @@ import { callDaemon, type SpawnFn } from "./rpc/client.js";
  * see `usesLoopbackAddress`. */
 const OPEN_TARGET_ADDRESS_OVERRIDE = "127.0.0.1";
 
+/**
+ * The deep-link shape, in one place: `<scheme>:///?cordierite=<payload>&pin=<spki-pin>`. Exported
+ * so `mcp/connect-tool.ts` composes byte-identical links rather than a second, drifting copy — the
+ * `pin` param went missing from the MCP side exactly because there were two of these.
+ *
+ * The pin is standard (non-URL-safe) base64 (`sha256/<44 chars>`, possibly containing `+`/`/`/`=`),
+ * so it is percent-encoded; parsers use `URLSearchParams`, which decodes it back. It is appended
+ * *after* the bootstrap blob, so anything reading `cordierite=` must stop at the `&`.
+ */
+export const composeDeepLink = (scheme: string, result: LinkCreateResult): string =>
+  `${scheme}:///?cordierite=${result.deepLinkPayload}&pin=${encodeURIComponent(result.pin)}`;
+
 export type MintLinkOptions = {
   stateDir: string;
   spawn?: SpawnFn;
@@ -54,6 +68,9 @@ export type MintLinkOptions = {
   device?: string;
   /** Overrides `config.json`'s `iosBundleId`. Only meaningful with `target: "ios-device"`. */
   bundleId?: string;
+  /** `target: "ios-device"` only: terminate a running instance before launching
+   * (`--terminate-existing`). Off by default. */
+  relaunch?: boolean;
   /** Overrides `config.json`'s `scheme`. */
   scheme?: string;
   exec?: ExecFn;
@@ -91,6 +108,10 @@ export const mintLink = async (options: MintLinkOptions): Promise<MintLinkResult
     throw usageError('"bundleId" only applies alongside target "ios-device".');
   }
 
+  if (options.relaunch !== undefined && options.target !== "ios-device") {
+    throw usageError('"relaunch" only applies alongside target "ios-device".');
+  }
+
   const paths = getStateDirPaths(options.stateDir);
   const config = await loadConfig(paths);
   const scheme = options.scheme ?? config.scheme;
@@ -123,7 +144,15 @@ export const mintLink = async (options: MintLinkOptions): Promise<MintLinkResult
     { stateDir: options.stateDir, spawn: options.spawn, autoSpawn: options.autoSpawn },
   );
 
-  const deepLink = `${scheme}:///?cordierite=${result.deepLinkPayload}&pin=${encodeURIComponent(result.pin)}`;
+  // A physical device is the one target that cannot reach a loopback address, and
+  // `detectAdvertisedAddress` falls back to `127.0.0.1` when it finds no routable interface. Left
+  // unchecked, the link would be delivered happily and then never claimed — a silent hang in
+  // `wait_for_session` with nothing pointing at the cause.
+  if (options.target === "ios-device" && isLoopbackAddress(result.endpoint.address)) {
+    throw usageError(loopbackAddressMessage(result.endpoint.address));
+  }
+
+  const deepLink = composeDeepLink(scheme, result);
 
   if (options.target) {
     await deliverToOpenTarget({
@@ -132,6 +161,7 @@ export const mintLink = async (options: MintLinkOptions): Promise<MintLinkResult
       wssPort: result.endpoint.port,
       device: options.device,
       bundleId,
+      relaunch: options.relaunch,
       exec: options.exec,
       env: options.env,
     });

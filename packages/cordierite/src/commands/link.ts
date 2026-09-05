@@ -16,6 +16,7 @@ export type LinkCommandOptions = {
   open?: string;
   device?: string;
   bundleId?: string;
+  relaunch?: boolean;
 };
 
 export type LinkCommandContext = {
@@ -53,6 +54,10 @@ export const handleLinkCommand = async (
     throw usageError('"--bundle-id" only applies with "--open ios-device".');
   }
 
+  if (options.relaunch !== undefined && openTarget !== "ios-device") {
+    throw usageError('"--relaunch" only applies with "--open ios-device".');
+  }
+
   const result = await mintLink({
     stateDir: context.stateDir,
     spawn: context.spawn,
@@ -61,6 +66,7 @@ export const handleLinkCommand = async (
     target: openTarget,
     device: options.device,
     bundleId: options.bundleId,
+    relaunch: options.relaunch,
     exec: context.exec,
     env: context.env,
   });

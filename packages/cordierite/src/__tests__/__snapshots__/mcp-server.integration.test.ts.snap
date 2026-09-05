@@ -13,6 +13,9 @@ exports[`mcp: tools/list and tools/call > the generated MCP tool list (built-ins
         "device": {
           "type": "string",
         },
+        "relaunch": {
+          "type": "boolean",
+        },
         "target": {
           "enum": [
             "android",

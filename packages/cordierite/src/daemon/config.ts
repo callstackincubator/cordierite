@@ -6,7 +6,6 @@
 
 import { readFile } from "node:fs/promises";
 
-import { isValidBundleId } from "../cli/open-target.js";
 import type { StateDirPaths } from "./state-dir.js";
 
 export type PolicyDecision = "allow" | "deny" | "prompt";
@@ -176,19 +175,13 @@ export const loadConfig = async (
     config.scheme = requireNonEmptyString(parsed.scheme, "scheme");
   }
 
+  // Only a non-empty string here, like `scheme` — deliberately *not* the bundle-id charset check.
+  // This loader runs on every daemon start, and a typo in a CLI-side convenience key must not stop
+  // the daemon from starting. The charset is enforced where the value is actually used (`mintLink`,
+  // `handleConnectTool`, and `deliverToOpenTarget` itself), which is where it can be reported as a
+  // usage error against the command that needed it.
   if (parsed.iosBundleId !== undefined) {
-    const iosBundleId = requireNonEmptyString(parsed.iosBundleId, "iosBundleId");
-
-    // Shape-checked here, not just where it is used: this value ends up as a trailing positional in
-    // a `devicectl` argv, and a config typo starting with "-" would be read there as an option.
-    if (!isValidBundleId(iosBundleId)) {
-      throw configError(
-        "iosBundleId",
-        'must be a bundle id (letters, digits, "." and "-", starting with a letter or digit).',
-      );
-    }
-
-    config.iosBundleId = iosBundleId;
+    config.iosBundleId = requireNonEmptyString(parsed.iosBundleId, "iosBundleId");
   }
 
   if (parsed.graceSeconds !== undefined) {

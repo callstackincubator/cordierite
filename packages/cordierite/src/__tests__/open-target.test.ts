@@ -12,6 +12,7 @@ import { describe, expect, test } from "vitest";
 import {
   deliverToOpenTarget,
   detectBootedTargets,
+  isLoopbackAddress,
   isOpenTarget,
   usesLoopbackAddress,
   type ExecFn,
@@ -96,15 +97,21 @@ const devicectlListing = (devices: DevicectlFixtureDevice[]): unknown => ({
   },
 });
 
-/** The launch argv for a device, so the expectations stay in one place as the flags evolve. */
-const launchArgs = (udid: string, deepLink: string, bundleId: string): string[] => [
+/** The launch argv for a device, so the expectations stay in one place as the flags evolve.
+ * `--terminate-existing` appears only with `relaunch: true` (the opt-in `--relaunch` flag). */
+const launchArgs = (
+  udid: string,
+  deepLink: string,
+  bundleId: string,
+  options: { relaunch?: boolean } = {},
+): string[] => [
   "devicectl",
   "device",
   "process",
   "launch",
   "--device",
   udid,
-  "--terminate-existing",
+  ...(options.relaunch ? ["--terminate-existing"] : []),
   "--payload-url",
   deepLink,
   bundleId,
@@ -494,12 +501,11 @@ describe("deliverToOpenTarget: ios-device listing hygiene", () => {
     expect(calls[1]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
   });
 
-  test("disconnected and unpaired devices are ignored, leaving the one that is actually reachable", async () => {
+  test("unavailable and unpaired devices are ignored, leaving the one that is actually reachable", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
 
     await deliverTo(
       [
-        { udid: "OLD-1", name: "Someone's old iPhone", tunnelState: "disconnected" },
         { udid: "OLD-2", name: "An iPad in a drawer", tunnelState: "unavailable" },
         { udid: "OLD-3", name: "A phone that was never trusted", pairingState: "unpaired" },
         { udid: "00008030-AAAA", name: "My iPhone", tunnelState: "connected", pairingState: "paired" },
@@ -536,7 +542,7 @@ describe("deliverToOpenTarget: ios-device listing hygiene", () => {
       deliverTo(
         [
           { udid: "WATCH-1", name: "My Watch", platform: "watchOS" },
-          { udid: "OLD-1", name: "Someone's old iPhone", tunnelState: "disconnected" },
+          { udid: "OLD-1", name: "An iPad in a drawer", tunnelState: "unavailable" },
         ],
         calls,
       ),
@@ -554,28 +560,107 @@ describe("deliverToOpenTarget: ios-device listing hygiene", () => {
   test("two connected iOS devices are still ambiguous once filtering has run", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
 
-    await expect(
-      deliverTo(
-        [
-          { udid: "00008030-AAAA", name: "My iPhone", tunnelState: "connected" },
-          { udid: "00008030-BBBB", name: "Test iPad", tunnelState: "connected" },
-          { udid: "WATCH-1", name: "My Watch", platform: "watchOS" },
-        ],
-        calls,
-      ),
-    ).rejects.toThrow(/My iPhone \(00008030-AAAA\).*Test iPad \(00008030-BBBB\)/su);
+    // Captured rather than asserted with `.rejects.not.toThrow(...)`, which passes for *any*
+    // rejection and so would not have caught a Watch leaking into the list.
+    const error = await deliverTo(
+      [
+        { udid: "00008030-AAAA", name: "My iPhone", tunnelState: "connected" },
+        { udid: "00008030-BBBB", name: "Test iPad", tunnelState: "connected" },
+        { udid: "WATCH-1", name: "My Watch", platform: "watchOS" },
+      ],
+      calls,
+    ).then(
+      () => undefined,
+      (reason: unknown) => reason as Error,
+    );
 
-    // The Watch must not appear in the disambiguation list either — it is not a choice.
-    await expect(
-      deliverTo(
-        [
-          { udid: "00008030-AAAA", name: "My iPhone" },
-          { udid: "00008030-BBBB", name: "Test iPad" },
-          { udid: "WATCH-1", name: "My Watch", platform: "watchOS" },
-        ],
-        [],
-      ),
-    ).rejects.not.toThrow(/My Watch/u);
+    expect(error).toBeInstanceOf(Error);
+    expect(error!.message).toMatch(/My iPhone \(00008030-AAAA\)/u);
+    expect(error!.message).toMatch(/Test iPad \(00008030-BBBB\)/u);
+    // The Watch is not a choice, so it must not appear in the disambiguation list.
+    expect(error!.message).not.toMatch(/My Watch/u);
+    expect(error!.message).not.toMatch(/WATCH-1/u);
+  });
+
+  test('a wired iPhone reporting tunnelState "disconnected" is still delivered to', async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    // The tunnel is brought up on demand, so a plugged-in, trusted iPhone routinely reports
+    // "disconnected". Excluding it would drop exactly the device this target exists to reach —
+    // the vendored Expo CLI keeps it too and excludes only "unavailable".
+    await deliverTo(
+      [
+        {
+          udid: "00008030-AAAA",
+          name: "My iPhone",
+          tunnelState: "disconnected",
+          pairingState: "paired",
+        },
+      ],
+      calls,
+    );
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
+  });
+});
+
+describe("deliverToOpenTarget: ios-device --relaunch", () => {
+  const deliver = async (
+    relaunch: boolean | undefined,
+    calls: Array<{ command: string; args: string[] }>,
+  ): Promise<void> => {
+    await deliverToOpenTarget({
+      target: "ios-device",
+      deepLink: DEEP_LINK,
+      wssPort: 8443,
+      device: "00008030-AAAA",
+      bundleId: BUNDLE_ID,
+      relaunch,
+      exec: devicectlExec(calls, devicectlListing([])),
+    });
+  };
+
+  test("by default the launch is plain, with no --terminate-existing", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await deliver(undefined, calls);
+
+    // A plain `process launch` is what the vendored Expo CLI does, so it is the better-attested
+    // default; terminating a running app is a behaviour nobody should get without asking.
+    expect(calls[0]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
+    expect(calls[0]!.args).not.toContain("--terminate-existing");
+  });
+
+  test("relaunch: true adds --terminate-existing, before --payload-url", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await deliver(true, calls);
+
+    expect(calls[0]!.args).toEqual(
+      launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID, { relaunch: true }),
+    );
+  });
+
+  test("relaunch: false is the same as omitting it", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await deliver(false, calls);
+
+    expect(calls[0]!.args).not.toContain("--terminate-existing");
+  });
+});
+
+describe("isLoopbackAddress", () => {
+  test("recognises every form a phone could not reach", () => {
+    // `daemon/address.ts` falls back to 127.0.0.1 with no routable interface; delivering that to a
+    // phone points it at itself and `wait_for_session` hangs with nothing explaining why.
+    for (const address of ["127.0.0.1", "127.1.2.3", "::1", "[::1]", "localhost", "LOCALHOST", "0.0.0.0", "::", " 127.0.0.1 "]) {
+      expect(isLoopbackAddress(address)).toBe(true);
+    }
+  });
+
+  test("a routable LAN address is not loopback", () => {
+    for (const address of ["192.168.1.10", "10.0.0.4", "203.0.113.9", "fd00::1", "[fd00::1]"]) {
+      expect(isLoopbackAddress(address)).toBe(false);
+    }
   });
 });
 

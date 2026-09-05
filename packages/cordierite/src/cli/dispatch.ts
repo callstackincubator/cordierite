@@ -129,6 +129,10 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
                   : typeof parsedOptions["bundle-id"] === "string"
                     ? parsedOptions["bundle-id"]
                     : undefined,
+              // Left `undefined` when absent rather than coerced to `false`, so that
+              // "--relaunch only applies with --open ios-device" fires on the flag actually being
+              // passed and not on every `link` invocation.
+              relaunch: parsedOptions.relaunch === true ? true : undefined,
             },
             { stateDir },
           ),

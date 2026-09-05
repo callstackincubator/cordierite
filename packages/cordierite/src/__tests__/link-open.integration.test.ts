@@ -264,7 +264,6 @@ describe("link --open ios-device: the LAN address, not 127.0.0.1", () => {
         "launch",
         "--device",
         "00008030-AAAA",
-        "--terminate-existing",
         "--payload-url",
         result.data.deepLink,
         "com.example.playground",
@@ -322,6 +321,74 @@ describe("link --open ios-device: the LAN address, not 127.0.0.1", () => {
     );
   });
 
+  test("--relaunch is opt-in: absent by default, adds --terminate-existing when passed", async () => {
+    const { stateDir } = await startTestDaemon({ iosBundleId: "com.example.playground" });
+
+    const plainCalls: Array<{ command: string; args: string[] }> = [];
+    await handleLinkCommand(
+      { open: "ios-device" },
+      { stateDir, exec: devicectlExec(plainCalls, [{ udid: "00008030-AAAA", name: "My iPhone" }]) },
+    );
+    expect(plainCalls[1]!.args).not.toContain("--terminate-existing");
+
+    const relaunchCalls: Array<{ command: string; args: string[] }> = [];
+    await handleLinkCommand(
+      { open: "ios-device", relaunch: true },
+      { stateDir, exec: devicectlExec(relaunchCalls, [{ udid: "00008030-AAAA", name: "My iPhone" }]) },
+    );
+    expect(relaunchCalls[1]!.args).toContain("--terminate-existing");
+    // Placed before the URL, so the positional bundle id stays last.
+    expect(relaunchCalls[1]!.args.indexOf("--terminate-existing")).toBeLessThan(
+      relaunchCalls[1]!.args.indexOf("--payload-url"),
+    );
+    expect(relaunchCalls[1]!.args.at(-1)).toBe("com.example.playground");
+  });
+
+  test("--relaunch without --open ios-device is a usage error", async () => {
+    const { stateDir } = await startTestDaemon();
+
+    await expect(
+      handleLinkCommand({ open: "ios-sim", relaunch: true }, { stateDir }),
+    ).rejects.toThrow(/"--relaunch" only applies with "--open ios-device"/u);
+  });
+
+  test("a loopback advertised address is refused rather than delivered", async () => {
+    // `detectAdvertisedAddress` falls back to 127.0.0.1 with no routable interface. Delivering
+    // that link points the phone at itself: the app connects to nothing, the session is never
+    // claimed, and `wait_for_session` blocks for its whole timeout with no clue why.
+    const { stateDir } = await startTestDaemon({
+      advertisedIp: "127.0.0.1",
+      iosBundleId: "com.example.playground",
+    });
+
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(calls, [{ udid: "00008030-AAAA", name: "My iPhone" }]);
+
+    await expect(handleLinkCommand({ open: "ios-device" }, { stateDir, exec })).rejects.toThrow(
+      /advertisedIp/u,
+    );
+
+    // Nothing was delivered — the phone never gets an unusable link.
+    expect(calls).toEqual([]);
+  });
+
+  test("the same loopback address is fine for ios-sim, which reaches the daemon over loopback", async () => {
+    const { stateDir } = await startTestDaemon({ advertisedIp: "127.0.0.1" });
+
+    const exec: ExecFn = async (command, args) => {
+      if (args.join(" ") === "simctl list devices booted --json") {
+        return {
+          stdout: JSON.stringify({ devices: { "iOS 17.0": [{ state: "Booted", udid: "ABC" }] } }),
+          stderr: "",
+        };
+      }
+      return { stdout: "", stderr: "" };
+    };
+
+    const result = await handleLinkCommand({ open: "ios-sim" }, { stateDir, exec });
+    expect(result.ok).toBe(true);
+  });
+
   test("a --bundle-id that could be read as a devicectl option is rejected before minting", async () => {
     const { stateDir } = await startTestDaemon();
 
@@ -361,7 +428,6 @@ describe("client link({ target: \"ios-device\" })", () => {
       "launch",
       "--device",
       "00008030-AAAA",
-      "--terminate-existing",
       "--payload-url",
       result.deepLink,
       "com.example.playground",

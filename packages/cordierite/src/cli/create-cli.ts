@@ -33,6 +33,10 @@ export const createCli = () => {
     .option(
       "--bundle-id <id>",
       "App bundle id for --open ios-device (default: config.json's \"iosBundleId\").",
+    )
+    .option(
+      "--relaunch",
+      "With --open ios-device, terminate a running instance first (try this if delivery to an already-running app does nothing).",
     );
 
   cli.command("ls", "List Cordierite sessions.");

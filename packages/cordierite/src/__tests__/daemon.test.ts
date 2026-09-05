@@ -309,15 +309,15 @@ describe("daemon lifecycle", () => {
     await writeFile(paths.configPath, JSON.stringify({ iosBundleId: 42 }));
     await expect(loadConfig(paths)).rejects.toThrow(/iosBundleId/u);
 
-    // Shape-checked, not just non-empty: this value becomes a trailing positional in a `devicectl`
-    // argv, where a leading "-" would be read as an option rather than as the app to launch.
-    for (const bad of ["--console", "-x", "com.example app", "com.example;id"]) {
-      await writeFile(paths.configPath, JSON.stringify({ iosBundleId: bad }));
-      await expect(loadConfig(paths)).rejects.toThrow(/iosBundleId/u);
-    }
-
     await writeFile(paths.configPath, JSON.stringify({ iosBundleId: "com.example.my-app2" }));
     await expect(loadConfig(paths)).resolves.toMatchObject({ iosBundleId: "com.example.my-app2" });
+
+    // Deliberately *not* charset-checked here, only where the value is used. This loader runs on
+    // every daemon start, so a typo in a CLI-side convenience key must not stop the daemon from
+    // starting — it surfaces as a usage error against the `link`/`connect` call that needed it.
+    await writeFile(paths.configPath, JSON.stringify({ iosBundleId: "--console" }));
+    await expect(loadConfig(paths)).resolves.toMatchObject({ iosBundleId: "--console" });
+    await expect(startTrackedDaemon(stateDir)).resolves.toBeDefined();
 
     await rm(stateDir, { force: true, recursive: true });
   });

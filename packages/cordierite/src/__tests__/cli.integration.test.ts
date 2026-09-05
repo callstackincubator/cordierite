@@ -83,6 +83,7 @@ describe("CLI integration", () => {
     expect(linkHelp).toContain("--open");
     expect(linkHelp).toContain("--device");
     expect(linkHelp).toContain("--bundle-id");
+    expect(linkHelp).toContain("--relaunch");
     expect(linkHelp).toContain("ios-device");
 
     // `--bundle-id` has to survive cac's camelCasing all the way into `handleLinkCommand`, and a

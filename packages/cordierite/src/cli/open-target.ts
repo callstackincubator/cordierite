@@ -41,6 +41,32 @@ export const usesLoopbackAddress = (target: OpenTarget): boolean => {
   return target === "android" || target === "ios-sim";
 };
 
+/**
+ * Whether an advertised address is one that only resolves back to the machine that minted the link.
+ * `daemon/address.ts` falls back to `127.0.0.1` when it cannot find a routable interface, and such
+ * a link handed to a physical phone points the phone at *itself*: the app connects to nothing, the
+ * session is never claimed, and `wait_for_session` blocks for its whole timeout with no clue why.
+ * The `ios-device` path checks this after minting and refuses rather than delivering.
+ */
+export const isLoopbackAddress = (address: string): boolean => {
+  const normalized = address.trim().toLowerCase().replace(/^\[|\]$/gu, "");
+
+  return (
+    normalized === "localhost" ||
+    normalized === "::1" ||
+    normalized === "0.0.0.0" ||
+    normalized === "::" ||
+    /^127\./u.test(normalized)
+  );
+};
+
+/** The one wording for that refusal, shared by the CLI and MCP paths. */
+export const loopbackAddressMessage = (address: string): string =>
+  `The daemon advertised "${address}", which a physical device cannot reach — it would point the ` +
+  "phone at itself and the session would never be claimed. No routable LAN address was detected; " +
+  'set "advertisedIp" in config.json to this machine\'s address on the network the device is on, ' +
+  "and retry.";
+
 export type ExecResult = {
   stdout: string;
   stderr: string;
@@ -216,12 +242,17 @@ export type PairedIosDevice = { udid: string; name: string };
  * but cannot run the app and must never make the device choice look ambiguous. */
 const DELIVERABLE_PLATFORM = "ios";
 
-/** `connectionProperties` values that mean the device is known to CoreDevice but not reachable
- * right now — a phone that has been paired once and is sitting in someone's pocket. Launching on
- * one fails, and counting one toward the "exactly one device" rule is worse: it turns the single
- * connected iPhone into a spurious "multiple paired iOS devices" error. */
-const UNREACHABLE_TUNNEL_STATES: ReadonlySet<string> = new Set(["disconnected", "unavailable"]);
-const UNUSABLE_PAIRING_STATES: ReadonlySet<string> = new Set(["unpaired", "unknown"]);
+/**
+ * The only `tunnelState` that means "not reachable at all". Deliberately *not* including
+ * `disconnected`: a wired, trusted iPhone routinely reports `disconnected` (the tunnel is brought
+ * up on demand), so excluding it would drop exactly the device this target exists to reach. This
+ * matches the vendored Expo CLI's own `devicectl` integration
+ * (`@expo/cli`'s `AppleDevice.js:102`), which keeps `disconnected` and excludes only `unavailable`.
+ */
+const UNREACHABLE_TUNNEL_STATE = "unavailable";
+
+/** Expo's companion condition: a usable device is affirmatively `paired`. */
+const USABLE_PAIRING_STATE = "paired";
 
 /**
  * `devicectl list devices` lists **every CoreDevice the Mac has ever known**, across platforms and
@@ -234,6 +265,8 @@ const UNUSABLE_PAIRING_STATES: ReadonlySet<string> = new Set(["unpaired", "unkno
  * Each rule drops an entry only when the field is **present and disqualifying**; a missing field
  * keeps the device. The field names are undocumented, so a `devicectl` that stops emitting one must
  * degrade to "offer the device and let the launch fail loudly", never to "silently find nothing".
+ * That is the one deliberate departure from Expo, which tests `pairingState === "paired"`
+ * positively and so would find nothing at all if the key were ever renamed.
  */
 const parsePairedIosDevices = (payload: unknown): PairedIosDevice[] => {
   const devices = (payload as DevicectlDeviceListing | undefined)?.result?.devices;
@@ -252,20 +285,25 @@ const parsePairedIosDevices = (payload: unknown): PairedIosDevice[] => {
 
       const tunnelState = entry?.connectionProperties?.tunnelState;
 
-      if (typeof tunnelState === "string" && UNREACHABLE_TUNNEL_STATES.has(tunnelState.toLowerCase())) {
+      if (typeof tunnelState === "string" && tunnelState.toLowerCase() === UNREACHABLE_TUNNEL_STATE) {
         return undefined;
       }
 
       const pairingState = entry?.connectionProperties?.pairingState;
 
-      if (typeof pairingState === "string" && UNUSABLE_PAIRING_STATES.has(pairingState.toLowerCase())) {
+      if (typeof pairingState === "string" && pairingState.toLowerCase() !== USABLE_PAIRING_STATE) {
         return undefined;
       }
 
       // `hardwareProperties.udid` is what `--device` wants; `identifier` (the CoreDevice UUID) is
       // also accepted by `devicectl`, so a listing that omits the udid is still usable rather than
-      // silently dropped.
-      const udid = entry?.hardwareProperties?.udid ?? entry?.identifier;
+      // silently dropped. Checked for emptiness rather than `??`, which would keep a `""` udid and
+      // never reach the documented fallback.
+      const hardwareUdid = entry?.hardwareProperties?.udid;
+      const udid =
+        typeof hardwareUdid === "string" && hardwareUdid.length > 0
+          ? hardwareUdid
+          : entry?.identifier;
 
       return typeof udid === "string" && udid.length > 0
         ? { udid, name: entry?.deviceProperties?.name ?? udid }
@@ -351,6 +389,7 @@ const deliverIosDevice = async (
   deepLink: string,
   device: string | undefined,
   bundleId: string | undefined,
+  relaunch: boolean,
 ): Promise<void> => {
   // Checked before any enumeration: without a bundle id the launch cannot happen at all, so
   // spending a `devicectl list devices` timeout first would only delay the same error.
@@ -374,12 +413,13 @@ const deliverIosDevice = async (
     "launch",
     "--device",
     udid,
-    // Without this, `process launch` against an app that is already running can fail outright
-    // rather than deliver the URL. Both Flutter's and Expo's `devicectl` integrations pass it, and
-    // it makes the observable behaviour match what the docs promise: the app is relaunched, and
-    // Cordierite copes because a delivered link supersedes a held session. Unverifiable here — no
-    // hardware — so it is documented as part of the "may relaunch the app" contract.
-    "--terminate-existing",
+    // Opt-in only (`--relaunch` / `relaunch: true`). A plain `process launch` is what the vendored
+    // Expo CLI does, so it is the better-attested default; what it does when the app is *already
+    // running* is the one thing nobody here can verify without hardware. If that turns out to fail
+    // rather than deliver the URL, `--terminate-existing` is the escape hatch — it kills the
+    // running instance first, which Cordierite copes with because a delivered link supersedes a
+    // held session.
+    ...(relaunch ? ["--terminate-existing"] : []),
     "--payload-url",
     deepLink,
     bundleId,
@@ -576,6 +616,9 @@ export type OpenTargetOptions = {
   device?: string;
   /** The installed app's bundle id. Required by (and only used for) `target: "ios-device"`. */
   bundleId?: string;
+  /** `target: "ios-device"` only: terminate a running instance first (`--terminate-existing`)
+   * instead of launching over it. Off by default; see {@link deliverToOpenTarget}. */
+  relaunch?: boolean;
   /** Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
   exec?: ExecFn;
@@ -593,7 +636,13 @@ export const deliverToOpenTarget = async (options: OpenTargetOptions): Promise<v
   }
 
   if (options.target === "ios-device") {
-    await deliverIosDevice(exec, options.deepLink, options.device, options.bundleId);
+    await deliverIosDevice(
+      exec,
+      options.deepLink,
+      options.device,
+      options.bundleId,
+      options.relaunch ?? false,
+    );
     return;
   }
 

@@ -810,7 +810,6 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
       "launch",
       "--device",
       "00008030-AAAA",
-      "--terminate-existing",
       "--payload-url",
       data.deepLink,
       "com.example.playground",
@@ -818,7 +817,9 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
   });
 
   test('an explicit "ios-device" whose delivery fails errors the call rather than falling back to a QR', async () => {
-    const { stateDir } = await startTestDaemon();
+    // A routable advertisedIp: the helper's default is 127.0.0.1, which ios-device now refuses
+    // outright, and this test is about a *delivery* failure rather than an addressing one.
+    const { stateDir } = await startTestDaemon({ advertisedIp: "203.0.113.9" });
 
     const exec: ExecFn = async (command, args) => {
       const jsonOutputIndex = args.indexOf("--json-output");
@@ -892,8 +893,113 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     expect(decodeBootstrap(data.deepLink.split("cordierite=")[1]!.split("&")[0]!)).not.toBeNull();
   });
 
-  test('target "ios-device" falls back to config.json\'s iosBundleId when no bundleId is passed', async () => {
+  test("the CLI and MCP deep-link compositions are byte-identical for the same link.create result", async () => {
+    const { composeDeepLink } = await import("../link.js");
+
+    // The `&pin=` param went missing from the MCP side precisely because there were two copies of
+    // this string. `connect-tool.ts` now imports this exact function; the test pins the shape so a
+    // future edit to one path cannot silently diverge from the other.
+    const result = {
+      sessionId: "s-1",
+      deepLinkPayload: "AAAA-payload_x",
+      endpoint: { address: "192.168.1.10", port: 8443, family: 4 as const },
+      expiresAt: 1_800_000_000,
+      // Standard base64: contains the `+`, `/` and `=` that must be percent-encoded.
+      pin: "sha256/ab+cd/ef=",
+    };
+
+    expect(composeDeepLink("cordierite", result)).toBe(
+      "cordierite:///?cordierite=AAAA-payload_x&pin=sha256%2Fab%2Bcd%2Fef%3D",
+    );
+
+    // And a real MCP-minted link has the same shape, pin included.
     const { stateDir } = await startTestDaemon();
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const called = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: {} } },
+      CallToolResultSchema,
+    );
+
+    const data = called.structuredContent as { deepLink: string };
+    expect(data.deepLink).toMatch(/^cordierite:\/\/\/\?cordierite=[^&]+&pin=sha256%2F/u);
+  });
+
+  test('target "ios-device" refuses a loopback advertised address instead of delivering it', async () => {
+    // The MCP twin of the CLI guard: a 127.0.0.1 link handed to a phone points it at itself, and
+    // cordierite_wait_for_session would then block for its whole timeout explaining nothing.
+    const { stateDir } = await startTestDaemon({ advertisedIp: "127.0.0.1" });
+
+    const calls: string[] = [];
+    const exec: ExecFn = async (command, args) => {
+      calls.push(`${command} ${args.join(" ")}`);
+      return { stdout: "", stderr: "" };
+    };
+
+    const handle = await createMcpHandle(stateDir, exec);
+    const client = await connectInMemoryClient(handle);
+
+    const result = await client.request(
+      {
+        method: "tools/call",
+        params: {
+          name: "cordierite_connect",
+          arguments: {
+            target: "ios-device",
+            device: "00008030-AAAA",
+            bundleId: "com.example.playground",
+          },
+        },
+      },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(/advertisedIp/u);
+    expect(calls).toEqual([]);
+  });
+
+  test('"relaunch" is opt-in and only valid with target "ios-device"', async () => {
+    const { stateDir } = await startTestDaemon({ advertisedIp: "203.0.113.9" });
+
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec: ExecFn = async (command, args) => {
+      calls.push({ command, args });
+      return { stdout: "", stderr: "" };
+    };
+
+    const handle = await createMcpHandle(stateDir, exec, "com.example.playground");
+    const client = await connectInMemoryClient(handle);
+
+    const delivered = await client.request(
+      {
+        method: "tools/call",
+        params: {
+          name: "cordierite_connect",
+          arguments: { target: "ios-device", device: "00008030-AAAA", relaunch: true },
+        },
+      },
+      CallToolResultSchema,
+    );
+
+    expect(delivered.isError).not.toBe(true);
+    expect(calls[0]!.args).toContain("--terminate-existing");
+
+    const misplaced = await client.request(
+      {
+        method: "tools/call",
+        params: { name: "cordierite_connect", arguments: { target: "ios-sim", relaunch: true } },
+      },
+      CallToolResultSchema,
+    );
+
+    expect(misplaced.isError).toBe(true);
+    expect(JSON.stringify(misplaced.content)).toMatch(/relaunch.{0,4} only applies with target/u);
+  });
+
+  test('target "ios-device" falls back to config.json\'s iosBundleId when no bundleId is passed', async () => {
+    const { stateDir } = await startTestDaemon({ advertisedIp: "203.0.113.9" });
 
     const calls: Array<{ command: string; args: string[] }> = [];
     const exec: ExecFn = async (command, args) => {

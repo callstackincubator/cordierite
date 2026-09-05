@@ -25,11 +25,14 @@ import {
   isOpenTarget,
   isValidBundleId,
   invalidBundleIdMessage,
+  isLoopbackAddress,
+  loopbackAddressMessage,
   usesLoopbackAddress,
   MISSING_BUNDLE_ID_MESSAGE,
   type ExecFn,
   type OpenTarget,
 } from "../cli/open-target.js";
+import { composeDeepLink } from "../link.js";
 import { renderQrToTerminal } from "../qr-terminal.js";
 import {
   openDaemonStream,
@@ -81,7 +84,8 @@ export const CONNECT_TOOL_DESCRIPTOR = {
     "experimental, never-auto-detected path that delivers to a paired physical iPhone/iPad via " +
     "xcrun devicectl; it needs \"bundleId\" (or \"iosBundleId\" in config.json), iOS 17+, Xcode " +
     "15+, a connected and trusted device with Developer Mode on, a dev-signed build installed, and " +
-    "the phone on the same network as this machine — and it relaunches the app. Only when no device is " +
+    "the phone on the same network as this machine. Pass \"relaunch\": true with it if the app is " +
+    "already running and the delivery does not take. Only when no device is " +
     "detected (or target is \"none\") does this return a QR code for a human to scan, along with " +
     "an \"instructions\" field saying what to do with it. Follow up with " +
     "cordierite_wait_for_session to know when the device has connected.",
@@ -91,6 +95,7 @@ export const CONNECT_TOOL_DESCRIPTOR = {
       target: { type: "string", enum: ["android", "ios-sim", "ios-device", NO_TARGET] },
       device: { type: "string" },
       bundleId: { type: "string" },
+      relaunch: { type: "boolean" },
       ttlSeconds: { type: "number", exclusiveMinimum: 0 },
     },
     additionalProperties: false,
@@ -129,18 +134,6 @@ export class McpBuiltinToolError extends Error {
   }
 }
 
-/**
- * The same deep-link shape `link.ts` composes, `&pin=` included. It was missing here: an app whose
- * effective trust is `"link"` (a debug build with no build-time `cliPins`) has no way to pin the
- * daemon's certificate without it, so an agent-minted link could only connect where a CLI-minted
- * one could. That is invisible on the loopback targets — a simulator build normally carries
- * embedded pins — and becomes load-bearing for `ios-device`, the first MCP path that puts a link on
- * a physical phone over the LAN. The pin is standard base64 (`+`/`/`/`=`), so it is percent-encoded
- * exactly as in `link.ts`; apps that do not know the param keep ignoring it.
- */
-const composeDeepLink = (scheme: string, result: LinkCreateResult): string =>
-  `${scheme}:///?cordierite=${result.deepLinkPayload}&pin=${encodeURIComponent(result.pin)}`;
-
 const asRecord = (value: unknown): Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return {};
@@ -171,6 +164,18 @@ const asOptionalNonEmptyString = (value: unknown, field: string): string | undef
 
   if (typeof value !== "string" || value.length === 0) {
     throw new McpBuiltinToolError("invalid_request", `"${field}" must be a non-empty string.`);
+  }
+
+  return value;
+};
+
+const asOptionalBoolean = (value: unknown, field: string): boolean | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "boolean") {
+    throw new McpBuiltinToolError("invalid_request", `"${field}" must be a boolean.`);
   }
 
   return value;
@@ -296,6 +301,7 @@ export const handleConnectTool = async (
   const requestedTarget = asOptionalConnectTarget(args.target);
   const device = asOptionalNonEmptyString(args.device, "device");
   const bundleId = asOptionalNonEmptyString(args.bundleId, "bundleId");
+  const relaunch = asOptionalBoolean(args.relaunch, "relaunch");
   const ttlSeconds = asOptionalPositiveNumber(args.ttlSeconds, "ttlSeconds");
 
   if (device !== undefined && (requestedTarget === undefined || requestedTarget === NO_TARGET)) {
@@ -310,6 +316,13 @@ export const handleConnectTool = async (
     throw new McpBuiltinToolError(
       "invalid_request",
       '"bundleId" only applies with target "ios-device".',
+    );
+  }
+
+  if (relaunch !== undefined && requestedTarget !== "ios-device") {
+    throw new McpBuiltinToolError(
+      "invalid_request",
+      '"relaunch" only applies with target "ios-device".',
     );
   }
 
@@ -365,6 +378,17 @@ export const handleConnectTool = async (
   }
 
   const result = await mint(usesLoopbackAddress(delivery.target));
+
+  // Same guard as `link.ts`: `detectAdvertisedAddress` falls back to `127.0.0.1` when it finds no
+  // routable interface, and such a link points a physical phone at itself. Delivering it would
+  // leave `cordierite_wait_for_session` blocking for its whole timeout with nothing to explain why.
+  if (delivery.target === "ios-device" && isLoopbackAddress(result.endpoint.address)) {
+    throw new McpBuiltinToolError(
+      "invalid_request",
+      loopbackAddressMessage(result.endpoint.address),
+    );
+  }
+
   const deepLink = composeDeepLink(scheme, result);
 
   try {
@@ -372,6 +396,7 @@ export const handleConnectTool = async (
       target: delivery.target,
       device: delivery.device,
       bundleId: delivery.bundleId,
+      relaunch,
       deepLink,
       wssPort: result.endpoint.port,
       exec: deps.exec,
