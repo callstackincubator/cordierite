@@ -920,6 +920,33 @@ describe("toToolDescriptor: timeoutMs", () => {
     });
   });
 
+  test.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["fractional", 1500.5],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+  ])(
+    "drops a timeoutMs that is %s, with a dev warning, rather than sending a descriptor the daemon rejects",
+    (_label, timeoutMs) => {
+      const warnings = withDevWarnCaptured(() => {
+        const descriptor = toToolDescriptor({
+          name: "odd-timeout",
+          description: "d",
+          timeoutMs,
+        });
+
+        // `isToolDescriptor` rejects the whole registry snapshot over one bad field, so emitting
+        // this would close the session instead of degrading to the daemon's default.
+        expect("timeoutMs" in descriptor).toBe(false);
+      });
+
+      expect(
+        warnings.some((args) => args.some((arg) => arg.includes("timeoutMs"))),
+      ).toBe(true);
+    },
+  );
+
   test("omits the key entirely when the tool declares no timeout", () => {
     const descriptor = toToolDescriptor({
       name: "plain-tool",

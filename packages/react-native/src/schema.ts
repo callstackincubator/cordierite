@@ -291,7 +291,8 @@ const hasJsonSchemaExporter = (
 };
 
 type ConverterOutcome =
-  { ok: true; schema: ToolSchemaDescriptor } | { ok: false; reason: string };
+  | { ok: true; schema: ToolSchemaDescriptor }
+  | { ok: false; reason: string };
 
 const describe = (value: unknown): string => {
   if (Array.isArray(value)) {
@@ -476,10 +477,39 @@ export const validateToolSchema = async (
 /** A tool definition whose schemas have already been through `normalizeToolSchema`. */
 export type CordieriteNormalizedToolDefinition = Pick<
   CordieriteToolDefinition,
-  "name" | "description" | "annotations"
+  "name" | "description" | "annotations" | "timeoutMs"
 > & {
   inputSchema?: CordieriteNormalizedToolSchema;
   outputSchema?: CordieriteNormalizedToolSchema;
+};
+
+/**
+ * The daemon's `isToolDescriptor` requires `timeoutMs` to be a positive integer when present, and
+ * rejects the *whole* registry snapshot otherwise (closing the session as `invalid_registry`). An
+ * app-side `timeoutMs` has never been validated — it only ever fed a local `setTimeout` — so a tool
+ * that happens to declare `0` or a computed fraction must not start taking the session down now
+ * that the value travels on the wire. Anything the daemon would reject is dropped from the
+ * descriptor (the app-side abort timer still uses it verbatim) with a dev warning.
+ */
+const toWireTimeoutMs = (
+  timeoutMs: number | undefined,
+  toolName: string,
+): number | undefined => {
+  if (timeoutMs === undefined) {
+    return undefined;
+  }
+
+  if (Number.isInteger(timeoutMs) && timeoutMs > 0) {
+    return timeoutMs;
+  }
+
+  logger.devWarn(
+    `Tool "${toolName}" declares a timeoutMs of ${String(timeoutMs)}, which is not a positive ` +
+      "integer number of milliseconds. It will not be sent to the daemon, so calls to this tool " +
+      "get the daemon's default 10s deadline; the app-side handler timeout is unaffected.",
+  );
+
+  return undefined;
 };
 
 export const toToolDescriptor = (
@@ -495,6 +525,7 @@ export const toToolDescriptor = (
     "output",
     definition.name,
   );
+  const wireTimeoutMs = toWireTimeoutMs(definition.timeoutMs, definition.name);
 
   if (inputSchema !== undefined && !isObjectRootedSchema(inputSchema)) {
     warnNonObjectRootedSchema(definition.name, "input", inputSchema);
@@ -515,8 +546,6 @@ export const toToolDescriptor = (
     // Only the tool's *explicit* `timeoutMs` travels on the wire — never the app-wide
     // `defaultToolTimeoutMs`, which stays a purely app-side fallback. Omitted entirely (no
     // `timeoutMs: undefined` key) when the tool declares none, so the daemon keeps its own default.
-    ...(definition.timeoutMs !== undefined
-      ? { timeoutMs: definition.timeoutMs }
-      : {}),
+    ...(wireTimeoutMs !== undefined ? { timeoutMs: wireTimeoutMs } : {}),
   };
 };

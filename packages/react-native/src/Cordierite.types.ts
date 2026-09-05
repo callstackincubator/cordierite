@@ -392,9 +392,14 @@ export type CordieriteToolDefinition<
   outputSchema?: TOutputSchema;
   annotations?: ToolAnnotations;
   /**
-   * Overrides the default 10 s app-side handler timeout (matches the daemon's `tools.call`
-   * default ceiling, ARCHITECTURE.md §11). On timeout the app replies `tool_timeout`; a later
-   * result from the same invocation is ignored with a dev warning.
+   * Overrides the default 10 s app-side handler timeout (ARCHITECTURE.md §11). On timeout the app
+   * replies `tool_timeout`; a later result from the same invocation is ignored with a dev warning.
+   *
+   * Declared here it also travels on the tool descriptor and becomes the daemon's default deadline
+   * for this tool, so a caller that passes no timeout of its own (an MCP agent, `cordierite invoke`
+   * with no `--timeout`) gets the same budget instead of the daemon's 10 s. Must be a positive
+   * integer to make that trip — anything else stays app-side only, with a dev warning. The
+   * client-wide `defaultToolTimeoutMs` is deliberately never sent.
    */
   timeoutMs?: number;
 };
