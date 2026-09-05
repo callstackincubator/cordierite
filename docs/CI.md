@@ -31,18 +31,34 @@
 
 ## Release gate: `cordierite doctor`
 
-Opt-in hardening removes the runtime `debuggable`/`#if DEBUG` check that used to catch a
-production build that forgot to exclude Cordierite via autolinking (docs/tasks/00-overview.md,
-docs/tasks/08-cordierite-doctor.md). `cordierite doctor <artifact> [--assert-present |
---assert-absent]` (packages/cordierite/README.md, "Release gate") is the replacement: it inspects
-a built `.app`/`.ipa`/`.apk`/`.aab` directly, rather than trusting the config that's supposed to
-have produced it, and exits non-zero when the assertion fails.
+Cordierite's inclusion in a build is controlled entirely by autolinking exclusion (see
+[`BUILD-VARIANTS.md`](BUILD-VARIANTS.md)) — there is no runtime `debuggable`/`#if DEBUG`
+check to catch a pipeline that forgot to exclude the package
+(docs/tasks/00-overview.md, docs/tasks/08-cordierite-doctor.md).
 
-  - `0`: the artifact matches the asserted expectation (or no assertion was given).
-  - `3`: inspection succeeded, but the artifact didn't match `--assert-present`/`--assert-absent`.
-  - `66`: the artifact could not be inspected at all (missing `unzip`, unreadable/corrupt
-    artifact) — always a distinct failure from `3`, and never silently treated as "absent" or "the
-    check passed".
+`cordierite doctor <artifact> [--assert-present | --assert-absent]` is the replacement: an
+artifact-level assertion you run against the thing you're about to ship, not the config you
+think produced it.
+
+```bash
+cordierite doctor ./build/MyApp.ipa --assert-absent
+cordierite doctor ./build/app-release.apk --assert-absent
+```
+
+It inspects a built `.app`/`.ipa`/`.apk`/`.aab` for Cordierite's native code — the
+`RCTNativeCordierite` Objective-C class and the plugin-authored `Info.plist` keys on iOS;
+the `com.callstackincubator.cordierite` dex package and `AndroidManifest.xml` meta-data
+keys on Android — and reports `present`/`absent`.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | inspection succeeded; no assertion was given, or the assertion held |
+| `3` | inspection succeeded, but `--assert-present`/`--assert-absent` did not hold |
+| `64` | usage error (bad flags, or an artifact extension that isn't `.app`/`.ipa`/`.apk`/`.aab`) |
+| `66` | the artifact could not be inspected — a required external tool (`unzip`) was missing, or the artifact was unreadable/corrupt. **Never treated as "absent"**: a broken check must fail loudly, not rubber-stamp a release. |
+
+`66` is always a distinct failure from `3`, and never silently treated as "absent" or "the
+check passed".
 
 CI snippet, run against the production release build right before it's distributed:
 
@@ -52,6 +68,52 @@ CI snippet, run against the production release build right before it's distribut
 - name: Assert Cordierite is excluded from the production build (iOS)
   run: npx cordierite doctor ./build/MyApp.ipa --assert-absent
 ```
+
+For an internally-distributed "testing" build that an agent drives, invert the assertion
+(`--assert-present`) so a forgotten inclusion — not just a forgotten exclusion — fails CI
+too.
+
+### Android detection
+
+**Android detection is marker-only.** The default release build's no-op
+`CordieritePackage` stub necessarily lives at the exact same fully-qualified class name the
+real implementation uses (that is what keeps `PackageList.java` compiling — see
+[`BUILD-VARIANTS.md`](BUILD-VARIANTS.md#inclusion-is-an-autolinking-decision)), and the
+config plugin writes the same `AndroidManifest.xml` meta-data regardless of build variant.
+Both would otherwise look like "Cordierite is present" to a naive scan.
+
+`doctor` accounts for this: only the `CordieriteNativeMarker` keep-rule signal decides
+`present`/`absent` on Android. The other two signals are still reported for corroboration
+but can't flip the verdict on their own.
+
+The three signals, in order of reliability:
+
+1. `CordieriteNativeMarker`, kept unminified by the keep rule `@cordierite/react-native`
+   ships via `consumerProguardFiles`. It reaches every consuming app's R8 run without the
+   app authoring any rule, so it holds for bare-RN apps that never touch the Expo config
+   plugin.
+2. The dex package name — survives ordinary minification but not R8 full mode's
+   repackaging.
+3. The config plugin's `AndroidManifest.xml` meta-data keys — only present if the plugin
+   ran.
+
+Signals 2 and 3 are retained as fallbacks for artifacts built before the marker existed.
+See `packages/cordierite/src/artifact-inspect.ts`'s file-level comment for the full
+detection writeup.
+
+**Verified** against a real R8-minified release APK
+(`assembleRelease -Pandroid.enableMinifyInReleaseBuilds=true`): the R8 mapping shows
+sibling classes obfuscated (`CordieriteBuildConfig -> …cordierite.a`) while
+`CordieriteNativeMarker` keeps its fully-qualified name, and `doctor --assert-present`
+passes on that artifact.
+
+**Still not covered:** R8 *full mode* with `-repackageclasses` was not exercised, and no
+artifact was tested from a bare-RN app that uses neither Expo nor the config plugin — the
+configuration the marker most directly targets. The marker should hold in both (a `-keep`
+rule prevents renaming and removal regardless of mode), but that is reasoning, not a
+measurement.
+
+### This repo's own CI wiring
 
 **This repo's own CI wires the gate** (`test.yaml`'s `android` job) against all three
 `CORDIERITE_ENABLED` states: after the existing `testDebugUnitTest`/`assembleDebug` step (unset
