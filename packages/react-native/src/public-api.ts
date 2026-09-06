@@ -5,6 +5,7 @@ import type {
   CordieriteBuildConfig,
   CordieriteClientState,
   CordieriteConnectInput,
+  CordieriteJsonSchemaObject,
   CordieriteListenerKind,
   CordieriteRuntimeSchema,
   CordieriteToolRegistration,
@@ -35,6 +36,11 @@ export type CordierePublicApi = {
     deps?: DependencyList,
     options?: UseCordieriteToolOptions,
   ): void;
+
+  /** Type-only helper for raw JSON Schema tool schemas; identity at runtime. */
+  jsonSchema<T = Record<string, unknown>>(
+    schema: Record<string, unknown>,
+  ): CordieriteJsonSchemaObject<T>;
 
   postEvent(name: string, payload?: unknown): Promise<void>;
 

@@ -2,12 +2,13 @@ import type { ToolDescriptor } from "@cordierite/shared";
 
 import type {
   CordieriteRegisteredTool,
+  CordieriteRuntimeSchema,
   CordieriteToolHandler,
   CordieriteToolRegistration,
 } from "../Cordierite.types";
 import { CORDIERITE_DEFAULT_TOOL_TIMEOUT_MS } from "../Cordierite.types";
 import { logger } from "../logger";
-import { requireOptionalStandardSchema, toToolDescriptor } from "../schema";
+import { normalizeOptionalToolSchema, toToolDescriptor } from "../schema";
 
 export type RegistryDelta =
   | {
@@ -22,12 +23,8 @@ export type RegistryDelta =
 export type ToolRegistry = {
   entries: Map<string, CordieriteRegisteredTool>;
   registerTool<
-    TInputSchema extends
-      | import("@cordierite/shared").StandardSchemaV1
-      | undefined,
-    TOutputSchema extends
-      | import("@cordierite/shared").StandardSchemaV1
-      | undefined
+    TInputSchema extends CordieriteRuntimeSchema | undefined,
+    TOutputSchema extends CordieriteRuntimeSchema | undefined
   >(
     registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>
   ): { remove(): void };
@@ -51,11 +48,11 @@ export const createToolRegistry = (deps: ToolRegistryDeps): ToolRegistry => {
   const registerTool = (
     registration: CordieriteToolRegistration<any, any>
   ): { remove(): void } => {
-    const inputSchema = requireOptionalStandardSchema(
+    const inputSchema = normalizeOptionalToolSchema(
       registration.inputSchema,
       `Tool "${registration.name}" inputSchema`
     );
-    const outputSchema = requireOptionalStandardSchema(
+    const outputSchema = normalizeOptionalToolSchema(
       registration.outputSchema,
       `Tool "${registration.name}" outputSchema`
     );

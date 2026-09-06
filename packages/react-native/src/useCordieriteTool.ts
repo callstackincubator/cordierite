@@ -31,7 +31,7 @@ export type UseCordieriteToolOptions = {
   enabled?: boolean;
 };
 
-/** Shape of `schema.ts`'s `exportToolSchema`, injected rather than imported (see below). */
+/** Shape of `schema.ts`'s `exportToolSchemaForKey`, injected rather than imported (see below). */
 type ToolSchemaExporter = (
   schema: CordieriteRuntimeSchema,
   mode: "input" | "output",
@@ -84,9 +84,10 @@ const schemaKey = (
   if (schema === undefined) {
     key = undefined;
   } else {
-    // `exportToolSchema` returns `undefined` for a schema that does not export JSON Schema (zod 3,
-    // plain valibot). The tool name is deliberately not passed: this runs during render, and the
-    // "shapeless tool" dev warning belongs to the registration path, not to key derivation.
+    // `exportToolSchemaForKey` returns `undefined` for a schema that does not export JSON Schema
+    // (zod 3, plain valibot) or that is not a valid schema at all. It never throws or warns: this
+    // runs during render, and reporting a shapeless or invalid schema belongs to the registration
+    // path, not to key derivation.
     const exported = exportSchema(schema, mode);
     if (exported === undefined) {
       // No shape to compare by value, and "exports nothing" must not collide with "no schema at

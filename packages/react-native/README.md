@@ -141,9 +141,89 @@ The resume lease is native **process-memory only** and is committed before JS re
 
 ### 5. Define tools in app startup code
 
-Call `registerTool({ ... })` with Standard Schema compatible `inputSchema` and `outputSchema` values plus a `handler` so the host can invoke your tools after the session is active. `zod` v4 works well here (its built-in JSON Schema exporter means agents see a real tool shape — zod 3 and plain valibot schemas still register, just with a dev warning and an empty schema).
+Call `registerTool({ ... })` with `inputSchema`/`outputSchema` plus a `handler` so the host can invoke your tools after the session is active.
 
-`useCordieriteTool` wraps `registerTool` in a `useEffect` so registration follows the component's lifecycle, including remounts and Fast Refresh:
+#### Accepted schema forms
+
+An agent can only use a tool it can see the shape of, so every form below except the last one publishes a real JSON Schema:
+
+| `inputSchema` / `outputSchema` | Validated app-side with | Published to agents | `handler` argument type |
+| --- | --- | --- | --- |
+| Standard Schema **with** a JSON Schema exporter — zod 4, arktype | `~standard.validate` | its `~standard.jsonSchema` export | the schema's own type |
+| `{ schema, jsonSchema }` pair — zod 3, valibot, anything else | `schema["~standard"].validate` | the `jsonSchema` you supply (an object, or an `{ input, output }` converter) | the schema's own type |
+| A raw JSON Schema object (no `~standard` property) | **nothing** — args reach the handler as sent | the object, verbatim | `Record<string, unknown>`, or `T` via `jsonSchema<T>()` |
+| Standard Schema **without** an exporter — bare zod 3, plain valibot | `~standard.validate` | **nothing** — throws in dev (see below) | the schema's own type |
+
+A Standard Schema does not have to be a plain object: arktype's `Type` is callable, and is detected the same way (anything carrying `~standard.validate`).
+
+Whatever form you use, an **input schema must be object-typed at its root** to be callable over MCP — a root `enum`, `const`, `$ref` or `anyOf` is legal JSON Schema but leaves the agent with no named arguments to pass (see [#34](https://github.com/callstackincubator/cordierite/issues/34)).
+
+Cordierite has no third-party runtime dependencies and does not bundle a JSON Schema validator, so a raw JSON Schema describes the tool for the agent but never enforces anything. Use a pair when you want both a real shape *and* real validation.
+
+The wire field is documented as draft 2020-12, but Cordierite forwards whatever you supply as-is — it does not normalize, re-target, or check the dialect, and different libraries emit different JSON Schema for the same shape (draft version, `additionalProperties`, how `default` is handled). Pick the target closest to 2020-12 that your converter offers.
+
+**Zod 3** — pair the schema with `zod-to-json-schema`:
+
+```ts
+import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
+
+const sumInput = z.object({ a: z.number(), b: z.number() });
+
+registerTool({
+  name: "sum",
+  description: "Add two numeric values",
+  // `zod-to-json-schema` has no 2020-12 target; 2019-09 is the closest it offers, and its
+  // default (`jsonSchema7`) stamps a draft-07 `$schema`. Either is understood in practice.
+  inputSchema: {
+    schema: sumInput,
+    jsonSchema: zodToJsonSchema(sumInput, { target: "jsonSchema2019-09" }),
+  },
+  handler: async ({ a, b }) => undefined, // `a` and `b` are still typed `number`
+});
+```
+
+**Valibot** — the same shape, with `@valibot/to-json-schema`:
+
+```ts
+import * as v from "valibot";
+import { toJsonSchema } from "@valibot/to-json-schema";
+
+const sumInput = v.object({ a: v.number(), b: v.number() });
+const inputSchema = { schema: sumInput, jsonSchema: toJsonSchema(sumInput) };
+```
+
+**No validation library at all** — hand over JSON Schema directly. `jsonSchema<T>()` is an optional, purely type-level helper that tells the handler what to expect; it validates nothing:
+
+```ts
+import { jsonSchema, registerTool } from "@cordierite/react-native";
+
+registerTool({
+  name: "weather",
+  description: "Current weather for a city",
+  inputSchema: jsonSchema<{ city: string }>({
+    type: "object",
+    properties: { city: { type: "string" } },
+    required: ["city"],
+    additionalProperties: false,
+  }),
+  handler: async ({ city }) => fetchWeather(city),
+});
+```
+
+If your JSON Schema value is typed as an *interface* (`JSONSchema7` from `@types/json-schema`, for instance) TypeScript will not accept it directly: interfaces do not get the implicit index signature that `Record<string, unknown>` requires. Pass it through `jsonSchema<T>()`, or cast it.
+
+**What is rejected.** A raw schema must be a *plain* object — an object literal or `Object.create(null)`, not a class instance — and its `type`, if it has one, must be a real JSON Schema type name (or an array of them). `{}` is fine: it is the canonical accept-anything schema. This rules out passing a validator from a library with no Standard Schema support (yup, joi, superstruct, valibot 0.x): those instances carry a `type` on their *prototype*, so a looser check would publish one as the tool's shape, and their internal circular references would then break serialization of the entire tool registry rather than just that tool.
+
+An object mentioning `schema` or `jsonSchema` that is not a valid pair is rejected too — `{ schema: someJsonSchema, jsonSchema }` and a lone `{ jsonSchema }` are malformed pairs, and publishing them verbatim would make the wrapper itself the tool's advertised shape. The `jsonSchema` half of a pair, and anything a converter returns, must satisfy the same plain-object rule.
+
+All of these throw a `TypeError` at registration naming what to fix.
+
+**A Standard Schema with no exporter throws in development.** Passing a bare zod 3 or plain valibot schema used to register the tool with no shape at all, which agents saw as "takes any object" — the tool looked fine and was unusable. In `__DEV__` that now throws at `registerTool` with a message pointing at the two forms above — including when the call comes from `useCordieriteTool`, where the throw surfaces from the component's effect. Release builds keep the old behaviour (one console warning per tool name, tool registered without a schema) so an app already shipping such a tool is not broken by upgrading.
+
+#### Registering from a component
+
+`useCordieriteTool` wraps `registerTool` in a `useEffect` so registration follows the component's lifecycle, including remounts and Fast Refresh. It takes exactly the same schema forms; the example below uses zod 4, whose built-in exporter needs no pairing:
 
 ```ts
 import "@cordierite/react-native/auto";

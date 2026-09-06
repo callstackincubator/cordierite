@@ -8,6 +8,46 @@ This file is maintained by hand. There is no automated changelog tooling (see
 `docs/CI.md#release-policy` for why) — update this file as part of the commit that bumps the
 package versions for a release.
 
+## Unreleased
+
+- **New: `inputSchema`/`outputSchema` accept a `{ schema, jsonSchema }` pair and raw JSON
+  Schema objects.** Previously a tool schema had to be a Standard Schema *and* implement the
+  non-standard `~standard.jsonSchema` exporter to give agents a real shape; zod 3 and plain
+  valibot implement the first but not the second, so those tools registered with no
+  `input_schema` and reached the agent as `{ type: "object", additionalProperties: true }`.
+  Standard Schema remains the only runtime-validation contract, but the two slots now accept:
+  a Standard Schema (as before); a `{ schema, jsonSchema }` pair, where `jsonSchema` is a JSON
+  Schema object or an `{ input, output }` converter — the supported path for zod 3
+  (`zod-to-json-schema`) and valibot (`@valibot/to-json-schema`); or a raw JSON Schema object,
+  detected by the absence of `~standard` and required to be a plain object whose `type`, if
+  present, is a JSON Schema type name, published verbatim and passed to the handler
+  unvalidated. A Standard Schema may be an object or a callable, so arktype's `Type` is
+  accepted. Anything that is none of the three — a class instance, an object mentioning
+  `schema`/`jsonSchema` that is not a valid pair — throws a `TypeError` at registration
+  instead of being published as the tool's shape. Handler argument/result inference is unchanged for zod 4, follows the pair's
+  `schema` for pairs, and is `Record<string, unknown>` for a bare raw schema or `T` when
+  tagged with the new type-level `jsonSchema<T>()` helper. No runtime dependency was added:
+  Cordierite still bundles no JSON Schema validator, which is why a raw schema is not enforced.
+  The wire `ToolDescriptor` is unchanged, so this is app-side only.
+- **Breaking (development only): a Standard Schema that exports no JSON Schema now throws in
+  `__DEV__`.** `registerTool`/`useCordieriteTool` used to accept a bare zod 3 or plain valibot
+  schema, emit a dev warning, and register the tool with no schema at all — a silent failure,
+  since the tool looked registered but no agent could work out what to pass it. That case now
+  throws a `TypeError` naming the two supported forms above. The same applies to every other
+  way a slot can end up shapeless, which previously all returned quietly: an exporter or a
+  paired converter that throws, or that returns something other than a JSON Schema object.
+  **Release builds are unaffected in kind**: the tool still registers without a schema, now
+  with one `console.warn` per tool name (previously dev-only), so an app already shipping
+  such a tool is not broken by upgrading. Fix by pairing the schema with a JSON Schema, or
+  passing raw JSON Schema.
+- **Type change:** `CordieriteRuntimeSchema` is now a union of the three accepted forms rather
+  than an alias for `StandardSchemaV1`, and `CordieriteRegisteredTool.inputSchema`/
+  `.outputSchema` hold the normalized `CordieriteNormalizedToolSchema` rather than the raw
+  user value. Both matter only to code that inspected those internal types directly.
+  `requireStandardSchema`/`requireOptionalStandardSchema`/`validateStandardSchema` (never part
+  of the documented surface) are replaced by `normalizeToolSchema`/
+  `normalizeOptionalToolSchema`/`validateToolSchema`.
+
 ## 0.7.0 (2026-08-19)
 
 - **Fix: a terminal daemon rejection (1008) now ends the session instead of retrying until

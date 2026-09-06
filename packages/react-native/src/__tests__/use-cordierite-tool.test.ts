@@ -7,7 +7,7 @@ import type {
   CordieriteToolRegistration,
 } from "../Cordierite.types";
 import type { CordieriteSubscription } from "../public-api";
-import { exportToolSchema } from "../schema";
+import { exportToolSchemaForKey } from "../schema";
 
 (globalThis as { __DEV__?: boolean }).__DEV__ = true;
 
@@ -129,7 +129,7 @@ const toolDefinition = (
  * What the real (`.`) entry passes: the JSON Schema exporter that makes the derived registration
  * key possible. The inert (`./noop`) entry deliberately passes nothing -- covered separately below.
  */
-const realEntryOptions = { exportSchema: exportToolSchema };
+const realEntryOptions = { exportSchema: exportToolSchemaForKey };
 
 /** Enough of an execution context to invoke a registered handler that ignores it. */
 const fakeContext = {} as CordieriteToolExecutionContext;

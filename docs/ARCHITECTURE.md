@@ -400,8 +400,52 @@ Client behavior:
   warning) otherwise.
 - Unified listener: `addCordieriteListener(kind, cb)` with kinds `stateChange`,
   `error` (covers bootstrap parse/connect and socket errors), `sessionChange`.
-- Schema handling: Standard Schema JSON exporter as in v1; when a schema lacks the
-  exporter, log a dev warning that agents will see a shapeless tool.
+- Schema handling: Standard Schema stays the only runtime-validation contract, but
+  `inputSchema`/`outputSchema` accept three forms, classified once at registration by
+  `normalizeToolSchema` (`schema.ts`) into `standard` / `paired` / `raw`:
+  - a **Standard Schema** — anything carrying `~standard.validate`, object or callable
+    (arktype's `Type` is a function) — validated with `~standard.validate`, published from
+    `~standard.jsonSchema` (the Standard JSON Schema companion spec; zod 4 and arktype
+    implement it, zod 3 and plain valibot do not).
+  - a **`{ schema, jsonSchema }` pair** — validated with `schema["~standard"].validate`,
+    published from the supplied JSON Schema object or `{ input, output }` converter. This
+    is the supported path for zod 3 (`zod-to-json-schema`) and valibot
+    (`@valibot/to-json-schema`).
+  - a **raw JSON Schema object** — no `~standard`, a *plain* object (prototype
+    `Object.prototype` or `null`), and an own `type`, if present, that is a JSON Schema type
+    name or an array of them — published verbatim and handed to the handler **unvalidated**.
+    `{}` qualifies: it is valid accept-anything JSON Schema. No JSON Schema validator is
+    bundled: `@cordierite/react-native` keeps zero third-party runtime dependencies (§13).
+    The optional `jsonSchema<T>()` helper is a pure type-level cast that gives such a handler
+    real argument/result types.
+
+  The raw test is structural rather than keyword-based on purpose. A keyword probe using `in`
+  walks the prototype chain, and validator instances from libraries predating Standard Schema
+  (yup, joi, superstruct, valibot 0.x) carry a prototype `type` — they would be taken as raw
+  JSON Schema and published as the tool's shape, having previously been rejected outright.
+  Many also hold circular references, so `JSON.stringify` on `tool_registry_snapshot` would
+  throw and lose the whole snapshot, not just that tool.
+
+  Everything else throws a `TypeError` at registration rather than being published as the
+  tool's shape: non-objects and arrays, a `~standard` that is not a Standard Schema, any
+  object mentioning `schema`/`jsonSchema` that is not a valid pair, and anything failing the
+  plain-object rule. The `jsonSchema` half of a pair and every converter result are held to
+  that same rule, so the forms cannot diverge in what they will publish.
+
+  Separately from all of this, an **input schema should be object-typed at its root** to be
+  usable over MCP — a root `enum`/`const`/`$ref`/`anyOf` is legal JSON Schema but leaves the
+  agent with no named arguments (issue #34). This is documented, not enforced.
+
+  Every way a slot can end up with no shape — a missing exporter, an exporter that throws or
+  returns a non-object, a paired converter that does either — takes the same route: throw in
+  `__DEV__`, warn once per tool name and register shapeless otherwise, so a shipped app is
+  not bricked by an upgrade. Nothing is swallowed silently.
+
+  Exported JSON Schema is not normalized or checked against a target dialect, and vendors
+  differ in what they emit (`default` handling, `additionalProperties`, draft version), so
+  two libraries describing the same shape may not produce byte-identical schemas. The wire
+  `ToolDescriptor` (§7) is unchanged by any of this — it already carries draft 2020-12
+  JSON Schema, so the whole contract is app-side.
 - App-side handler timeout: if a handler exceeds the call timeout hint, abort its
   `AbortSignal`, reply `tool_timeout`, and ignore the late result.
 - Cancellation: `tool.handler(args, context)`'s `context.signal` (`AbortSignal`) aborts on
@@ -480,7 +524,9 @@ packages/
     src/rpc/       RPC client library (connect-or-spawn), shared by cli/ and mcp/
     src/cli/       command definitions + renderers (keep DI/testability patterns)
     src/mcp/       stdio MCP server
-  react-native/    @cordierite/react-native (entries: ., /auto, /noop)
+  react-native/    @cordierite/react-native (entries: ., /auto, /noop). Depends only on
+                   @cordierite/shared — no third-party runtime deps, which is why no
+                   JSON Schema validator ships with it (§11's raw schema form).
 playground/        reference app (Expo dev build)
 ```
 
