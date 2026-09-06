@@ -348,6 +348,9 @@ export type CreateMcpServerOptions = {
   /** The scheme composing `cordierite_connect`'s deep link; same source as `cli/link.ts`'s
    * `config.json`'s `scheme` (there is no per-call MCP flag equivalent). */
   scheme?: string;
+  /** `config.json`'s `iosBundleId`; the default bundle id for `cordierite_connect`'s experimental
+   * `ios-device` target (issue #31). */
+  iosBundleId?: string;
   exec?: ExecFn;
   env?: NodeJS.ProcessEnv;
   /** Overrides `ELICITATION_TIMEOUT_MS` (ARCHITECTURE.md §12 / issue #10) — test-only seam so the
@@ -611,7 +614,13 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
     try {
       if (name === CONNECT_TOOL_NAME) {
         return toolSuccessContent(
-          await handleConnectTool(args, { call: stream.call, scheme: options.scheme, exec: options.exec, env: options.env }),
+          await handleConnectTool(args, {
+            call: stream.call,
+            scheme: options.scheme,
+            iosBundleId: options.iosBundleId,
+            exec: options.exec,
+            env: options.env,
+          }),
         );
       }
 

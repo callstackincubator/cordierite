@@ -7,13 +7,20 @@ exports[`mcp: tools/list and tools/call > the generated MCP tool list (built-ins
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "bundleId": {
+          "type": "string",
+        },
         "device": {
           "type": "string",
+        },
+        "relaunch": {
+          "type": "boolean",
         },
         "target": {
           "enum": [
             "android",
             "ios-sim",
+            "ios-device",
             "none",
           ],
           "type": "string",
