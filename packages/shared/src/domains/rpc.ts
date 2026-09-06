@@ -69,12 +69,29 @@ export type DaemonStatusResult = {
   wssPort: number;
   pinnedKeys: string[];
   sessions: SessionSummary[];
+  /**
+   * Outstanding pending links — minted by `link.create`, not yet claimed or expired. They are not
+   * sessions (they never enter the session map, ARCHITECTURE.md §6) but they are live state a
+   * daemon restart destroys, so a caller deciding whether restarting is safe has to see them
+   * (issue #30). Absent from daemons that predate this field.
+   */
+  pendingLinks?: number;
   /** Effective policy configuration (ARCHITECTURE.md §12). */
   policy: EffectivePolicyConfig;
-  /** Audit log surfacing (ARCHITECTURE.md §12): where records land and how many writes failed. */
+  /** Audit log surfacing (ARCHITECTURE.md §12): where records land, how many writes failed, and
+   * the retention footprint (ARCHITECTURE.md §3) so an operator can see the directory growing. */
   audit: {
     path: string;
     failedWrites: number;
+    /** Retention sweeps that failed to delete a day file since the daemon started. */
+    failedPrunes: number;
+    /** Effective `config.auditRetentionDays`. */
+    retentionDays: number;
+    /** `<YYYY-MM-DD>.jsonl` day files currently retained. Absent when the daemon could not read
+     * the audit directory at all — distinct from `0`, which asserts it is empty. */
+    files?: number;
+    /** Total bytes across those files; absent under the same conditions as `files`. */
+    bytes?: number;
   };
 };
 

@@ -118,3 +118,64 @@ describe("PendingLinkRegistry: TTL expiry and eventual free", () => {
     expect(scheduled).toHaveLength(0);
   });
 });
+
+describe("PendingLinkRegistry: claimableCount (issue #30)", () => {
+  test("counts only links still inside their TTL, not ones kept for the post-expiry grace window", () => {
+    const { timers, scheduled } = createFakeTimers();
+    let now = new Date("2026-01-01T00:00:00.000Z");
+
+    const registry = createPendingLinkRegistry({
+      getEndpoint: () => ({ family: 4, address: "127.0.0.1", port: 8443 }),
+      clock: { now: () => now },
+      timers,
+      eventBus: {
+        emit: () => {},
+        subscribe: () => () => {},
+        since: () => ({ events: [], cursor: 0 }),
+        drop: () => {},
+      },
+    });
+
+    expect(registry.claimableCount()).toBe(0);
+
+    const { link } = registry.create(30);
+    expect(registry.claimableCount()).toBe(1);
+
+    // Past the TTL. The record deliberately survives so a late claim is told "expired" rather than
+    // "unknown" — but the link is not claimable any more, and `daemon.status` must not report it
+    // as live state. Counting it would let a QR nobody can scan block a daemon upgrade for a whole
+    // further grace window (issue #30).
+    now = new Date(link.expiresAt.getTime() + 1);
+    fireNext(scheduled);
+
+    expect(registry.get(link.sessionId)).toBeDefined();
+    expect(registry.claimableCount()).toBe(0);
+
+    // A link minted after the expired one is counted again — the count tracks claimability, not
+    // whether the map happens to be empty.
+    registry.create(30);
+    expect(registry.claimableCount()).toBe(1);
+  });
+
+  test("a claimed link stops counting", () => {
+    const { timers } = createFakeTimers();
+
+    const registry = createPendingLinkRegistry({
+      getEndpoint: () => ({ family: 4, address: "127.0.0.1", port: 8443 }),
+      clock: { now: () => new Date("2026-01-01T00:00:00.000Z") },
+      timers,
+      eventBus: {
+        emit: () => {},
+        subscribe: () => () => {},
+        since: () => ({ events: [], cursor: 0 }),
+        drop: () => {},
+      },
+    });
+
+    const { link } = registry.create(30);
+    expect(registry.claimableCount()).toBe(1);
+
+    registry.consume(link.sessionId);
+    expect(registry.claimableCount()).toBe(0);
+  });
+});

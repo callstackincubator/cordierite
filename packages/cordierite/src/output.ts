@@ -156,6 +156,9 @@ const renderToolDetail = (colors: ColorPalette, tool: ToolDescriptor): string[] 
     ["Input schema", tool.input_schema],
     ["Output schema", tool.output_schema],
     ["Annotations", tool.annotations],
+    // Only rendered for a tool that declares one; `renderFields` drops undefined rows, so a tool
+    // on the daemon's default deadline shows no line at all rather than a misleading "10000".
+    ["Timeout (ms)", tool.timeout_ms],
   ]);
 };
 
@@ -240,6 +243,22 @@ const renderDaemonStopData = (colors: ColorPalette, data: DaemonStopCommandData)
   ];
 };
 
+/** Human column for a byte count (the machine-readable `bytes` stays exact in `--json`). Binary
+ * units, one decimal above KiB, so a growing `audit/` reads at a glance. */
+const formatByteSize = (bytes: number): string => {
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+
+  let value = bytes;
+  let unit = 0;
+
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+
+  return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
+};
+
 const renderDaemonStatusData = (colors: ColorPalette, data: DaemonStatusCommandData): string[] => {
   return [
     colors.green("Daemon Status"),
@@ -258,10 +277,19 @@ const renderDaemonStatusData = (colors: ColorPalette, data: DaemonStatusCommandD
       ["Overrides", data.policy.tools ? Object.keys(data.policy.tools).length : 0],
     ]),
     "",
+    // The retention rows drop out entirely against a daemon that predates them (`renderFields`
+    // skips `undefined`), rather than printing "undefined" or an invented zero.
     ...renderFields("Audit", [
       ["Path", data.audit.path],
+      ["Retention", data.audit.retention_days === undefined ? undefined : `${data.audit.retention_days} days`],
+      ["Files", data.audit.files],
+      ["Size", data.audit.bytes === undefined ? undefined : formatByteSize(data.audit.bytes)],
       ["Failed writes", data.audit.failed_writes],
+      ["Failed prunes", data.audit.failed_prunes],
     ]),
+    // Version drift (issue #30) is the one thing here an operator has to act on, so it goes last
+    // — the line still on screen after the block scrolls — and in yellow, not a quiet field row.
+    ...(data.warning ? ["", colors.yellow(`Warning: ${data.warning}`)] : []),
   ];
 };
 

@@ -4,6 +4,9 @@ import type {
   StandardSchemaV1JsonSchema,
 } from "@cordierite/shared";
 import { describe, expect, test } from "vitest";
+import { z as z3 } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
+import { z as z4 } from "zod4";
 
 import type {
   CordieriteConnectionState,
@@ -13,6 +16,7 @@ import type {
 } from "../Cordierite.types";
 import { createCordieriteClient } from "../client";
 import type { AppStateLike, AppStateStatus } from "../client/app-state";
+import { createToolRegistry, type RegistryDelta } from "../client/registry";
 import type { ClientTimerHandle, ClientTimers } from "../client/timers";
 
 (globalThis as { __DEV__?: boolean }).__DEV__ = true;
@@ -280,6 +284,118 @@ describe("createCordieriteClient: claim handshake", () => {
         ],
       })
     );
+  });
+
+  test("a raw JSON Schema and a zod 3 pair both reach tool_registry_snapshot with a real shape (issue #27)", async () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    const rawInput = {
+      type: "object",
+      properties: { city: { type: "string" } },
+      required: ["city"],
+      additionalProperties: false,
+    };
+
+    client.registerTool({
+      name: "weather",
+      description: "Raw JSON Schema tool",
+      inputSchema: rawInput,
+      handler: () => undefined,
+    });
+
+    const zod3Input = z3.object({ a: z3.number() });
+    client.registerTool({
+      name: "sum",
+      description: "zod 3 paired tool",
+      inputSchema: {
+        schema: zod3Input,
+        jsonSchema: zodToJsonSchema(zod3Input, {
+          target: "jsonSchema2019-09",
+        }) as Record<string, unknown>,
+      },
+      handler: () => undefined,
+    });
+
+    const connectPromise = client.connect(validBootstrap());
+    fireMessage(nativeModule, buildAck());
+    await connectPromise;
+    await flushMicrotasks();
+
+    const snapshot = nativeModule.sentMessages
+      .map((json) => JSON.parse(json) as Record<string, unknown>)
+      .find((message) => message.type === "tool_registry_snapshot");
+
+    expect(snapshot).toBeDefined();
+    const tools = snapshot?.tools as { name: string; input_schema?: unknown }[];
+
+    expect(tools.find((tool) => tool.name === "weather")?.input_schema).toEqual(
+      rawInput,
+    );
+    expect(
+      tools.find((tool) => tool.name === "sum")?.input_schema,
+    ).toMatchObject({
+      type: "object",
+      properties: { a: { type: "number" } },
+      required: ["a"],
+    });
+  });
+
+  test("a real zod 4 schema publishes a real input_schema through its own exporter (issue #27)", async () => {
+    // Not a hand-rolled `~standard.jsonSchema` double: this exercises zod 4's built-in exporter
+    // end to end, so a change in how zod exports (or in how we call it) fails here.
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    client.registerTool({
+      name: "zod4-sum",
+      description: "zod 4 tool",
+      inputSchema: z4.object({ a: z4.number(), b: z4.string() }),
+      outputSchema: z4.object({ total: z4.number() }),
+      handler: ({ a }) => ({ total: a }),
+    });
+
+    const connectPromise = client.connect(validBootstrap());
+    fireMessage(nativeModule, buildAck());
+    await connectPromise;
+    await flushMicrotasks();
+
+    const snapshot = nativeModule.sentMessages
+      .map((json) => JSON.parse(json) as Record<string, unknown>)
+      .find((message) => message.type === "tool_registry_snapshot");
+    const tool = (
+      snapshot?.tools as {
+        name: string;
+        input_schema?: Record<string, unknown>;
+        output_schema?: Record<string, unknown>;
+      }[]
+    ).find((entry) => entry.name === "zod4-sum");
+
+    expect(tool?.input_schema).toMatchObject({
+      type: "object",
+      properties: { a: { type: "number" }, b: { type: "string" } },
+      required: ["a", "b"],
+    });
+    expect(tool?.output_schema).toMatchObject({
+      type: "object",
+      properties: { total: { type: "number" } },
+    });
+  });
+
+  test("registering a bare zod 3 schema throws in dev, naming the supported forms (issue #27)", async () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule);
+
+    expect(() =>
+      client.registerTool({
+        name: "shapeless",
+        description: "zod 3 without an exporter",
+        inputSchema: z3.object({ a: z3.number() }),
+        handler: () => undefined,
+      }),
+    ).toThrow(/schema, jsonSchema/);
+
+    expect(client.getRegisteredTools()).toEqual([]);
   });
 
   test("connect surfaces native connect() rejection on the unified error channel and rethrows", async () => {
@@ -903,6 +1019,88 @@ describe("createCordieriteClient: tool registry", () => {
           (arg) => typeof arg === "string" && arg.includes("already registered")
         )
       )
+    ).toBe(true);
+  });
+
+  test("only an explicitly declared timeoutMs reaches the descriptor, never defaultToolTimeoutMs (issue #25)", () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule, {
+      defaultToolTimeoutMs: 45_000,
+    });
+
+    client.registerTool({
+      name: "declared",
+      description: "Declares its own deadline",
+      timeoutMs: 60_000,
+      handler: () => {},
+    });
+    client.registerTool({
+      name: "undeclared",
+      description: "Declares nothing",
+      handler: () => {},
+    });
+
+    // The app-wide default is an app-side abort-timer fallback only: putting it on the wire would
+    // silently retune every older app's daemon-side deadline.
+    expect(client.getRegisteredTools()).toEqual([
+      {
+        name: "declared",
+        description: "Declares its own deadline",
+        timeout_ms: 60_000,
+      },
+      { name: "undeclared", description: "Declares nothing" },
+    ]);
+  });
+
+  test("an out-of-range timeoutMs is clamped once, so the app timer and the wire agree (issue #25)", () => {
+    const deltas: RegistryDelta[] = [];
+    const registry = createToolRegistry({
+      defaultTimeoutMs: 45_000,
+      onDelta: (delta) => deltas.push(delta),
+    });
+
+    const warnings: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+
+    try {
+      registry.registerTool({
+        name: "way-too-long",
+        description: "Declares longer than the daemon will ever allow",
+        timeoutMs: 900_000,
+        handler: () => {},
+      });
+      registry.registerTool({
+        name: "undeclared",
+        description: "Declares nothing",
+        handler: () => {},
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    // The descriptor is what the daemon's call timer will be built from …
+    expect(registry.getDescriptors()).toEqual([
+      {
+        name: "way-too-long",
+        description: "Declares longer than the daemon will ever allow",
+        timeout_ms: 600_000,
+      },
+      { name: "undeclared", description: "Declares nothing" },
+    ]);
+
+    // … and the registry entry is what this app's abort timer uses. They must be the same number,
+    // or the handler keeps running for five minutes after the daemon has already given up.
+    expect(registry.entries.get("way-too-long")?.timeoutMs).toBe(600_000);
+    // A tool that declares nothing still falls back to the app-wide default, unchanged.
+    expect(registry.entries.get("undeclared")?.timeoutMs).toBe(45_000);
+
+    expect(
+      warnings.some((args) =>
+        args.some((arg) => typeof arg === "string" && arg.includes("clamped")),
+      ),
     ).toBe(true);
   });
 

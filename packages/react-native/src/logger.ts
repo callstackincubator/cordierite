@@ -5,7 +5,13 @@ const PREFIX = "[Cordierite]";
 // Computed per call (not cached at module load): `__DEV__` is a bundler-injected global that some
 // test environments set only after this module has already been imported transitively, and a
 // cached constant would silently miss that.
-const isDev = (): boolean => typeof __DEV__ !== "undefined" && Boolean(__DEV__);
+/**
+ * Whether this bundle is a development build. An undefined `__DEV__` (a plain Node/Vitest process,
+ * a non-RN bundler) counts as *not* dev, so nothing dev-only ever fires outside a real dev bundle.
+ * Exported so `schema.ts`'s dev-only errors use the same definition of "dev" the logger does.
+ */
+export const isDev = (): boolean =>
+  typeof __DEV__ !== "undefined" && Boolean(__DEV__);
 
 const prefixed = (args: unknown[]): unknown[] => [PREFIX, ...args];
 
