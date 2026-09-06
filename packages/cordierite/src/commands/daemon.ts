@@ -118,6 +118,12 @@ export const handleDaemonStopCommand = async (
   }
 };
 
+/** Drops the entries whose value is `undefined`, so spreading the result adds only keys that
+ * carry an actual answer. */
+const definedOnly = <T extends Record<string, unknown>>(fields: T): Partial<T> => {
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) as Partial<T>;
+};
+
 export const handleDaemonStatusCommand = async (
   context: DaemonCommandContext,
 ): Promise<CliResult<DaemonStatusCommandData>> => {
@@ -126,6 +132,13 @@ export const handleDaemonStatusCommand = async (
     {},
     { stateDir: context.stateDir, autoSpawn: true, spawn: context.spawn },
   );
+
+  // The wire type declares the retention fields required, as it must for any daemon built from
+  // this tree — but the daemon on the other end of the socket may predate them, and a running
+  // daemon outlives the CLI upgrade that would replace it. Reading them through a partial view
+  // keeps that possibility in the types instead of in a comment, and leaves each one `undefined`
+  // rather than `0` when it was never reported.
+  const retention: Partial<DaemonStatusResult["audit"]> = status.audit;
 
   const clientVersion = context.clientVersion ?? getPackageVersion();
   // Guarded the same way the version check guards it (`rpc/client.ts`): a `daemon.status` without
@@ -156,7 +169,20 @@ export const handleDaemonStatusCommand = async (
         session_count: sessionCount,
       },
       policy: status.policy,
-      audit: { path: status.audit.path, failed_writes: status.audit.failedWrites },
+      audit: {
+        path: status.audit.path,
+        failed_writes: status.audit.failedWrites,
+        // Spread so an unreported field is a *missing key*, not a key holding `undefined`. The two
+        // serialize identically, but only the first is honestly shaped: a caller can ask whether
+        // the daemon answered, and `--json` consumers see the same absence in-process as on the
+        // wire.
+        ...definedOnly({
+          failed_prunes: retention.failedPrunes,
+          retention_days: retention.retentionDays,
+          files: retention.files,
+          bytes: retention.bytes,
+        }),
+      },
     },
   };
 };

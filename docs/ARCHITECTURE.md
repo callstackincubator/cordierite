@@ -74,6 +74,7 @@ override). Created lazily with mode `0700`. Layout:
 | `daemon.sock` | UDS control socket | `0600` |
 | `daemon.pid` | pidfile (single-instance lock) | `0600` |
 | `daemon.log` | daemon stdout/stderr when auto-spawned | `0600` |
+| `daemon.log.1` | previous `daemon.log`, kept by rotation (see below) | `0600` |
 | `key.pem` | default host private key (`cordierite keygen` default output) | `0600` |
 | `config.json` | daemon configuration (port, grace, policy) | `0600` |
 | `audit/<YYYY-MM-DD>.jsonl` | append-only audit log | `0600` |
@@ -90,6 +91,8 @@ The daemon refuses to load a key file that is group/world-readable.
   "linkTtlSeconds": 300,
   "keepaliveIntervalSeconds": 15,
   "eventBufferSize": 256,
+  "auditRetentionDays": 30,
+  "daemonLogMaxBytes": 10485760,
   "policy": { "default": "allow", "destructive": "allow" },
   "advertisedIp": null,
   "scheme": null,
@@ -104,12 +107,42 @@ when `--scheme` is not passed (§10) — set it once here instead of on every in
 `restartDaemonOnVersionMismatch` makes version-drift restarts unconditional rather than
 only-when-no-sessions-are-live (§4, "Version drift").
 
+**Retention.** Nothing under the state dir is unbounded:
+
+- `auditRetentionDays` (positive integer, default 30) bounds `audit/`. The daemon prunes
+  once at startup and every 24 h thereafter, deleting only files whose name matches
+  `<YYYY-MM-DD>.jsonl` and whose (UTC) date is more than `auditRetentionDays` days behind
+  today. The window is inclusive at both ends, so a fully-populated `audit/` holds up to
+  `auditRetentionDays + 1` files — today's plus each of the `auditRetentionDays` days
+  behind it — rather than exactly `auditRetentionDays`. Today's file is never touched,
+  and neither is anything else in the directory.
+  Pruning shares the audit write queue, so it cannot race an append; a failure is counted
+  and warned like a failed write, never thrown. `daemon status` reports the retained file
+  count, total size, and both failure counters — and reports the count and size as
+  *absent* rather than zero when the directory could not be read at all, since "empty" and
+  "we could not look" are different answers. A directory that does not exist yet is
+  genuinely empty (it is created lazily) and reports zero.
+- `daemonLogMaxBytes` (positive integer, default 10 MiB) bounds `daemon.log`. When a
+  daemon is spawned — auto-spawn, or `cordierite daemon start`, which spawns through the
+  same path (§4) — an over-cap `daemon.log` is renamed to `daemon.log.1` (mode `0600`,
+  single backup, previous backup replaced) before the new log is opened. A running daemon
+  never rotates its own log. An unreachable socket does not by itself prove the log is
+  unheld — a booting, wedged, or shutting-down daemon still owns its fd, and rotating
+  under one sends its output to a backup the next rotation then unlinks — so rotation
+  also declines when `daemon.pid` names a live process or when `daemon.sock` accepts a
+  connection, re-checked immediately before the rename. That narrows the window without
+  closing it: a daemon spawned microseconds ago has neither yet, and closing it properly
+  needs a lock held across spawn-and-ready rather than released at spawn. A rotation
+  failure never blocks the spawn, and neither does a `daemon.log` mode that the
+  filesystem refuses to set.
+
 ## 4. Daemon lifecycle
 
 - `cordierite daemon run` — run in the foreground (what auto-spawn executes, and what
   systemd/launchd would use).
 - `cordierite daemon start|stop|status` — explicit control. `start` spawns `daemon run`
-  detached with stdio redirected to `daemon.log`; `stop` sends `daemon.shutdown` over
+  detached with stdio redirected to `daemon.log` (rotating it first if it is over
+  `daemonLogMaxBytes` — §3); `stop` sends `daemon.shutdown` over
   RPC (SIGTERM fallback via pidfile); `status` renders `daemon.status`.
 - **Auto-spawn:** the shared RPC client library used by every CLI command attempts to
   connect to `daemon.sock`. On `ENOENT`/`ECONNREFUSED` it (1) takes an exclusive
@@ -247,7 +280,8 @@ a daemon that dies or drops the socket rejects every pending call at once
 (`rpc/client.ts`'s `close` handler), so nothing waits on the long timer in practice.
 
 `daemon.status`'s result also reports the effective policy config and audit surfacing:
-`{ ..., policy: { default, destructive, tools? }, audit: { path, failedWrites } }` (§12).
+`{ ..., policy: { default, destructive, tools? }, audit: { path, failedWrites, failedPrunes,
+retentionDays, files, bytes } }` (§12, and §3 for the retention fields).
 
 Event notification payload: `{ kind, sessionId?, alias?, ts, data, seq }` where `kind` is one
 of `daemon_started`, `link_created`, `link_expired`, `session_claimed`,
@@ -647,7 +681,8 @@ it.
   its value names which one — `"client"` for the flag-based gate, `"elicitation"` for an
   observed accept — kept distinct from a plain `"ok"` since the daemon never observes either
   channel's client-side behavior itself, only that the call arrived carrying this marker. Raw
-  args are never logged.
+  args are never logged. Day files are pruned on the `auditRetentionDays` schedule described in
+  §3, and `daemon status` surfaces the directory's file count, size, and failure counters.
 
 ## 13. Package layout
 
