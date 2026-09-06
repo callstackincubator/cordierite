@@ -22,8 +22,14 @@ export type LinkCommandOptions = {
 export type LinkCommandContext = {
   stateDir: string;
   spawn?: SpawnFn;
+  /** Where scheme discovery starts (project config walk-up, then `app.json`); defaults to
+   * `process.cwd()`, which for this command is the app root the developer is standing in. */
+  cwd?: string;
   exec?: ExecFn;
+  /** Environment for `adb`/`simctl`, not for `CORDIERITE_SCHEME` (see `schemeEnv`). */
   env?: NodeJS.ProcessEnv;
+  /** The environment `CORDIERITE_SCHEME` is read from; defaults to `process.env`. */
+  schemeEnv?: NodeJS.ProcessEnv;
 };
 
 export const handleLinkCommand = async (
@@ -63,12 +69,14 @@ export const handleLinkCommand = async (
     spawn: context.spawn,
     ttlSeconds: options.ttlSeconds,
     scheme: options.scheme,
+    cwd: context.cwd,
     target: openTarget,
     device: options.device,
     bundleId: options.bundleId,
     relaunch: options.relaunch,
     exec: context.exec,
     env: context.env,
+    schemeEnv: context.schemeEnv,
   });
 
   return { ok: true, data: result };

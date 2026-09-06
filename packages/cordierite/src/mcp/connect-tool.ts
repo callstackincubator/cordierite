@@ -34,6 +34,7 @@ import {
 } from "../cli/open-target.js";
 import { composeDeepLink } from "../link.js";
 import { renderQrToTerminal } from "../qr-terminal.js";
+import { describeMissingScheme } from "../scheme.js";
 import {
   openDaemonStream,
   DaemonRpcError,
@@ -195,9 +196,13 @@ const asOptionalPositiveNumber = (value: unknown, field: string): number | undef
 
 export type ConnectToolDeps = {
   call: DaemonCall;
-  /** The scheme composing the deep link (`<scheme>:///?cordierite=<payload>`); same source order as
-   * `cli/link.ts`: `--scheme` flag equivalent has no MCP analogue, so this is always config/derived. */
+  /** The scheme composing the deep link (`<scheme>:///?cordierite=<payload>`), resolved once at
+   * server startup against the shared order in `scheme.ts` — the same one `cordierite link` uses,
+   * so an app root with an `app.json` needs no configuration at all. */
   scheme?: string;
+  /** Every location `scheme.ts` consulted, named in the failure below so an agent can tell its
+   * human exactly where to put a scheme instead of guessing at one global file. */
+  schemeTried?: string[];
   /** `config.json`'s `iosBundleId`, the default for the experimental `ios-device` target when the
    * call did not pass `bundleId`. Same source order as `scheme`. */
   iosBundleId?: string;
@@ -327,10 +332,7 @@ export const handleConnectTool = async (
   }
 
   if (!deps.scheme) {
-    throw new McpBuiltinToolError(
-      "invalid_request",
-      'A deep-link scheme is required: set "scheme" in config.json.',
-    );
+    throw new McpBuiltinToolError("invalid_request", describeMissingScheme(deps.schemeTried ?? []));
   }
 
   // Captured after the check so the closures below carry the narrowing (a mutable property does

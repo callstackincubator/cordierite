@@ -12,11 +12,16 @@ import { ThemedView } from "@/components/themed-view";
 import { Layout, Radius } from "@/constants/theme";
 import { useThemeColor } from "@/hooks/use-theme-color";
 
+// The playground is deliberately *not* the zero-config path: app.json pins `cliPins` with
+// `trust: "pin"` to the fixture key checked in at playground/.cordierite/key.pem, so only the
+// launcher below (which points --state-dir at that directory) serves a key this build will trust.
+// A bare `cordierite link` would mint a link from the global daemon and fail the TLS pin.
+//
+// In a normal app there is no keygen and no pin to paste: the daemon generates its own key, and
+// `cordierite link` reads the scheme straight out of app.json's `expo.scheme`.
 const CONNECT_COMMANDS = [
-  "cordierite keygen",
-  "# paste the printed sha256/... pin into app.json's cliPins, then:",
   "pnpm exec expo run:ios   # or: pnpm exec expo run:android",
-  "cordierite link --open ios-sim   # or: --open android / --qr",
+  "pnpm run playground:cordierite -- link --open ios-sim   # or: --open android / --qr",
 ].join("\n");
 
 /** Delays `ms` without leaking a dangling timer past the call: each tool invocation owns its own. */
@@ -158,8 +163,14 @@ export default function ToolsScreen() {
             </ThemedText>
           </View>
           <ThemedText type="caption" style={styles.cardHint}>
-            Then drive tools from another terminal: cordierite ls / tools / invoke sum --input
+            Then drive tools from another terminal, via the same launcher: pnpm run
+            playground:cordierite -- ls / tools / invoke sum --input
             {" '{\"a\":1,\"b\":2}'"}.
+          </ThemedText>
+          <ThemedText type="caption" style={styles.cardHint}>
+            The launcher exists because this app pins its fixture key (app.json&apos;s cliPins with
+            trust: &quot;pin&quot;), so it only trusts the daemon in playground/.cordierite. Your own
+            app needs none of this: no keygen, no pins, and the scheme is read from app.json.
           </ThemedText>
         </View>
 
