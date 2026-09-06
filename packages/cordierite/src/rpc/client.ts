@@ -12,6 +12,13 @@ import { fileURLToPath } from "node:url";
 
 import { RPC_METHODS, type DaemonStatusResult, type RpcErrorData } from "@cordierite/shared";
 
+import {
+  ensureDaemonLogMode,
+  resolveDaemonLogMaxBytes,
+  rotateDaemonLogIfNeeded,
+} from "../daemon/log-rotation.js";
+import { isProcessAlive } from "../daemon/pidfile.js";
+import { isSocketConnectable } from "../daemon/socket-probe.js";
 import { getStateDirPaths, type StateDirPaths } from "../daemon/state-dir.js";
 import { DAEMON_VERSION_OVERRIDE_ENV } from "../package-version.js";
 
@@ -382,22 +389,6 @@ const sendRequest = <TResult>(
   });
 };
 
-const isSocketConnectable = (socketPath: string): Promise<boolean> => {
-  return new Promise((resolve) => {
-    const socket = connect(socketPath);
-
-    socket.once("connect", () => {
-      socket.destroy();
-      resolve(true);
-    });
-
-    socket.once("error", () => {
-      socket.destroy();
-      resolve(false);
-    });
-  });
-};
-
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const pollForSocket = async (
@@ -418,15 +409,6 @@ const pollForSocket = async (
   return isSocketConnectable(socketPath);
 };
 
-const isPidAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-};
-
 const unlinkStaleSocketIfDaemonDead = async (paths: StateDirPaths): Promise<void> => {
   let pid: number | undefined;
 
@@ -436,15 +418,33 @@ const unlinkStaleSocketIfDaemonDead = async (paths: StateDirPaths): Promise<void
     pid = undefined;
   }
 
-  if (pid === undefined || Number.isNaN(pid) || !isPidAlive(pid)) {
+  if (pid === undefined || Number.isNaN(pid) || !isProcessAlive(pid)) {
     await rm(paths.socketPath, { force: true });
   }
 };
 
 const defaultSpawn: SpawnFn = async (args, context) => {
+  // Rotate before the new daemon's log fd is opened (issue #32). This is the only safe moment:
+  // afterwards the daemon holds the fd for its whole life. `cordierite daemon start` spawns
+  // through this same path, so it rotates too. Reaching here means nothing answered the socket,
+  // which is *usually* but not always the same as "no daemon is writing this log" — hence the
+  // pidfile and socket guards inside, which decline to rotate under a daemon that is still there.
+  const paths = getStateDirPaths(context.stateDir);
+
+  await rotateDaemonLogIfNeeded({
+    logFilePath: context.logFilePath,
+    maxBytes: await resolveDaemonLogMaxBytes(context.stateDir),
+    pidFilePath: paths.pidFilePath,
+    socketPath: paths.socketPath,
+  });
+
   const logFd = await open(context.logFilePath, "a", 0o600);
 
   try {
+    // Best-effort, never fatal: this is the auto-spawn path, and a log mode that cannot be
+    // tightened is not a reason to fail every command that needs a daemon. See the helper.
+    await ensureDaemonLogMode(context.logFilePath);
+
     const childEnv: NodeJS.ProcessEnv = { ...process.env, CORDIERITE_STATE_DIR: context.stateDir };
     // A daemon this client spawns must report its real version, whatever this process inherited.
     // Otherwise a stray `CORDIERITE_DAEMON_VERSION_OVERRIDE` in the operator's shell would be
@@ -741,7 +741,7 @@ const isDaemonGone = async (paths: StateDirPaths): Promise<boolean> => {
     return true;
   }
 
-  return pid === undefined || Number.isNaN(pid) || !isPidAlive(pid);
+  return pid === undefined || Number.isNaN(pid) || !isProcessAlive(pid);
 };
 
 /**
