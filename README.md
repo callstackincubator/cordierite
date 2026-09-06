@@ -34,7 +34,7 @@ useCordieriteTool({
 
 The hook registers once per mount — re-rendering costs nothing for a schema that exports JSON
 Schema (Zod 4, ArkType) or is hoisted out of the component, and the handler always sees the latest
-state it closes over. The [package README](packages/react-native/README.md#5-define-tools-in-app-startup-code)
+state it closes over. The [package README](packages/react-native/README.md#4-define-tools-in-app-startup-code)
 covers the one exception, schemas that cannot export JSON Schema.
 
 Call it from your terminal:
@@ -74,7 +74,7 @@ npm install @cordierite/react-native zod
 
 From there:
 
-- **[Set up your app](packages/react-native/README.md)** — registering tools, deep-link setup, and how to decide what ships in which build.
+- **[Set up your app](packages/react-native/README.md)** — registering tools, deep-link setup, and the API reference.
 - **[Use the CLI and MCP server](packages/cordierite/README.md)** — connecting to a device, listing and calling tools, and checking a built artifact.
 - **[Try the playground](playground/README.md)** — a working app you can run end to end in a few minutes. Fastest way to see whether this fits your project.
 
@@ -94,10 +94,11 @@ iOS 15.1+ and Android, both on the New Architecture. Web gets a no-op stub so sh
 
 ## Docs
 
-- [`docs/SECURITY.md`](docs/SECURITY.md) — what it protects against, and key rotation
+- [`docs/SECURITY.md`](docs/SECURITY.md) — what it protects against, configuring trust, and key rotation
+- [`docs/BUILD-VARIANTS.md`](docs/BUILD-VARIANTS.md) — which builds carry Cordierite, and how to compile it out
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the pieces fit together
 - [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — the wire protocol, if you're implementing a client
-- [`docs/CI.md`](docs/CI.md) — running it in CI
+- [`docs/CI.md`](docs/CI.md) — running it in CI, and the `cordierite doctor` release gate
 
 ## Made with ❤️ at Callstack
 
@@ -112,6 +113,6 @@ Like the project? ⚛️ [Join the team](https://callstack.com/careers/?utm_camp
 [npm-downloads-badge]: https://img.shields.io/npm/dm/cordierite?style=for-the-badge
 [npm-downloads]: https://www.npmjs.com/package/cordierite
 [prs-welcome-badge]: https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=for-the-badge
-[prs-welcome]: ./CONTRIBUTING.md
+[prs-welcome]: https://github.com/callstackincubator/cordierite/pulls
 [chat-badge]: https://img.shields.io/discord/426714625279524876.svg?style=for-the-badge
 [chat]: https://discord.gg/xgGt7KAjxv

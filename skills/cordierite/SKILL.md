@@ -41,16 +41,19 @@ If no session is active yet, mint a bootstrap link. Requires a deep-link scheme;
 cordierite link --scheme myapp --json
 ```
 
-If the project has no daemon key yet, generate one first — this is non-interactive and
-safe to run from an agent or script:
+You do not need to create a key first: the daemon generates one on its first start, and
+`cordierite link` carries its fingerprint on the deep link for an app with no `cliPins`
+configured to trust for that session.
+
+To generate one explicitly — non-interactive and safe to run from an agent or script:
 
 ```bash
 cordierite keygen --out ~/.cordierite/key.pem
 ```
 
-Add the printed `sha256/...` fingerprint to the app's `cliPins` (see **Setup** below if
-you are wiring Cordierite into an app for the first time — that step needs a native
-rebuild, so it isn't a fast in-session action).
+Adding the printed `sha256/...` fingerprint to the app's `cliPins` is what switches a build
+to pinned trust (see **Setup** below if you are wiring Cordierite into an app for the first
+time — that step needs a native rebuild, so it isn't a fast in-session action).
 
 From `link`'s JSON output, use:
 

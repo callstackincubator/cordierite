@@ -19,6 +19,6 @@ Like the project? ⚛️ [Join the team](https://callstack.com/careers/?utm_camp
 [license-badge]: https://img.shields.io/github/license/callstackincubator/cordierite?style=for-the-badge
 [license]: https://github.com/callstackincubator/cordierite/blob/main/LICENSE
 [prs-welcome-badge]: https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=for-the-badge
-[prs-welcome]: https://github.com/callstackincubator/cordierite/blob/main/CONTRIBUTING.md
+[prs-welcome]: https://github.com/callstackincubator/cordierite/pulls
 [chat-badge]: https://img.shields.io/discord/426714625279524876.svg?style=for-the-badge
 [chat]: https://discord.gg/xgGt7KAjxv

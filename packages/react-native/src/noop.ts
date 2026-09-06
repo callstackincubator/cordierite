@@ -1,9 +1,9 @@
 /**
  * `@cordierite/react-native/noop` — inert entry (ARCHITECTURE.md §11): identical public API to the
  * root (`.`) entry, but every operation is a no-op. Intended for release-build compile-out via Metro
- * `resolveRequest` or a conditional `require` (see the package README's "Compiling Cordierite out
- * of production" section) — swap `@cordierite/react-native` (and `/auto`) for this entry so no
- * Cordierite code, native or JS, ships in that build.
+ * `resolveRequest` or a conditional `require` (see `docs/BUILD-VARIANTS.md`'s "Compiling
+ * Cordierite out of production builds" section) — swap `@cordierite/react-native` (and `/auto`)
+ * for this entry so no Cordierite code, native or JS, ships in that build.
  *
  * Typed against the same `CordierePublicApi` interface as `./index.ts` (see
  * `__tests__/noop-parity.test.ts`) so the two cannot drift.

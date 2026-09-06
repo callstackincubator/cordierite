@@ -522,9 +522,11 @@ config-surface summary):
   it**; and an unrecognized `trust` value is a hard error at both config time and in native
   resolution, so a typo can't silently downgrade `"pin"` into permissive link TOFU.
 
-The full config surface (option names, native keys, recipes) lives in the
-[package README](../packages/react-native/README.md); the threat model lives in
-[SECURITY.md](SECURITY.md).
+The full config surface (option names, native keys, trust recipes) lives in
+[SECURITY.md](SECURITY.md#configuring-trust); the inclusion/compile-out recipes live in
+[BUILD-VARIANTS.md](BUILD-VARIANTS.md); the threat model lives in
+[SECURITY.md](SECURITY.md). The [package README](../packages/react-native/README.md) is the
+getting-started path and API reference.
 
 Client behavior:
 
@@ -536,19 +538,24 @@ Client behavior:
   and re-send the full registry snapshot after every successful resume. Resume attempts
   pause in background and restart on foreground. A `1008` close is terminal in both
   directions — mid-session, and as the rejection of a claim/resume handshake: it is the
-  daemon's "no retry of this frame can succeed" signal (`unknown_session`,
-  `invalid_resume_token`, `link_expired`, …), so the session is lost immediately with the
-  daemon's own reason rather than retried for the remainder of the grace window.
-  Transport-level closes (`1011`, `1001`, `1006`) stay retryable.
+  daemon's "no retry of this frame can succeed" signal (`unknown_session` after a daemon
+  restart, `invalid_resume_token`, `link_expired`, an expired or revoked session, a
+  malformed frame), so the session is lost immediately with the daemon's own reason —
+  surfaced to JS as `sessionChange: lost` — rather than retried for the remainder of the
+  grace window. Transport-level closes stay retryable, including `1011 send_failed` and
+  `1001 daemon_shutdown`: the daemon may well be back before grace expires.
 - Installing the bootstrap explicitly or importing `/auto` registers the runtime URL
   listener first, then restores once from the native lease before considering the initial
   launch URL. A successful restore suppresses that initial URL claim; no lease or an
   unexpected orchestration failure falls back to normal initial-link handling. This lets
   a fresh Metro JS runtime resume automatically with the same alias and no new link.
+  Runtime URLs delivered later still parse the v2 bootstrap payload and call `connect` when
+  the client is idle, so an app on the default flow needs no `Linking` handler of its own.
   Native app process death erases the lease and requires a fresh bootstrap. Apps that
   drive bootstrap themselves and never install the listener must call the exported
-  `restoreSession()` at startup — it is the only other reader of the lease, so skipping it
-  drops a resumable session on every JS runtime replacement.
+  `restoreSession()` (equivalently `cordieriteClient.restoreSession()`) at startup — it is
+  the only other reader of the lease, so skipping it drops a resumable session on every JS
+  runtime replacement.
 - `registerTool({ name, description, inputSchema?, outputSchema?, annotations?, handler })`
   → `{ remove() }`. The disposer removes only its own registration (compare by
   registration identity, not name). Duplicate name registration logs a dev warning and

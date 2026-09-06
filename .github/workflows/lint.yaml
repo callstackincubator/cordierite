@@ -48,6 +48,9 @@ jobs:
         run: pnpm build
       - name: Run lint
         run: pnpm lint
+      - name: Check Markdown links
+        # Relative links and heading anchors only, no network — see scripts/check-md-links.mjs.
+        run: pnpm check:links
 
   typecheck:
     runs-on: ubuntu-latest

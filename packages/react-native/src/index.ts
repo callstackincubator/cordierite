@@ -146,8 +146,8 @@ export function getCordieriteBuildConfig(): CordieriteBuildConfig {
  * `enabled`), disposing the previous registration first (identity-safe — see `registerTool`'s doc
  * comment). Calls are routed through the latest render's handler, so `deps` is an optional
  * override rather than something every call site has to remember. `options.enabled` (default
- * `true`) gates registration without breaking the rules of hooks — see the README's "Define tools
- * in app startup code" section.
+ * `true`) gates registration without breaking the rules of hooks — see `docs/SECURITY.md`'s
+ * "Gating a tool by build variant" section.
  *
  * `exportToolSchemaForKey` is injected (rather than imported by the hook) so the inert `./noop` entry
  * below does not pull JSON Schema export into a bundle that registers nothing.
