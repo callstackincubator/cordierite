@@ -39,14 +39,14 @@ That is the whole loop. There is no host process to start: `cordierite` auto-spa
 | `cordierite link [--ttl <s>] [--qr] [--open android\|ios-sim] [--scheme <s>]` | mint a pending session and print its deep link |
 | `cordierite ls` | list sessions: alias, state, device, tool count |
 | `cordierite tools [selector] [name] [--full]` | list a session's tools, or show one tool's full schema |
-| `cordierite invoke [selector] <tool> --input '<json>' [--timeout <ms>]` | call a tool |
+| `cordierite invoke [selector] <tool> --input '<json>' [--timeout <ms>]` | call a tool. `--timeout` (clamped to 1 000–600 000 ms) can **shorten** the deadline but cannot extend it past the app's own timer: the app aborts the handler at the tool's declared `timeoutMs`, or 10 s for a tool that declares none, whatever the caller asks for. Give a slow tool more room by declaring `timeoutMs` on its registration |
 | `cordierite events [selector] [--follow] [--since <cursor>]` | stream session/tool events (default), or one-shot pull everything retained since `<cursor>` (`--since`); `--json` emits NDJSON |
 | `cordierite revoke [selector]` | revoke a session |
 | `cordierite daemon run\|start\|stop\|status` | daemon lifecycle |
 | `cordierite mcp` | start a stdio MCP server proxying connected apps' tools to MCP clients |
 | `cordierite doctor <artifact> [--assert-present\|--assert-absent]` | **release-gate step**: report or assert whether a built `.app`/`.ipa`/`.apk`/`.aab` contains Cordierite |
 
-Every command that targets a session accepts an optional `selector` (a session id or an alias from `cordierite ls`); omit it when exactly one session is active. Global flags: `--json` (machine-readable output), `--no-color`, `--state-dir <path>` (default `~/.cordierite`). Run `cordierite <command> --help` for the exact flags of any command, or `cordierite --help` for the full list.
+Every command that targets a session accepts an optional `selector` (a session id or an alias from `cordierite ls`); omit it when exactly one session is active. Global flags: `--json` (machine-readable output), `--no-color`, `--state-dir <path>` (default `~/.cordierite`), `--daemon-restart` (on a daemon/CLI version mismatch, restart the daemon even though that drops live sessions and unclaimed links; `CORDIERITE_DAEMON_RESTART=1` and `config.json`'s `restartDaemonOnVersionMismatch` do the same for every command, and `--no-daemon-restart` overrules both for one). Run `cordierite <command> --help` for the exact flags of any command, or `cordierite --help` for the full list.
 
 ## MCP setup (Claude Code, Cursor, and similar)
 
@@ -136,9 +136,13 @@ The command writes an unencrypted PEM private key (PKCS#8) to `<state-dir>/key.p
 
 ## Daemon lifecycle
 
-The daemon auto-starts the first time any CLI or MCP command needs it — you don't normally run `cordierite daemon start` yourself. It writes state to `<state-dir>/` (`daemon.sock`, `daemon.pid`, `daemon.log`, `key.pem`, `config.json`, `audit/`), holds a single-instance lock via the pidfile, and runs independently of any one device's connection, so a reload or crash on the device side never costs you the daemon process.
+The daemon auto-starts the first time any CLI or MCP command needs it — you don't normally run `cordierite daemon start` yourself. It writes state to `<state-dir>/` (`daemon.sock`, `daemon.pid`, `daemon.log`, `daemon.log.1`, `key.pem`, `config.json`, `audit/`), holds a single-instance lock via the pidfile, and runs independently of any one device's connection, so a reload or crash on the device side never costs you the daemon process.
 
-Use `cordierite daemon status` to see what's running (version, pid, `wssPort`, pinned keys, live sessions, effective policy) and `cordierite daemon stop` to shut it down explicitly.
+Use `cordierite daemon status` to see what's running (version, pid, `wssPort`, pinned keys, live sessions, effective policy, and the audit log's retention window, file count, size, and failure counters) and `cordierite daemon stop` to shut it down explicitly.
+
+Because the daemon outlives the CLI that started it, upgrading Cordierite would otherwise leave the old daemon serving your commands. Every CLI/MCP process compares its version with the daemon's on its first command and replaces a stale daemon when nothing would be lost; when there is — connected sessions, or an unexpired link nobody has scanned yet — the command stops instead, naming both versions, until you run `cordierite daemon stop` or pass `--daemon-restart`. A daemon *newer* than your CLI is left alone with a warning, so a project-local install never downgrades a global one's daemon.
+
+Neither log grows without bound: `audit/<YYYY-MM-DD>.jsonl` files older than `auditRetentionDays` (default 30) are pruned at daemon start and once a day after, and a `daemon.log` over `daemonLogMaxBytes` (default 10 MiB) is rotated to `daemon.log.1` when a daemon is next spawned. Both are `config.json` keys ([ARCHITECTURE.md §3][architecture]).
 
 ## Release gate: `cordierite doctor`
 

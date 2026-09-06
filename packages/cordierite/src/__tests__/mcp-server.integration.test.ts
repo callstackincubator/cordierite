@@ -27,11 +27,13 @@ import {
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { decodeBootstrap } from "@cordierite/shared";
+import { decodeBootstrap, type ToolDescriptor } from "@cordierite/shared";
 
 import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { createMcpServer, type McpServerHandle } from "../mcp/server.js";
 import type { ExecFn } from "../cli/open-target.js";
+import { DAEMON_VERSION_OVERRIDE_ENV, getPackageVersion } from "../package-version.js";
+import { resetDaemonVersionChecks, type SpawnFn } from "../rpc/client.js";
 import { writeTestHostKey } from "./fixtures.js";
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -41,6 +43,11 @@ const stateDirs: string[] = [];
 const mcpHandles: McpServerHandle[] = [];
 
 afterEach(async () => {
+  // Issue #30's daemon-version seam and per-process check cache are both process-global; leaking
+  // either would silently change what the next test's daemon reports, or skip its check entirely.
+  delete process.env[DAEMON_VERSION_OVERRIDE_ENV];
+  resetDaemonVersionChecks();
+
   while (mcpHandles.length > 0) {
     await mcpHandles.pop()?.close();
   }
@@ -199,7 +206,7 @@ const claimApp = async (daemon: RunningDaemon, port: number, deviceModel = "Pixe
 const snapshotTools = async (
   daemon: RunningDaemon,
   app: ClaimedApp,
-  tools: Array<{ name: string; description?: string; input_schema?: Record<string, unknown> }>,
+  tools: Array<Partial<ToolDescriptor> & { name: string }>,
 ): Promise<void> => {
   const toolsChanged = waitForEvent(daemon, "tools_changed");
   app.socket.send(
@@ -308,6 +315,229 @@ describe("mcp: tools/list and tools/call", () => {
 
     app.socket.close();
   });
+
+  test("a non-object output schema does not break tools/list: both tools list and both stay callable", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    await snapshotTools(daemon, app, [
+      {
+        name: "get-profile",
+        description: "Returns the profile.",
+        output_schema: {
+          type: "object",
+          properties: { name: { type: "string" } },
+          required: ["name"],
+          additionalProperties: false,
+        },
+      },
+      {
+        // `z.array(z.string())`: MCP's `Tool.outputSchema.type` is the literal `"object"`, so
+        // before issue #26 this single entry made the client reject the whole list.
+        name: "list-todos",
+        description: "Returns the todos.",
+        output_schema: { type: "array", items: { type: "string" } },
+      },
+      {
+        // `z.union([z.object(...), z.object(...)])`: `anyOf` with no root `type`, so MCP rejects
+        // it even though every branch — and every result — is an object.
+        name: "get-status",
+        description: "Returns one of two shapes.",
+        output_schema: {
+          anyOf: [
+            { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+            { type: "object", properties: { error: { type: "string" } }, required: ["error"] },
+          ],
+        },
+      },
+    ]);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    const resultsByTool: Record<string, unknown> = {
+      "get-profile": { name: "Ada" },
+      "list-todos": ["write tests", "ship it"],
+      "get-status": { ok: true },
+    };
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+
+      if (msg.type === "tool_call") {
+        app.socket.send(
+          JSON.stringify({
+            type: "tool_result",
+            session_id: app.sessionId,
+            id: msg.id,
+            result: resultsByTool[msg.name as string],
+          }),
+        );
+      }
+    });
+
+    // The SDK's own `listTools`, so the result goes through `ListToolsResultSchema` *and* caches
+    // the output schemas `callTool` below enforces — exactly what a real client does.
+    const listed = await client.listTools();
+    const proxiedTools = withoutBuiltinTools(listed.tools);
+    expect(proxiedTools.map((tool) => tool.name).sort()).toEqual(["get-profile", "get-status", "list-todos"]);
+
+    const objectTool = proxiedTools.find((tool) => tool.name === "get-profile")!;
+    const arrayTool = proxiedTools.find((tool) => tool.name === "list-todos")!;
+    const unionTool = proxiedTools.find((tool) => tool.name === "get-status")!;
+    expect(objectTool.outputSchema).toEqual({
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+      additionalProperties: false,
+    });
+    expect(arrayTool.outputSchema).toBeUndefined();
+    expect(unionTool.outputSchema).toBeUndefined();
+
+    const profile = await client.callTool({ name: "get-profile", arguments: {} });
+    expect(profile.isError).not.toBe(true);
+    expect(profile.structuredContent).toEqual({ name: "Ada" });
+
+    // The dropped schema means no `structuredContent` is required or expected; the value still
+    // reaches the agent as JSON text.
+    const todos = await client.callTool({ name: "list-todos", arguments: {} });
+    expect(todos.isError).not.toBe(true);
+    expect(todos.structuredContent).toBeUndefined();
+    expect(todos.content).toEqual([{ type: "text", text: JSON.stringify(["write tests", "ship it"]) }]);
+
+    // A dropped schema never turns a good result into an error: the union tool's result *is* an
+    // object, so it still travels as `structuredContent` — the client just has no schema to
+    // validate it against, which is allowed.
+    const status = await client.callTool({ name: "get-status", arguments: {} });
+    expect(status.isError).not.toBe(true);
+    expect(status.structuredContent).toEqual({ ok: true });
+    expect(status.content).toEqual([{ type: "text", text: JSON.stringify({ ok: true }) }]);
+
+    app.socket.close();
+  });
+
+  test("an object output schema paired with a non-object result is a tool_output_validation_error, not a client protocol error", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    await snapshotTools(daemon, app, [
+      { name: "lies", description: "Claims an object, returns a number.", output_schema: { type: "object" } },
+    ]);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+
+      if (msg.type === "tool_call") {
+        app.socket.send(
+          JSON.stringify({ type: "tool_result", session_id: app.sessionId, id: msg.id, result: 42 }),
+        );
+      }
+    });
+
+    await client.listTools();
+
+    // `callTool` (not raw `request`) so the SDK's "has an output schema but did not return
+    // structured content" guard is live: an `isError` result is the one shape it accepts.
+    const result = await client.callTool({ name: "lies", arguments: {} });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toBeUndefined();
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("tool_output_validation_error");
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("a number");
+
+    app.socket.close();
+  });
+
+  // The issue's own example of a result that breaks the `structuredContent` contract.
+  test("an object output schema paired with a null result is a tool_output_validation_error", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    await snapshotTools(daemon, app, [
+      { name: "nullish", description: "Claims an object, returns null.", output_schema: { type: "object" } },
+    ]);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+
+      if (msg.type === "tool_call") {
+        app.socket.send(
+          JSON.stringify({ type: "tool_result", session_id: app.sessionId, id: msg.id, result: null }),
+        );
+      }
+    });
+
+    await client.listTools();
+    const result = await client.callTool({ name: "nullish", arguments: {} });
+
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0]!.text;
+    expect(text).toContain("tool_output_validation_error");
+    expect(text).toContain("returned null");
+    // Never the raw `typeof` wording: "a object" / "a undefined" would read as a bug in the tool.
+    expect(text).not.toContain("a undefined");
+    expect(text).not.toContain("a object");
+
+    app.socket.close();
+  });
+
+  test("a tool declaring a timeoutMs above the daemon default gets it, over MCP, end to end (issue #25)", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    // 20 s > DEFAULT_CALL_TIMEOUT_MS (10 s): before this fix the descriptor's timeout never left
+    // the app, the daemon applied its 10 s default, and the answer below arrived to a call that
+    // had already been rejected as `tool_timeout`. The gap between the 11 s reply and this 20 s
+    // deadline is headroom for a slow runner, so drift cannot turn this into a real timeout.
+    await snapshotTools(daemon, app, [
+      { name: "slow-login", timeout_ms: 20_000 },
+    ]);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    // The deadline is a daemon-side scheduling hint, never part of the MCP tool contract.
+    const listed = await client.request(
+      { method: "tools/list", params: {} },
+      ListToolsResultSchema,
+    );
+    const proxied = withoutBuiltinTools(listed.tools)[0]!;
+    expect(proxied.name).toBe("slow-login");
+    expect("timeout_ms" in proxied).toBe(false);
+    expect("timeoutMs" in proxied).toBe(false);
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+
+      if (msg.type === "tool_call") {
+        setTimeout(() => {
+          app.socket.send(
+            JSON.stringify({
+              type: "tool_result",
+              session_id: app.sessionId,
+              id: msg.id,
+              result: { loggedIn: true },
+            }),
+          );
+        }, 11_000);
+      }
+    });
+
+    const called = await client.request(
+      { method: "tools/call", params: { name: "slow-login", arguments: {} } },
+      CallToolResultSchema,
+      // Above the MCP server's own derived transport timeout (20 s + 5 s slack) so this client's
+      // watchdog can never be what the assertion actually measures.
+      { timeout: 35_000 },
+    );
+
+    expect(called.isError).not.toBe(true);
+    expect(called.structuredContent).toEqual({ loggedIn: true });
+
+    app.socket.close();
+  }, 45_000);
 
   test("tool_call_progress frames map to MCP progress notifications when the client sends a progressToken", async () => {
     const { daemon, stateDir, port } = await startTestDaemon();
@@ -1226,5 +1456,82 @@ describe("mcp: stdout purity", () => {
         expect(parsed.jsonrpc).toBe("2.0");
       }
     }
+  });
+});
+
+describe("mcp: daemon/CLI version drift (issue #30)", () => {
+  const STALE_VERSION = "0.0.1-stale";
+
+  /** Starts a test daemon that reports `STALE_VERSION` — the daemon reads the override on every
+   * `daemon.status`, so it stays stale until the variable is cleared for its replacement. */
+  const startStaleTestDaemon = async (): Promise<TestDaemon> => {
+    process.env[DAEMON_VERSION_OVERRIDE_ENV] = STALE_VERSION;
+    return startTestDaemon();
+  };
+
+  const readDaemonVersion = async (stateDir: string): Promise<string> => {
+    const status = (await rpcCall(path.join(stateDir, "daemon.sock"), "daemon.status")) as {
+      version: string;
+      sessions: unknown[];
+    };
+    return status.version;
+  };
+
+  test("startup against a mismatched idle daemon restarts it transparently", async () => {
+    const { daemon, stateDir } = await startStaleTestDaemon();
+    expect(await readDaemonVersion(stateDir)).toBe(STALE_VERSION);
+
+    let spawnCalls = 0;
+    const spawn: SpawnFn = async () => {
+      spawnCalls += 1;
+      // The replacement is this build, so it must not inherit the stale override.
+      delete process.env[DAEMON_VERSION_OVERRIDE_ENV];
+      const replacement = await startDaemon({ stateDir });
+      runningDaemons.push(replacement);
+    };
+
+    const handle = await createMcpServer({
+      stateDir,
+      spawn,
+      checkVersion: { clientVersion: getPackageVersion() },
+    });
+    mcpHandles.push(handle);
+
+    expect(spawnCalls).toBe(1);
+    expect(await readDaemonVersion(stateDir)).toBe(getPackageVersion());
+    await daemon.exited;
+
+    // The server is fully usable against the daemon it ended up connected to.
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await handle.connect(serverTransport);
+    const client = new Client({ name: "test-client", version: "0.0.0" });
+    await client.connect(clientTransport as never);
+
+    const tools = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
+    expect(tools.tools.length).toBeGreaterThan(0);
+  });
+
+  test("startup against a mismatched daemon with a live session fails with both versions", async () => {
+    const { daemon, stateDir, port } = await startStaleTestDaemon();
+    const app = await claimApp(daemon, port);
+
+    const spawn: SpawnFn = () => {
+      throw new Error("the daemon must not be replaced while a session is live");
+    };
+
+    await expect(
+      createMcpServer({ stateDir, spawn, checkVersion: { clientVersion: getPackageVersion() } }),
+    ).rejects.toThrow(new RegExp(`${STALE_VERSION}[\\s\\S]*${getPackageVersion()}`, "u"));
+
+    // The app's session survives the refused startup untouched.
+    const status = (await rpcCall(path.join(stateDir, "daemon.sock"), "daemon.status")) as {
+      version: string;
+      sessions: Array<{ sessionId: string }>;
+    };
+    expect(status.version).toBe(STALE_VERSION);
+    expect(status.sessions).toHaveLength(1);
+    expect(status.sessions[0]!.sessionId).toBe(app.sessionId);
+
+    app.socket.close();
   });
 });

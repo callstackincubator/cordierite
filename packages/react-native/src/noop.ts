@@ -15,6 +15,7 @@ import type {
   CordieriteClientState,
   CordieriteConnectInput,
   CordieriteListenerKind,
+  CordieriteRuntimeSchema,
   CordieriteToolRegistration,
   CordieriteUnifiedListenerMap,
 } from "./Cordierite.types";
@@ -30,18 +31,19 @@ const noopSubscription: CordieriteSubscription = { remove() {} };
 
 /** Accepts any registration and returns a disposer; the tool is never actually registered anywhere. */
 export function registerTool<
-  TInputSchema extends
-    import("@cordierite/shared").StandardSchemaV1 | undefined,
-  TOutputSchema extends
-    import("@cordierite/shared").StandardSchemaV1 | undefined,
+  TInputSchema extends CordieriteRuntimeSchema | undefined,
+  TOutputSchema extends CordieriteRuntimeSchema | undefined,
 >(
   _registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>,
 ): CordieriteSubscription {
   return noopSubscription;
 }
 
-/** `useEffect` wrapper around the inert `registerTool` above — same mount/deps/`options.enabled`
- * behavior as the real entry, no-op body. */
+/** `useEffect` wrapper around the inert `registerTool` above — same signature, arity and observable
+ * behavior as the real entry, no-op body. No JSON Schema exporter is injected: with a registrar
+ * that registers nothing, deriving a registration key would export JSON Schema on every render to
+ * decide how often to re-run a no-op, and the import alone would pull `schema.ts` into a bundle
+ * whose whole purpose is to carry no Cordierite work. */
 export const useCordieriteTool = createUseCordieriteTool(registerTool);
 
 /** No-op: never sends anything. */

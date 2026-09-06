@@ -5,6 +5,7 @@ import type {
   CordieriteClientState,
   CordieriteConnectInput,
   CordieriteListenerKind,
+  CordieriteRuntimeSchema,
   CordieriteToolRegistration,
   CordieriteUnifiedListenerMap,
 } from "./Cordierite.types";
@@ -15,6 +16,7 @@ import {
 import { parseBootstrapPayload, parseBootstrapUrl } from "./bootstrap";
 import { cordieriteClient, noopIfNativeUnavailable } from "./default-client";
 import * as noop from "./noop";
+import { exportToolSchemaForKey } from "./schema";
 import { createUseCordieriteTool } from "./useCordieriteTool";
 
 export * from "./Cordierite.types";
@@ -37,10 +39,8 @@ export type { UseCordieriteToolOptions } from "./useCordieriteTool";
  * same tool name.
  */
 export function registerTool<
-  TInputSchema extends
-    import("@cordierite/shared").StandardSchemaV1 | undefined,
-  TOutputSchema extends
-    import("@cordierite/shared").StandardSchemaV1 | undefined,
+  TInputSchema extends CordieriteRuntimeSchema | undefined,
+  TOutputSchema extends CordieriteRuntimeSchema | undefined,
 >(registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>) {
   return noopIfNativeUnavailable(
     () => cordieriteClient.registerTool(registration),
@@ -141,9 +141,17 @@ export function getCordieriteBuildConfig(): CordieriteBuildConfig {
 }
 
 /**
- * `useEffect` wrapper around `registerTool`: registers on mount and whenever `deps` changes,
- * disposing the previous registration first (identity-safe — see `registerTool`'s doc comment).
- * `options.enabled` (default `true`) gates registration without breaking the rules of hooks —
- * see `docs/SECURITY.md`'s "Gating a tool by build variant" section.
+ * `useEffect` wrapper around `registerTool`: registers once per mount and re-registers only when
+ * the registration itself changed (name, description, exported schemas, annotations, `timeoutMs`,
+ * `enabled`), disposing the previous registration first (identity-safe — see `registerTool`'s doc
+ * comment). Calls are routed through the latest render's handler, so `deps` is an optional
+ * override rather than something every call site has to remember. `options.enabled` (default
+ * `true`) gates registration without breaking the rules of hooks — see `docs/SECURITY.md`'s
+ * "Gating a tool by build variant" section.
+ *
+ * `exportToolSchemaForKey` is injected (rather than imported by the hook) so the inert `./noop` entry
+ * below does not pull JSON Schema export into a bundle that registers nothing.
  */
-export const useCordieriteTool = createUseCordieriteTool(registerTool);
+export const useCordieriteTool = createUseCordieriteTool(registerTool, {
+  exportSchema: exportToolSchemaForKey,
+});

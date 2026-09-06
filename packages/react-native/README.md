@@ -59,7 +59,7 @@ If you drive bootstrap yourself and never import `/auto`, call `restoreSession()
 
 ### 4. Define tools in app startup code
 
-Call `registerTool({ ... })` with Standard Schema compatible `inputSchema`/`outputSchema` values and a `handler`. Zod v4 works well — its JSON Schema exporter means agents see a real tool shape. Zod 3 and plain valibot schemas still register, with a dev warning and an empty schema.
+Call `registerTool({ ... })` with `inputSchema`/`outputSchema` values and a `handler`. Zod v4 works out of the box — its JSON Schema exporter is what lets agents see a real tool shape. A library without one (zod 3, plain valibot) needs a `{ schema, jsonSchema }` pair, and a raw JSON Schema object works with no validation library at all ([Accepted schema forms](https://github.com/callstackincubator/cordierite/blob/main/docs/TOOLS.md#accepted-schema-forms)).
 
 `useCordieriteTool` wraps `registerTool` in a `useEffect`, so registration follows the component's lifecycle, remounts and Fast Refresh included:
 
@@ -85,6 +85,10 @@ export function CordieriteBootstrap() {
 ```
 
 Mount it near app startup, or register from a module that loads then. The host can only invoke tools your app already registered.
+
+The hook registers once per mount and re-registers only when the registration itself changes, routing every call through the latest render's handler — so `deps` is an optional override, not something each call site has to get right ([Registration is per mount, not per render](https://github.com/callstackincubator/cordierite/blob/main/docs/TOOLS.md#registration-is-per-mount-not-per-render)).
+
+Keep both schemas object-rooted: MCP requires it, and Cordierite degrades anything else rather than take your whole tool list down ([Keep both schemas object-rooted](https://github.com/callstackincubator/cordierite/blob/main/docs/TOOLS.md#keep-both-schemas-object-rooted)). A call gets 10 seconds unless the registration declares `timeoutMs` ([Long-running tools](https://github.com/callstackincubator/cordierite/blob/main/docs/TOOLS.md#long-running-tools)).
 
 To keep a destructive tool out of some build variants, pass `{ enabled }` rather than wrapping the hook in an `if` ([Gating a tool by build variant](https://github.com/callstackincubator/cordierite/blob/main/docs/SECURITY.md#gating-a-tool-by-build-variant)).
 
@@ -121,7 +125,7 @@ Omit the session selector when only one session is active; pass an alias or sess
 | Export | Signature / notes |
 | --- | --- |
 | `registerTool` | `({ name, description, inputSchema?, outputSchema?, annotations?, handler })` → `{ remove() }`. The disposer removes only its own registration. |
-| `useCordieriteTool` | `(definition, deps?, { enabled? })`. `enabled` defaults to `true`; `false` never registers, and removes any registration that hook owns. |
+| `useCordieriteTool` | `(definition, deps?, { enabled? })`. Registers once per mount, re-registering only when the descriptor changes; `deps` overrides that derivation. `enabled` defaults to `true`; `false` never registers, and removes any registration that hook owns. |
 | `handler` | `(args, context)`. `context.signal` is an `AbortSignal`, aborted when the caller cancels or the connection drops mid-call. Forward it (`fetch(url, { signal })`), check `signal.aborted`, or listen for `"abort"`; ignoring it is fine — the handler replies normally. |
 | `postEvent` | `(name, payload?)` — pushes an app event, read by `cordierite events` and the MCP event tools. |
 | `addCordieriteListener` | `(kind, callback)` → `{ remove() }`. Kinds `"stateChange"`, `"sessionChange"`, `"error"` — the last one unified channel for bootstrap-parse, connect, socket, and tool-handler failures. |
@@ -135,6 +139,7 @@ Omit the session selector when only one session is active; pass an alias or sess
 ## Going further
 
 - [Trust modes](https://github.com/callstackincubator/cordierite/blob/main/docs/SECURITY.md#trust-modes) and [Configuring trust](https://github.com/callstackincubator/cordierite/blob/main/docs/SECURITY.md#configuring-trust) — pins, plugin options, bare-RN native keys.
+- [Registering tools](https://github.com/callstackincubator/cordierite/blob/main/docs/TOOLS.md) — schema forms, what re-registers, MCP's object-rooted requirement, `timeoutMs`.
 - [Gating a tool by build variant](https://github.com/callstackincubator/cordierite/blob/main/docs/SECURITY.md#gating-a-tool-by-build-variant) — `enabled`, and why `__DEV__` is wrong here.
 - [Build variants](https://github.com/callstackincubator/cordierite/blob/main/docs/BUILD-VARIANTS.md) — `CORDIERITE_ENABLED`, autolinking exclusion, **compiling Cordierite out of production builds**.
 - [What a build without the native module does](https://github.com/callstackincubator/cordierite/blob/main/docs/SECURITY.md#what-a-build-without-the-native-module-does).
