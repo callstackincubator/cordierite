@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { z } from "zod";
@@ -43,87 +43,82 @@ export default function ToolsScreen() {
   const [callCount, setCallCount] = useState(0);
   const [tools, setTools] = useState<RegisteredTool[]>([]);
 
-  // A ref (not `callCount` state) so the "sum" and "slow_task" handlers below always see the
-  // latest count without needing to be re-registered on every increment.
-  const callCountRef = useRef(0);
+  // Plain state, no ref: `useCordieriteTool` registers a stable wrapper that forwards to the
+  // latest render's handler, so `call_count` below reads the current `callCount` on every call
+  // without being re-registered on each increment.
   const bumpCallCount = () => {
-    callCountRef.current += 1;
-    setCallCount(callCountRef.current);
+    setCallCount((count) => count + 1);
   };
 
-  useCordieriteTool(
-    {
-      name: "sum",
-      description: "Adds two numbers.",
-      inputSchema: z.object({
-        a: z.number(),
-        b: z.number(),
-      }),
-      outputSchema: z.object({
-        total: z.number(),
-      }),
-      handler: (args) => {
-        bumpCallCount();
-        return { total: args.a + args.b };
-      },
+  useCordieriteTool({
+    name: "sum",
+    description: "Adds two numbers.",
+    inputSchema: z.object({
+      a: z.number(),
+      b: z.number(),
+    }),
+    outputSchema: z.object({
+      total: z.number(),
+    }),
+    handler: (args) => {
+      bumpCallCount();
+      return { total: args.a + args.b };
     },
-    []
-  );
+  });
 
-  useCordieriteTool(
-    {
-      name: "reset_counter",
-      description: "Resets the playground's call counter to zero.",
-      annotations: { destructiveHint: true },
-      outputSchema: z.object({
-        count: z.number(),
-      }),
-      handler: () => {
-        callCountRef.current = 0;
-        setCallCount(0);
-        return { count: 0 };
-      },
-    },
-    []
-  );
+  useCordieriteTool({
+    name: "call_count",
+    description: "Reports how many times the playground's counted tools have run.",
+    annotations: { readOnlyHint: true },
+    outputSchema: z.object({
+      count: z.number(),
+    }),
+    // Closes directly over `callCount` state. Registered once on mount, yet every call sees the
+    // value from the most recent render -- that is the freshness guarantee, demonstrated.
+    handler: () => ({ count: callCount }),
+  });
 
-  useCordieriteTool(
-    {
-      name: "slow_task",
-      description: "Takes ~1.5s and reports progress along the way.",
-      outputSchema: z.object({
-        done: z.boolean(),
-      }),
-      timeoutMs: 5_000,
-      handler: async (
-        _args,
-        context: CordieriteToolExecutionContext
-      ) => {
-        for (const [progress, message] of [
-          [0.33, "warming up"],
-          [0.66, "almost there"],
-          [1, "done"],
-        ] as const) {
-          await delay(500);
-          await context.reportProgress(progress, message);
-        }
-        bumpCallCount();
-        return { done: true };
-      },
+  useCordieriteTool({
+    name: "reset_counter",
+    description: "Resets the playground's call counter to zero.",
+    annotations: { destructiveHint: true },
+    outputSchema: z.object({
+      count: z.number(),
+    }),
+    handler: () => {
+      setCallCount(0);
+      return { count: 0 };
     },
-    []
-  );
+  });
 
-  useCordieriteTool(
-    {
-      name: "throwing_tool",
-      description: "Always throws, to exercise tool_execution_error.",
-      handler: () => {
-        throw new Error("throwing_tool always fails on purpose.");
-      },
+  useCordieriteTool({
+    name: "slow_task",
+    description: "Takes ~1.5s and reports progress along the way.",
+    outputSchema: z.object({
+      done: z.boolean(),
+    }),
+    timeoutMs: 5_000,
+    handler: async (_args, context: CordieriteToolExecutionContext) => {
+      for (const [progress, message] of [
+        [0.33, "warming up"],
+        [0.66, "almost there"],
+        [1, "done"],
+      ] as const) {
+        await delay(500);
+        await context.reportProgress(progress, message);
+      }
+      bumpCallCount();
+      return { done: true };
     },
-    []
-  );
+  });
+
+  useCordieriteTool({
+    name: "throwing_tool",
+    description: "Always throws, to exercise tool_execution_error.",
+    handler: () => {
+      throw new Error("throwing_tool always fails on purpose.");
+    },
+  });
 
   // Reads the client's own registry after the tool-registering effects above have run (React runs
   // effects in declaration order on mount), so this list is never a hand-maintained duplicate.
@@ -185,8 +180,9 @@ export default function ToolsScreen() {
             <ThemedText type="subtitle">{callCount}</ThemedText>
           </View>
           <ThemedText type="caption" style={styles.cardHint}>
-            Bumped by sum/slow_task; reset_counter (destructive) sets it back to zero. Try denying
-            destructive tools in the daemon config to see it get rejected instead.
+            Bumped by sum/slow_task; call_count reads it back (a handler closing over state, never
+            re-registered); reset_counter (destructive) sets it to zero. Try denying destructive
+            tools in the daemon config to see it get rejected instead.
           </ThemedText>
         </View>
       </ScrollView>

@@ -63,6 +63,17 @@ describe("CLI integration", () => {
         "daemon [action]",
       ]),
     );
+
+    // Global flags (ARCHITECTURE.md §10). `--daemon-restart` (issue #30) has to be discoverable
+    // here: it is the documented remedy the version-drift error tells operators to reach for, and
+    // an error naming a flag that `--help` never mentions is a dead end.
+    const optionsSection = stdout.split(/\n\s*\n/u).find((block) => block.startsWith("Options:"));
+
+    expect(optionsSection).toBeDefined();
+
+    for (const flag of ["--json", "--no-color", "--state-dir", "--daemon-restart"]) {
+      expect(optionsSection).toContain(flag);
+    }
   });
 
   test("--help on each command exposes exactly its documented flags", () => {

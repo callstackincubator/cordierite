@@ -7,10 +7,7 @@
  * recorded to the audit log inline in the `tools.call` handler below.
  */
 
-import { readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   RPC_METHODS,
@@ -39,6 +36,7 @@ import {
 } from "@cordierite/shared";
 
 import type { Clock } from "../cli/types.js";
+import { getDaemonReportedVersion } from "../package-version.js";
 import { detectAdvertisedAddress } from "./address.js";
 import { argsSha256, createAuditLogger, type AuditLogger } from "./audit.js";
 import { createCallsManager, type CallsManager } from "./calls.js";
@@ -61,9 +59,12 @@ type EventSubscription = {
   kinds?: ReadonlySet<EventKind>;
 };
 
-const packageVersion: string = JSON.parse(
-  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../package.json"), "utf8"),
-).version;
+/**
+ * What this daemon reports as its version over `daemon.status` and in `daemon_started`. Read per
+ * call rather than at module load so `CORDIERITE_DAEMON_VERSION_OVERRIDE` (issue #30's test seam)
+ * takes effect for an in-process daemon started by a test that set it after import.
+ */
+const packageVersion = (): string => getDaemonReportedVersion();
 
 export type DaemonOptions = {
   stateDir: string;
@@ -97,12 +98,13 @@ const buildStatusResult = (
   auditDir: string,
 ): DaemonStatusResult => {
   return {
-    version: packageVersion,
+    version: packageVersion(),
     pid: process.pid,
     startedAt: startedAt.toISOString(),
     wssPort: config.wssPort,
     pinnedKeys: tls.pinnedKeys(),
     sessions: sessionManager.list(),
+    pendingLinks: sessionManager.pendingLinkCount(),
     policy: config.policy,
     audit: { path: auditDir, failedWrites: auditLogger.failedWrites() },
   };
@@ -595,7 +597,15 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           // be exposed to the RPC caller and stamped on every event in this call's lifecycle — the
           // MCP server correlates its own in-flight `tools.call` against `tool_call_progress`
           // notifications by this id, unambiguous under concurrent calls.
-          const { callId, result: callResult } = activeCallsManager.call(session, name, args, timeoutMs);
+          const { callId, result: callResult } = activeCallsManager.call(
+            session,
+            name,
+            args,
+            // The caller's explicit `timeoutMs` wins; otherwise the tool's own declared deadline is
+            // the default, and only if it declares none does `clampTimeout` fall back to
+            // DEFAULT_CALL_TIMEOUT_MS (issue #25).
+            timeoutMs ?? tool.timeout_ms,
+          );
 
           // If the connection that issued this tools.call drops while the call is still pending
           // (CLI Ctrl-C, MCP client disconnect), tell the app to stop rather than leaving an
@@ -683,7 +693,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
   // ARCHITECTURE.md §5 lists `daemon_started` among the real event kinds; emitted once startup has
   // fully succeeded (pidfile/TLS/listener/RPC server all up) so a subscriber never sees it followed
   // by a startup failure.
-  eventBus.emit({ kind: "daemon_started", data: { version: packageVersion, pid: process.pid } });
+  eventBus.emit({ kind: "daemon_started", data: { version: packageVersion(), pid: process.pid } });
 
   return {
     paths,

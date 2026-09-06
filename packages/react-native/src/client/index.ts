@@ -15,6 +15,7 @@ import type {
   CordieriteListenerKind,
   CordieriteModuleEvents,
   CordieriteOutboundMessage,
+  CordieriteRuntimeSchema,
   CordieriteToolRegistration,
   CordieriteUnifiedErrorEvent,
   CordieriteUnifiedListenerMap,
@@ -828,12 +829,8 @@ export const createCordieriteClient = (
     },
 
     registerTool<
-      TInputSchema extends
-        | import("@cordierite/shared").StandardSchemaV1
-        | undefined,
-      TOutputSchema extends
-        | import("@cordierite/shared").StandardSchemaV1
-        | undefined
+      TInputSchema extends CordieriteRuntimeSchema | undefined,
+      TOutputSchema extends CordieriteRuntimeSchema | undefined
     >(registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>) {
       return registry.registerTool(registration);
     },

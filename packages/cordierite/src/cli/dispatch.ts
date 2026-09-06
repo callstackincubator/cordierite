@@ -15,9 +15,12 @@ import { handleLsCommand } from "../commands/ls.js";
 import { handleMcpCommand } from "../commands/mcp.js";
 import { handleRevokeCommand } from "../commands/revoke.js";
 import { handleToolsCommand } from "../commands/tools.js";
-import { resolveStateDir } from "../daemon/state-dir.js";
+import { loadConfig } from "../daemon/config.js";
+import { getStateDirPaths, resolveStateDir } from "../daemon/state-dir.js";
 import { usageError } from "../errors.js";
 import { renderEventLine, renderEventsCursorLine } from "../output.js";
+import { getPackageVersion } from "../package-version.js";
+import { ensureDaemonVersionMatches, type VersionCheckOptions } from "../rpc/client.js";
 import {
   parseJsonInputOption,
   parseNonNegativeIntegerOption,
@@ -30,6 +33,14 @@ import { createCli } from "./create-cli.js";
 import { executeCommand, executeHostedCommand } from "./runner.js";
 import { systemClock } from "./types.js";
 import type { RunCliOptions } from "./types.js";
+
+/** `CORDIERITE_DAEMON_RESTART=1` forces a version-mismatch restart for one run — the env-var form
+ * of `--daemon-restart`, so an MCP launch config (which passes no CLI flags) can opt in. */
+const DAEMON_RESTART_ENV = "CORDIERITE_DAEMON_RESTART";
+
+const isEnvTruthy = (value: string | undefined): boolean => {
+  return value === "1" || value?.toLowerCase() === "true";
+};
 
 export const runCli = async (argv: string[], options: RunCliOptions = {}): Promise<number> => {
   const writers = {
@@ -96,6 +107,72 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
     typeof parsedOptions.stateDir === "string" ? parsedOptions.stateDir : undefined,
   );
 
+  // --- daemon/CLI version drift (issue #30, ARCHITECTURE.md §4 "Version drift") ------------------
+
+  let forceRestart: Promise<boolean> | undefined;
+
+  /** Memoized so the config read behind `restartDaemonOnVersionMismatch` happens at most once. */
+  const resolveForceRestart = (): Promise<boolean> => {
+    forceRestart ??= (async () => {
+      let configuredForce = false;
+
+      try {
+        configuredForce = (await loadConfig(getStateDirPaths(stateDir))).restartDaemonOnVersionMismatch;
+      } catch {
+        // An unreadable/invalid `config.json` must not turn every command into a config error just
+        // because one optional knob lives there; the daemon reports the real problem when it starts.
+      }
+
+      // An explicit flag wins outright, in both directions: `--no-daemon-restart` is how an
+      // operator overrules a `restartDaemonOnVersionMismatch: true` in their config (or a
+      // `CORDIERITE_DAEMON_RESTART` exported by a wrapper script) for one command, and silently
+      // ignoring it would be the worst kind of surprise for a knob that decides whether their
+      // connected devices survive.
+      const flag = typeof parsedOptions.daemonRestart === "boolean" ? parsedOptions.daemonRestart : undefined;
+
+      return flag ?? (isEnvTruthy(process.env[DAEMON_RESTART_ENV]) || configuredForce);
+    })();
+
+    return forceRestart;
+  };
+
+  /**
+   * Where the "the running daemon is newer than this client" notice goes. `--json` promises one
+   * machine-readable object and nothing else, so in that mode the notice is dropped rather than
+   * dribbled onto stderr where it would corrupt a script that captures both streams — the check
+   * still behaves identically, it just says nothing. (A structured warning channel would be the
+   * better answer; the runner has none today.)
+   */
+  const cliWarning = json ? () => {} : (message: string) => void writers.stderr.write(message);
+
+  const versionCheckFor = async (onWarning: (message: string) => void): Promise<VersionCheckOptions> => {
+    return {
+      clientVersion: getPackageVersion(),
+      forceRestart: await resolveForceRestart(),
+      onWarning,
+    };
+  };
+
+  /**
+   * Wraps a command handler so the daemon's version is verified once, before the command's first
+   * RPC. `autoSpawn: false`: with nothing listening there is no drift to find, and any daemon this
+   * process spawns afterwards is its own build. Applied to every command that talks to the daemon
+   * except `daemon run` (it *is* the daemon), `daemon status` (warns instead — see
+   * `commands/daemon.ts`) and `daemon stop` (already the remedy); `keygen`/`doctor` never open a
+   * daemon connection at all.
+   */
+  const guarded = <T>(handler: () => T | Promise<T>): (() => Promise<T>) => {
+    return async () => {
+      await ensureDaemonVersionMatches({
+        stateDir,
+        autoSpawn: false,
+        checkVersion: await versionCheckFor(cliWarning),
+      });
+
+      return handler();
+    };
+  };
+
   switch (matchedCommand) {
     case "keygen":
       return executeCommand(
@@ -114,7 +191,7 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
     case "link": {
       return executeCommand(
         "link",
-        () =>
+        guarded(() =>
           handleLinkCommand(
             {
               ttlSeconds: parsePositiveIntegerOption(parsedOptions.ttl, "--ttl"),
@@ -136,6 +213,7 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
             },
             { stateDir },
           ),
+        ),
         {
           ...io,
           qr: Boolean(parsedOptions.qr),
@@ -144,7 +222,7 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
     }
 
     case "ls":
-      return executeCommand("ls", () => handleLsCommand({ stateDir }), io);
+      return executeCommand("ls", guarded(() => handleLsCommand({ stateDir })), io);
 
     case "tools": {
       const { selector, target, selectorOrTarget } = splitOptionalSelectorAndTarget(
@@ -154,11 +232,12 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
 
       return executeCommand(
         "tools",
-        () =>
+        guarded(() =>
           handleToolsCommand(
             { selector: selector ?? selectorOrTarget, name: target },
             { stateDir },
           ),
+        ),
         { ...io, full: Boolean(parsedOptions.full) },
       );
     }
@@ -178,7 +257,7 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
       try {
         return await executeCommand(
           "invoke",
-          () =>
+          guarded(() =>
             handleInvokeCommand(
               {
                 selector,
@@ -191,6 +270,7 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
               { stateDir },
               cancelController.signal,
             ),
+          ),
           io,
         );
       } finally {
@@ -201,7 +281,11 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
     case "revoke": {
       const { selector } = splitOptionalSelector(parsedArgs, "revoke [selector]");
 
-      return executeCommand("revoke", () => handleRevokeCommand({ selector }, { stateDir }), io);
+      return executeCommand(
+        "revoke",
+        guarded(() => handleRevokeCommand({ selector }, { stateDir })),
+        io,
+      );
     }
 
     case "events": {
@@ -211,7 +295,7 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
 
       return executeHostedCommand(
         "events",
-        () => {
+        guarded(() => {
           // Deferred into the wrapped handler (rather than thrown directly in this case body,
           // matching the codebase's existing lax convention for that) so `executeHostedCommand`'s
           // own try/catch renders it as a normal usage_error instead of an uncaught rejection.
@@ -231,7 +315,7 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
               },
             },
           );
-        },
+        }),
         {
           ...io,
           reporter: {
@@ -246,7 +330,16 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
     case "mcp": {
       return executeHostedCommand(
         "mcp",
-        () => handleMcpCommand({ stateDir }),
+        // Unlike every other command the check is threaded into the server itself, not run ahead
+        // of it: the MCP server is long-lived and auto-spawns its own daemon, so the check belongs
+        // on the startup stream that establishes the connection it keeps (ARCHITECTURE.md §9).
+        // The notice always goes to stderr here, `--json` or not: stdout carries MCP protocol
+        // frames, and stderr is this server's only log channel (ARCHITECTURE.md §9).
+        async () =>
+          handleMcpCommand({
+            stateDir,
+            checkVersion: await versionCheckFor((message) => void writers.stderr.write(message)),
+          }),
         {
           ...io,
           reporter: {
@@ -283,7 +376,11 @@ export const runCli = async (argv: string[], options: RunCliOptions = {}): Promi
           );
 
         case "start":
-          return executeCommand("daemon start", () => handleDaemonStartCommand({ stateDir, clock }), io);
+          return executeCommand(
+            "daemon start",
+            guarded(() => handleDaemonStartCommand({ stateDir, clock })),
+            io,
+          );
 
         case "stop":
           return executeCommand("daemon stop", () => handleDaemonStopCommand({ stateDir, clock }), io);

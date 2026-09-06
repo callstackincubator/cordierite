@@ -156,6 +156,9 @@ const renderToolDetail = (colors: ColorPalette, tool: ToolDescriptor): string[] 
     ["Input schema", tool.input_schema],
     ["Output schema", tool.output_schema],
     ["Annotations", tool.annotations],
+    // Only rendered for a tool that declares one; `renderFields` drops undefined rows, so a tool
+    // on the daemon's default deadline shows no line at all rather than a misleading "10000".
+    ["Timeout (ms)", tool.timeout_ms],
   ]);
 };
 
@@ -262,6 +265,9 @@ const renderDaemonStatusData = (colors: ColorPalette, data: DaemonStatusCommandD
       ["Path", data.audit.path],
       ["Failed writes", data.audit.failed_writes],
     ]),
+    // Version drift (issue #30) is the one thing here an operator has to act on, so it goes last
+    // — the line still on screen after the block scrolls — and in yellow, not a quiet field row.
+    ...(data.warning ? ["", colors.yellow(`Warning: ${data.warning}`)] : []),
   ];
 };
 
