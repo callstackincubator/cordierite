@@ -14,10 +14,13 @@ export type PolicyDecision = "allow" | "deny" | "prompt";
  * `config.json`'s `policy` shape (ARCHITECTURE.md §12): `default` applies to tools whose
  * descriptor has no `annotations.destructiveHint`; `destructive` applies when it is `true`;
  * `tools["<alias>/<name>"]` overrides both for one specific tool on one specific session alias.
- * `"prompt"` means "a human gate is required; if one cannot be guaranteed, deny" — today the only
- * such gate is an MCP client that honors `_meta["anthropic/requiresUserInteraction"]`
- * (ARCHITECTURE.md §9/§12); every other caller (CLI, a non-compliant MCP client) gets
- * `policy_denied` with reason `no_consent_channel`.
+ * `"prompt"` means "a human gate is required; if one cannot be guaranteed, deny" — today there are
+ * two such gates, both MCP-only (ARCHITECTURE.md §9/§12): an MCP client that declares the
+ * `elicitation` capability at `initialize` (issue #10, preferred whenever available) and an MCP
+ * client that honors `_meta["anthropic/requiresUserInteraction"]` (issue #14, Claude Code ≥
+ * v2.1.199, used only as a fallback for a client that doesn't declare elicitation). Every other
+ * caller (CLI, an MCP client on neither channel) gets `policy_denied` with reason
+ * `no_consent_channel`.
  */
 export type CordieritePolicyConfig = {
   default: PolicyDecision;
