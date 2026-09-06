@@ -160,19 +160,29 @@ export type ToolsCallParams = SessionSelectorParams & {
    * CLI's case) defaults to `"cli"` at the daemon. */
   caller?: "cli" | "mcp" | "client";
   /**
-   * Set by this codebase's own MCP server, and only when all of: (a) this tool's effective policy
-   * is `"prompt"`, (b) the server emitted `_meta["anthropic/requiresUserInteraction"]` for it in
-   * this connection's most recent `tools/list` response, and (c) the connected client's
-   * `initialize` `clientInfo` is one known to enforce that flag (`name === "claude-code"`, version
-   * ≥ 2.1.199). The daemon trusts this param verbatim once present — it is the sole evidence a
-   * human gate exists for a `"prompt"`-policy call, and everything else (CLI, a non-compliant MCP
-   * client) is denied (`policy_denied`, reason `no_consent_channel`). The daemon cannot itself
-   * re-verify an MCP client's behavior, so this is not a defense against another local process
-   * (one with access to the same `daemon.sock`) sending this param directly — see
-   * `docs/SECURITY.md`'s threat model, which already treats socket access as full daemon control.
-   * `"prompt"` fails closed by design: see issue #14 / ARCHITECTURE.md §12.
+   * Set by this codebase's own MCP server as evidence a `"prompt"`-policy tool's human gate was
+   * satisfied (ARCHITECTURE.md §12) — the daemon trusts this param verbatim once present, and
+   * everything else (CLI, an MCP client on neither channel) is denied (`policy_denied`, reason
+   * `no_consent_channel`). Two distinct channels set it, and the value tells the audit log which
+   * one fired (`daemon/audit.ts`):
+   * - `"client"` (issue #14): the server emitted `_meta["anthropic/requiresUserInteraction"]` for
+   *   this tool in this connection's most recent `tools/list` response, and the connected client's
+   *   `initialize` `clientInfo` is one known to enforce that flag (`name === "claude-code"`,
+   *   version ≥ 2.1.199). This is evidence the flag was emitted, not that a human answered — the
+   *   daemon never observes the client's own permission UI.
+   * - `"elicitation"` (issue #10): the server sent an `elicitation/create` request over this
+   *   connection and the client's reply was `action: "accept"`. This is the stronger of the two —
+   *   an observed decision, not merely an armed flag — and works on any client that declares the
+   *   `elicitation` capability at `initialize`, not just Claude Code. The two channels never both
+   *   arm for the same call: the MCP server prefers elicitation whenever the client declares it,
+   *   and skips emitting the `requiresUserInteraction` flag entirely in that case.
+   *
+   * The daemon cannot itself re-verify either channel's client-side behavior, so this is not a
+   * defense against another local process (one with access to the same `daemon.sock`) sending this
+   * param directly — see `docs/SECURITY.md`'s threat model, which already treats socket access as
+   * full daemon control. `"prompt"` fails closed by design when neither channel applies.
    */
-  consent?: "client";
+  consent?: "client" | "elicitation";
 };
 
 export type ToolsCallResult = {

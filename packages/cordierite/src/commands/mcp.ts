@@ -25,6 +25,8 @@ export type McpCommandContext = {
   checkVersion?: VersionCheckOptions;
   /** Overrides `config.json`'s `scheme` (there is no per-invocation flag for `mcp`, unlike `link`). */
   scheme?: string;
+  /** Overrides `config.json`'s `iosBundleId`; test seam, same shape as `scheme`. */
+  iosBundleId?: string;
   exec?: ExecFn;
   env?: NodeJS.ProcessEnv;
   /** Test seam: defaults to the real process stdin/stdout. */
@@ -50,6 +52,7 @@ export const handleMcpCommand = async (context: McpCommandContext): Promise<McpH
     spawn: context.spawn,
     checkVersion: context.checkVersion,
     scheme,
+    iosBundleId: context.iosBundleId ?? config.iosBundleId,
     exec: context.exec,
     env: context.env,
   });
