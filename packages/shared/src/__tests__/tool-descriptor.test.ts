@@ -1,9 +1,12 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  clampToolTimeoutMs,
   isObjectRootedSchema,
   isToolDescriptor,
   MAX_TOOL_DESCRIPTION_LENGTH,
+  MAX_TOOL_TIMEOUT_MS,
+  MIN_TOOL_TIMEOUT_MS,
   TOOL_NAME_PATTERN,
 } from "../domains/tool-descriptor.js";
 
@@ -78,6 +81,44 @@ describe("isToolDescriptor", () => {
     expect(isToolDescriptor({ ...valid(), annotations: { readOnlyHint: "yes" } })).toBe(false);
   });
 
+  test("accepts a positive integer timeout_ms", () => {
+    expect(isToolDescriptor({ ...valid(), timeout_ms: 60_000 })).toBe(true);
+    expect(isToolDescriptor({ ...valid(), timeout_ms: 1 })).toBe(true);
+  });
+
+  test("accepts a descriptor that omits timeout_ms (older apps keep the daemon default)", () => {
+    expect(isToolDescriptor(valid())).toBe(true);
+    expect(isToolDescriptor({ ...valid(), timeout_ms: undefined })).toBe(true);
+  });
+
+  test.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["a numeric string", "60000"],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["null", null],
+  ])("rejects a timeout_ms that is %s", (_label, timeout_ms) => {
+    expect(isToolDescriptor({ ...valid(), timeout_ms })).toBe(false);
+  });
+
+  test("ignores a camelCase timeoutMs: it is not the wire field, so it is neither honoured nor validated", () => {
+    // Every protocol-defined descriptor field is snake_case. A camelCase key is just an unknown
+    // extra: the guard must not read a deadline out of it, and must not reject the descriptor for
+    // it either (an app is free to carry its own extras).
+    const descriptor: unknown = { ...valid(), timeoutMs: 60_000 };
+    expect(isToolDescriptor(descriptor)).toBe(true);
+
+    if (isToolDescriptor(descriptor)) {
+      expect(descriptor.timeout_ms).toBeUndefined();
+    }
+
+    // …not even when its value is one the snake_case field would have been rejected for.
+    expect(isToolDescriptor({ ...valid(), timeoutMs: -1 })).toBe(true);
+    expect(isToolDescriptor({ ...valid(), timeoutMs: "nonsense" })).toBe(true);
+  });
+
   test("rejects null", () => {
     expect(isToolDescriptor(null)).toBe(false);
   });
@@ -150,5 +191,32 @@ describe("isObjectRootedSchema", () => {
   test("is only the root-type gate: object-rooted shapes MCP still rejects pass here", () => {
     expect(isObjectRootedSchema({ type: "object", properties: { a: true } })).toBe(true);
     expect(isObjectRootedSchema({ type: "object", required: "name" })).toBe(true);
+  });
+});
+
+describe("clampToolTimeoutMs", () => {
+  test("passes an in-range value through, truncated to whole milliseconds", () => {
+    expect(clampToolTimeoutMs(60_000)).toBe(60_000);
+    expect(clampToolTimeoutMs(1_500.9)).toBe(1_500);
+  });
+
+  test("clamps to the bounds the daemon enforces", () => {
+    expect(clampToolTimeoutMs(0)).toBe(MIN_TOOL_TIMEOUT_MS);
+    expect(clampToolTimeoutMs(-1)).toBe(MIN_TOOL_TIMEOUT_MS);
+    expect(clampToolTimeoutMs(999)).toBe(MIN_TOOL_TIMEOUT_MS);
+    expect(clampToolTimeoutMs(900_000)).toBe(MAX_TOOL_TIMEOUT_MS);
+    expect(clampToolTimeoutMs(Number.MAX_SAFE_INTEGER)).toBe(MAX_TOOL_TIMEOUT_MS);
+  });
+
+  test("always returns a value the descriptor guard accepts", () => {
+    for (const raw of [0, -1, 999, 1_000, 1_500.9, 60_000, 600_000, 900_000]) {
+      expect(
+        isToolDescriptor({
+          name: "t",
+          description: "d",
+          timeout_ms: clampToolTimeoutMs(raw),
+        }),
+      ).toBe(true);
+    }
   });
 });

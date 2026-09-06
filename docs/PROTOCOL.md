@@ -131,7 +131,8 @@ must always use the token from its most recent `session_ack`, never a cached old
   { "name": "sum", "description": "Add two numbers.",
     "input_schema": { "type": "object", "properties": { "a": { "type": "number" }, "b": { "type": "number" } }, "required": ["a", "b"] },
     "output_schema": { "type": "object", "properties": { "total": { "type": "number" } } },
-    "annotations": { "readOnlyHint": true } }
+    "annotations": { "readOnlyHint": true },
+    "timeout_ms": 60000 }
 ] }
 ```
 
@@ -232,7 +233,8 @@ can ask "what happened?" after the fact instead of only listening live.
   "description": "Add two numbers.",   // required, 1-4096 chars
   "input_schema": { /* draft 2020-12 JSON Schema */ },   // optional
   "output_schema": { /* draft 2020-12 JSON Schema */ },  // optional
-  "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true } }
+  "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true },
+  "timeout_ms": 60000 }                // optional, positive integer
 ```
 
 Schemas come from whatever the app registered the tool with: a Standard Schema JSON Schema
@@ -247,6 +249,20 @@ daemon never inspects a schema's internals — only that it is a JSON object.
 (`docs/ARCHITECTURE.md` §12):
 `destructiveHint: true` routes a call through `policy.destructive` instead of
 `policy.default`.
+
+`timeout_ms` is the tool's own declared per-call deadline, in milliseconds, and must be a
+positive integer when present — a snapshot carrying anything else (`0`, a negative, a
+fraction, a string) fails `isToolDescriptor` and invalidates the whole snapshot. The daemon
+uses it as the default deadline for a `tools.call` that carries no `timeoutMs` of its own,
+clamped to `[1000, 600000]` like any caller-supplied value; an explicit caller `timeoutMs`
+takes precedence, though a caller can only shorten the effective deadline, never extend it
+past the app's own abort timer (`docs/ARCHITECTURE.md` §5). Note the spellings: `timeout_ms`
+is snake_case here like every other protocol-defined descriptor field, while the RN
+`registerTool` option and the `tools.call` RPC param are `timeoutMs` — those are camelCase
+layers. A camelCase key on this descriptor is an unknown extra, not a deadline. It is the app's *explicit* per-tool value only —
+never an app-wide default such as `defaultToolTimeoutMs`. Older apps omit the field
+entirely and keep the daemon's 10 s default, so it is safe to add in either direction. It
+is a daemon-side scheduling hint and is never emitted on the MCP `Tool` JSON.
 
 ## 6. Session state machine
 

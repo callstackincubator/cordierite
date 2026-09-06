@@ -33,7 +33,7 @@ The command writes an unencrypted PEM private key (PKCS#8) to `<state-dir>/key.p
 | `cordierite link [--ttl <s>] [--qr] [--open android\|ios-sim] [--scheme <s>]` | mint a pending session and print its deep link |
 | `cordierite ls` | list sessions: alias, state, device, tool count |
 | `cordierite tools [selector] [name] [--full]` | list a session's tools, or show one tool's full schema |
-| `cordierite invoke [selector] <tool> --input '<json>' [--timeout <ms>]` | call a tool |
+| `cordierite invoke [selector] <tool> --input '<json>' [--timeout <ms>]` | call a tool. `--timeout` (clamped to 1 000–600 000 ms) can **shorten** the deadline but cannot extend it past the app's own timer: the app aborts the handler at the tool's declared `timeoutMs`, or 10 s for a tool that declares none, whatever the caller asks for. Give a slow tool more room by declaring `timeoutMs` on its registration |
 | `cordierite events [selector] [--follow] [--since <cursor>]` | stream session/tool events (default), or one-shot pull everything retained since `<cursor>` (`--since`); `--json` emits NDJSON |
 | `cordierite revoke [selector]` | revoke a session |
 | `cordierite daemon run\|start\|stop\|status` | daemon lifecycle |

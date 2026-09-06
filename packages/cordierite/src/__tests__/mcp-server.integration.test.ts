@@ -27,7 +27,7 @@ import {
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { decodeBootstrap } from "@cordierite/shared";
+import { decodeBootstrap, type ToolDescriptor } from "@cordierite/shared";
 
 import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { createMcpServer, type McpServerHandle } from "../mcp/server.js";
@@ -199,12 +199,7 @@ const claimApp = async (daemon: RunningDaemon, port: number, deviceModel = "Pixe
 const snapshotTools = async (
   daemon: RunningDaemon,
   app: ClaimedApp,
-  tools: Array<{
-    name: string;
-    description?: string;
-    input_schema?: Record<string, unknown>;
-    output_schema?: Record<string, unknown>;
-  }>,
+  tools: Array<Partial<ToolDescriptor> & { name: string }>,
 ): Promise<void> => {
   const toolsChanged = waitForEvent(daemon, "tools_changed");
   app.socket.send(
@@ -481,6 +476,61 @@ describe("mcp: tools/list and tools/call", () => {
 
     app.socket.close();
   });
+
+  test("a tool declaring a timeoutMs above the daemon default gets it, over MCP, end to end (issue #25)", async () => {
+    const { daemon, stateDir, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    // 20 s > DEFAULT_CALL_TIMEOUT_MS (10 s): before this fix the descriptor's timeout never left
+    // the app, the daemon applied its 10 s default, and the answer below arrived to a call that
+    // had already been rejected as `tool_timeout`. The gap between the 11 s reply and this 20 s
+    // deadline is headroom for a slow runner, so drift cannot turn this into a real timeout.
+    await snapshotTools(daemon, app, [
+      { name: "slow-login", timeout_ms: 20_000 },
+    ]);
+
+    const handle = await createMcpHandle(stateDir);
+    const client = await connectInMemoryClient(handle);
+
+    // The deadline is a daemon-side scheduling hint, never part of the MCP tool contract.
+    const listed = await client.request(
+      { method: "tools/list", params: {} },
+      ListToolsResultSchema,
+    );
+    const proxied = withoutBuiltinTools(listed.tools)[0]!;
+    expect(proxied.name).toBe("slow-login");
+    expect("timeout_ms" in proxied).toBe(false);
+    expect("timeoutMs" in proxied).toBe(false);
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+
+      if (msg.type === "tool_call") {
+        setTimeout(() => {
+          app.socket.send(
+            JSON.stringify({
+              type: "tool_result",
+              session_id: app.sessionId,
+              id: msg.id,
+              result: { loggedIn: true },
+            }),
+          );
+        }, 11_000);
+      }
+    });
+
+    const called = await client.request(
+      { method: "tools/call", params: { name: "slow-login", arguments: {} } },
+      CallToolResultSchema,
+      // Above the MCP server's own derived transport timeout (20 s + 5 s slack) so this client's
+      // watchdog can never be what the assertion actually measures.
+      { timeout: 35_000 },
+    );
+
+    expect(called.isError).not.toBe(true);
+    expect(called.structuredContent).toEqual({ loggedIn: true });
+
+    app.socket.close();
+  }, 45_000);
 
   test("tool_call_progress frames map to MCP progress notifications when the client sends a progressToken", async () => {
     const { daemon, stateDir, port } = await startTestDaemon();

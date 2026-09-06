@@ -1,5 +1,8 @@
 import {
+  clampToolTimeoutMs,
   isObjectRootedSchema,
+  MAX_TOOL_TIMEOUT_MS,
+  MIN_TOOL_TIMEOUT_MS,
   type StandardSchemaV1,
   type StandardSchemaV1JsonSchema,
   type ToolDescriptor,
@@ -291,7 +294,8 @@ const hasJsonSchemaExporter = (
 };
 
 type ConverterOutcome =
-  { ok: true; schema: ToolSchemaDescriptor } | { ok: false; reason: string };
+  | { ok: true; schema: ToolSchemaDescriptor }
+  | { ok: false; reason: string };
 
 const describe = (value: unknown): string => {
   if (Array.isArray(value)) {
@@ -476,10 +480,69 @@ export const validateToolSchema = async (
 /** A tool definition whose schemas have already been through `normalizeToolSchema`. */
 export type CordieriteNormalizedToolDefinition = Pick<
   CordieriteToolDefinition,
-  "name" | "description" | "annotations"
+  "name" | "description" | "annotations" | "timeoutMs"
 > & {
   inputSchema?: CordieriteNormalizedToolSchema;
   outputSchema?: CordieriteNormalizedToolSchema;
+};
+
+/** Dedupes the timeout warnings below per tool name, matching `warnMissingSchemaExporter`. */
+const timeoutWarningsSeen = new Set<string>();
+
+const warnOnceAboutTimeout = (toolName: string, message: string): void => {
+  if (timeoutWarningsSeen.has(toolName)) {
+    return;
+  }
+  timeoutWarningsSeen.add(toolName);
+  logger.devWarn(message);
+};
+
+/**
+ * Normalizes a tool's declared `timeoutMs` into the one number both timers use (issue #25).
+ *
+ * A declared timeout now feeds two clocks: this app's abort timer and, via the descriptor, the
+ * daemon's `tools.call` timer. The daemon clamps whatever it is given to
+ * [{@link MIN_TOOL_TIMEOUT_MS}, {@link MAX_TOOL_TIMEOUT_MS}], so passing an out-of-range value
+ * through untouched would make the two disagree — declare 900_000 and the daemon gives up at ten
+ * minutes while the handler runs five minutes longer; declare 500 and this app aborts before the
+ * daemon's one-second floor. Clamping here, with the shared bounds, keeps a single deadline.
+ *
+ * A value the daemon's `isToolDescriptor` could never accept is dropped instead of clamped: the
+ * guard rejects the *whole* registry snapshot over one bad field, closing the session as
+ * `invalid_registry`. An app-side `timeoutMs` was never validated before (it only fed a local
+ * `setTimeout`), so a tool declaring something odd must degrade to the default rather than take
+ * the session down.
+ */
+export const normalizeToolTimeoutMs = (
+  timeoutMs: number | undefined,
+  toolName: string,
+): number | undefined => {
+  if (timeoutMs === undefined) {
+    return undefined;
+  }
+
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
+    warnOnceAboutTimeout(
+      toolName,
+      `Tool "${toolName}" declares a timeoutMs of ${String(timeoutMs)}, which is not a finite ` +
+        "number of milliseconds. It is ignored, so this tool falls back to the default deadline.",
+    );
+    return undefined;
+  }
+
+  const clamped = clampToolTimeoutMs(timeoutMs);
+
+  if (clamped !== timeoutMs) {
+    warnOnceAboutTimeout(
+      toolName,
+      `Tool "${toolName}" declares a timeoutMs of ${String(timeoutMs)}, outside the supported ` +
+        `range of ${String(MIN_TOOL_TIMEOUT_MS)}-${String(MAX_TOOL_TIMEOUT_MS)}ms. It is clamped ` +
+        `to ${String(clamped)}ms, which is what both this app's handler timeout and the daemon's ` +
+        "call deadline use.",
+    );
+  }
+
+  return clamped;
 };
 
 export const toToolDescriptor = (
@@ -493,6 +556,10 @@ export const toToolDescriptor = (
   const outputSchema = exportToolSchema(
     definition.outputSchema,
     "output",
+    definition.name,
+  );
+  const wireTimeoutMs = normalizeToolTimeoutMs(
+    definition.timeoutMs,
     definition.name,
   );
 
@@ -512,5 +579,9 @@ export const toToolDescriptor = (
     ...(definition.annotations !== undefined
       ? { annotations: definition.annotations }
       : {}),
+    // Only the tool's *explicit* `timeoutMs` travels on the wire — never the app-wide
+    // `defaultToolTimeoutMs`, which stays a purely app-side fallback. Omitted entirely (no
+    // `timeout_ms: undefined` key) when the tool declares none, so the daemon keeps its default.
+    ...(wireTimeoutMs !== undefined ? { timeout_ms: wireTimeoutMs } : {}),
   };
 };

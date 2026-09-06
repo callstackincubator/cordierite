@@ -150,6 +150,36 @@ Methods:
 `SessionSummary`: `{ sessionId, alias, state, device: { manufacturer?, model?, os? },
 createdAt, claimedAt?, suspendedAt?, toolCount }`.
 
+**`tools.call` deadline.** The daemon's per-call deadline is `timeoutMs ?? tool.timeout_ms`
+— an explicit caller `timeoutMs` first, then the tool's own declared `timeout_ms` from its
+descriptor (`docs/PROTOCOL.md` §5), then `DEFAULT_CALL_TIMEOUT_MS` (10 000 ms) for a tool
+that declares nothing. Whatever that resolves to is clamped to
+`[MIN_TOOL_TIMEOUT_MS, MAX_TOOL_TIMEOUT_MS]` = `[1 000, 600 000]` ms; overshooting it
+rejects with `tool_timeout`.
+
+**A caller can shorten the deadline but cannot extend it past the app's own timer.** The
+app runs an independent abort timer per call (§11), set from the tool's declared
+`timeoutMs` or the client-wide `defaultToolTimeoutMs`, and it aborts the handler and
+answers `tool_timeout` at that point no matter what the caller asked for. So a caller
+`timeoutMs` below the app's timer genuinely shortens the call, while one above it only
+moves the daemon's own giving-up point — the app still stops first. For a tool that
+declares nothing, that ceiling is the app's 10 s default: `--timeout 60000` against such a
+tool does not buy it sixty seconds. Extending a tool's budget is the app's decision, made
+by declaring `timeoutMs` on the registration.
+
+Callers that hold their own transport watchdog over a `tools.call` (the MCP server,
+`cordierite invoke`, `cordierite/client`) must size it from the same arithmetic —
+`deriveCallTransportTimeoutMs` (`daemon/calls.ts`) is that clamp plus 5 000 ms of slack —
+so the daemon's `tool_timeout` always arrives first and the real error type reaches the
+caller instead of a generic transport failure. A caller that knows the effective deadline
+sizes the watchdog from it (the MCP server reads the tool's `timeout_ms` straight off its
+`tools.list` entry); a caller that does not — `invoke` with no `--timeout`,
+`AppClient.call` with no `timeoutMs`, both of which leave the deadline to the tool's own
+undeclared-to-them value — sizes it from `MAX_TOOL_TIMEOUT_MS` instead. That
+backstop is only ever reached by a daemon that accepts a request and then answers nothing:
+a daemon that dies or drops the socket rejects every pending call at once
+(`rpc/client.ts`'s `close` handler), so nothing waits on the long timer in practice.
+
 `daemon.status`'s result also reports the effective policy config and audit surfacing:
 `{ ..., policy: { default, destructive, tools? }, audit: { path, failedWrites } }` (§12).
 
@@ -295,6 +325,23 @@ proxies daemon RPC (auto-spawning the daemon like any client):
   a client still holding the older listing keeps demanding `structuredContent` for it until it
   re-lists. `notifications/tools/list_changed` fires on exactly that change, so the window is the
   client's own refresh latency, not something the server can close.
+- A proxied `tools/call` sends the tool's own declared `timeout_ms` (clamped, §5) as the
+  call's `timeoutMs` param, and sizes its daemon connection's request timeout from that same
+  number via `deriveCallTransportTimeoutMs` (§5). It is sent explicitly rather than left to
+  the daemon's `?? tool.timeout_ms` fallback so both numbers come from one value: the MCP
+  server resolves the tool from a `tools/list` snapshot while the daemon reads its live
+  registry, and a re-registration in between would otherwise leave a watchdog sized for the
+  old deadline to fire first and mask the daemon's real `tool_timeout`. A tool that declares
+  nothing gets the same 10 s default folded in by that clamp, so there is one number rather
+  than a conditional. Without any of this the connection's own 10 s default would race the
+  daemon's timer, and a long tool would surface as a generic transport error rather than
+  being reachable at all.
+- None of that lifts the MCP **client's** own per-request timeout, which is a third ceiling
+  outside this daemon's control (the SDK's default is 60 s, and Claude Code allows a stdio
+  tool call far longer). A tool declaring more than the calling agent will wait for still
+  fails on the client side, so a genuinely long tool should report progress — a
+  `progressToken` call resets many clients' idle timer — rather than rely on the deadline
+  alone.
 - Two built-in management tools, `cordierite_connect` and `cordierite_wait_for_session`,
   let an agent mint a bootstrap link, deliver it to an emulator/simulator, and wait for the
   claim — without shell access. This is what makes the agent path self-service.
@@ -473,7 +520,16 @@ Client behavior:
   `ToolDescriptor` (§7) is unchanged by any of this — it already carries draft 2020-12
   JSON Schema, so the whole contract is app-side.
 - App-side handler timeout: if a handler exceeds the call timeout hint, abort its
-  `AbortSignal`, reply `tool_timeout`, and ignore the late result.
+  `AbortSignal`, reply `tool_timeout`, and ignore the late result. The hint is the tool's
+  own `timeoutMs`, falling back to the client-wide `defaultToolTimeoutMs`. This timer is
+  the real ceiling on a call: a caller's `tools.call` `timeoutMs` can shorten the deadline
+  but never extend it past this point, because the app stops the handler here regardless.
+  Only the
+  *explicit* per-tool value travels on the descriptor (`docs/PROTOCOL.md` §5), where it
+  becomes the daemon's default deadline for that tool (§5) — so a tool that declares one
+  has the app timer and the daemon timer agree instead of the daemon giving up at 10 s
+  first. `defaultToolTimeoutMs` deliberately stays app-side: putting it on the wire would
+  silently retune the daemon's deadline for every tool in the app.
 - Cancellation: `tool.handler(args, context)`'s `context.signal` (`AbortSignal`) aborts on
   a `tool_cancel` frame (§7) or when the session's transport is lost (suspend) — the
   latter can't itself deliver `tool_cancel` (there is no socket left), so it aborts every

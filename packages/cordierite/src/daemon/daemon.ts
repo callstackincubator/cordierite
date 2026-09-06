@@ -595,7 +595,15 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
           // be exposed to the RPC caller and stamped on every event in this call's lifecycle — the
           // MCP server correlates its own in-flight `tools.call` against `tool_call_progress`
           // notifications by this id, unambiguous under concurrent calls.
-          const { callId, result: callResult } = activeCallsManager.call(session, name, args, timeoutMs);
+          const { callId, result: callResult } = activeCallsManager.call(
+            session,
+            name,
+            args,
+            // The caller's explicit `timeoutMs` wins; otherwise the tool's own declared deadline is
+            // the default, and only if it declares none does `clampTimeout` fall back to
+            // DEFAULT_CALL_TIMEOUT_MS (issue #25).
+            timeoutMs ?? tool.timeout_ms,
+          );
 
           // If the connection that issued this tools.call drops while the call is still pending
           // (CLI Ctrl-C, MCP client disconnect), tell the app to stop rather than leaving an

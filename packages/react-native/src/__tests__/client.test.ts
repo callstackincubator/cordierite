@@ -16,6 +16,7 @@ import type {
 } from "../Cordierite.types";
 import { createCordieriteClient } from "../client";
 import type { AppStateLike, AppStateStatus } from "../client/app-state";
+import { createToolRegistry, type RegistryDelta } from "../client/registry";
 import type { ClientTimerHandle, ClientTimers } from "../client/timers";
 
 (globalThis as { __DEV__?: boolean }).__DEV__ = true;
@@ -1018,6 +1019,88 @@ describe("createCordieriteClient: tool registry", () => {
           (arg) => typeof arg === "string" && arg.includes("already registered")
         )
       )
+    ).toBe(true);
+  });
+
+  test("only an explicitly declared timeoutMs reaches the descriptor, never defaultToolTimeoutMs (issue #25)", () => {
+    const nativeModule = createMockModule();
+    const client = createCordieriteClient(nativeModule, {
+      defaultToolTimeoutMs: 45_000,
+    });
+
+    client.registerTool({
+      name: "declared",
+      description: "Declares its own deadline",
+      timeoutMs: 60_000,
+      handler: () => {},
+    });
+    client.registerTool({
+      name: "undeclared",
+      description: "Declares nothing",
+      handler: () => {},
+    });
+
+    // The app-wide default is an app-side abort-timer fallback only: putting it on the wire would
+    // silently retune every older app's daemon-side deadline.
+    expect(client.getRegisteredTools()).toEqual([
+      {
+        name: "declared",
+        description: "Declares its own deadline",
+        timeout_ms: 60_000,
+      },
+      { name: "undeclared", description: "Declares nothing" },
+    ]);
+  });
+
+  test("an out-of-range timeoutMs is clamped once, so the app timer and the wire agree (issue #25)", () => {
+    const deltas: RegistryDelta[] = [];
+    const registry = createToolRegistry({
+      defaultTimeoutMs: 45_000,
+      onDelta: (delta) => deltas.push(delta),
+    });
+
+    const warnings: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+
+    try {
+      registry.registerTool({
+        name: "way-too-long",
+        description: "Declares longer than the daemon will ever allow",
+        timeoutMs: 900_000,
+        handler: () => {},
+      });
+      registry.registerTool({
+        name: "undeclared",
+        description: "Declares nothing",
+        handler: () => {},
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    // The descriptor is what the daemon's call timer will be built from …
+    expect(registry.getDescriptors()).toEqual([
+      {
+        name: "way-too-long",
+        description: "Declares longer than the daemon will ever allow",
+        timeout_ms: 600_000,
+      },
+      { name: "undeclared", description: "Declares nothing" },
+    ]);
+
+    // … and the registry entry is what this app's abort timer uses. They must be the same number,
+    // or the handler keeps running for five minutes after the daemon has already given up.
+    expect(registry.entries.get("way-too-long")?.timeoutMs).toBe(600_000);
+    // A tool that declares nothing still falls back to the app-wide default, unchanged.
+    expect(registry.entries.get("undeclared")?.timeoutMs).toBe(45_000);
+
+    expect(
+      warnings.some((args) =>
+        args.some((arg) => typeof arg === "string" && arg.includes("clamped")),
+      ),
     ).toBe(true);
   });
 

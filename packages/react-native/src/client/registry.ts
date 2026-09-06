@@ -63,6 +63,7 @@ export const createToolRegistry = (deps: ToolRegistryDeps): ToolRegistry => {
       inputSchema,
       outputSchema,
       annotations: registration.annotations,
+      timeoutMs: registration.timeoutMs,
     });
 
     if (entries.has(registration.name)) {
@@ -79,7 +80,11 @@ export const createToolRegistry = (deps: ToolRegistryDeps): ToolRegistry => {
       inputSchema,
       outputSchema,
       handler: registration.handler as CordieriteToolHandler,
-      timeoutMs: registration.timeoutMs ?? deps.defaultTimeoutMs,
+      // Read back off the descriptor, not off `registration`, so this abort timer is the exact
+      // number the daemon's call timer will use (issue #25): `toToolDescriptor` has already
+      // clamped it to the shared bounds, or dropped a value the daemon could not accept — in
+      // which case both sides fall back to their own default rather than disagreeing.
+      timeoutMs: descriptor.timeout_ms ?? deps.defaultTimeoutMs,
     });
 
     logger.debug("registerTool", registration.name);

@@ -156,6 +156,9 @@ const renderToolDetail = (colors: ColorPalette, tool: ToolDescriptor): string[] 
     ["Input schema", tool.input_schema],
     ["Output schema", tool.output_schema],
     ["Annotations", tool.annotations],
+    // Only rendered for a tool that declares one; `renderFields` drops undefined rows, so a tool
+    // on the daemon's default deadline shows no line at all rather than a misleading "10000".
+    ["Timeout (ms)", tool.timeout_ms],
   ]);
 };
 
