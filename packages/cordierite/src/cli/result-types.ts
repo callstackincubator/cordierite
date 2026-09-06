@@ -162,8 +162,22 @@ export type DaemonStatusCommandData = {
     destructive: EffectivePolicyDecision;
     tools?: Record<string, EffectivePolicyDecision>;
   };
+  /**
+   * `path`/`failed_writes` come from every daemon version. The retention fields are optional
+   * because a daemon started before retention existed answers `daemon.status` without them, and a
+   * newer CLI can be pointed at exactly that daemon. Absent is reported as absent — omitted from
+   * `--json` and skipped in the human rendering — rather than defaulted to `0`, which would state
+   * "this daemon retains nothing and has zero day files" when the truth is that it was never
+   * asked. `daemon.version` is the field that explains why they are missing.
+   */
   audit: {
     path: string;
     failed_writes: number;
+    failed_prunes?: number;
+    retention_days?: number;
+    /** Retained `audit/<YYYY-MM-DD>.jsonl` day files. */
+    files?: number;
+    /** Total bytes across those files. */
+    bytes?: number;
   };
 };

@@ -48,6 +48,7 @@ import { acquirePidfile, type PidfileHandle } from "./pidfile.js";
 import { RpcApplicationError, startRpcServer, type RpcServer } from "./rpc-server.js";
 import { createSessionManager, type SessionManager } from "./sessions.js";
 import { ensureStateDir, getSocketPath, getStateDirPaths, type StateDirPaths } from "./state-dir.js";
+import { systemTimers, type IntervalHandle, type TimerFns } from "./timers.js";
 import { createTlsManager, toAgentEndpoint, type TlsManager } from "./tls.js";
 
 /** Used to validate `events.subscribe`/`events.since`'s `kinds` filter. */
@@ -66,10 +67,15 @@ type EventSubscription = {
  */
 const packageVersion = (): string => getDaemonReportedVersion();
 
+/** How often audit retention runs after the startup prune (ARCHITECTURE.md §3: "once a day"). */
+export const AUDIT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
 export type DaemonOptions = {
   stateDir: string;
   clock?: Clock;
   warn?: ConfigWarnFn;
+  /** Timer seam for the daily audit-retention sweep; defaults to real timers. */
+  timers?: TimerFns;
   /** Advertised-address detector; defaults to `detectAdvertisedAddress` honoring
    * `config.advertisedIp`. Overridable so tests can simulate a network change between two
    * `link.create` calls without mocking `os.networkInterfaces()` process-wide. */
@@ -89,14 +95,19 @@ export type RunningDaemon = {
   shutdown: () => Promise<void>;
 };
 
-const buildStatusResult = (
+const buildStatusResult = async (
   config: CordieriteConfig,
   startedAt: Date,
   tls: TlsManager,
   sessionManager: SessionManager,
   auditLogger: AuditLogger,
   auditDir: string,
-): DaemonStatusResult => {
+): Promise<DaemonStatusResult> => {
+  // The audit directory footprint is measured on demand rather than tracked incrementally: this
+  // handler runs at most once per `cordierite daemon status`, and a stat per day file is cheaper
+  // and far harder to get wrong than a running total that must survive pruning and restarts.
+  const stats = await auditLogger.stats();
+
   return {
     version: packageVersion(),
     pid: process.pid,
@@ -106,7 +117,14 @@ const buildStatusResult = (
     sessions: sessionManager.list(),
     pendingLinks: sessionManager.pendingLinkCount(),
     policy: config.policy,
-    audit: { path: auditDir, failedWrites: auditLogger.failedWrites() },
+    audit: {
+      path: auditDir,
+      failedWrites: auditLogger.failedWrites(),
+      failedPrunes: auditLogger.failedPrunes(),
+      retentionDays: config.auditRetentionDays,
+      files: stats.files,
+      bytes: stats.bytes,
+    },
   };
 };
 
@@ -303,6 +321,7 @@ const asLinkCreateParams = (params: unknown): LinkCreateParams => {
 
 export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon> => {
   const clock = options.clock ?? { now: () => new Date() };
+  const timers = options.timers ?? systemTimers;
   const paths = getStateDirPaths(options.stateDir);
 
   await ensureStateDir(options.stateDir);
@@ -311,8 +330,14 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
   const startedAt = clock.now();
   // Created eagerly (before anything else can fail) so shutdown can always flush it, and so a
   // startup failure before the RPC server exists still gets a chance to record what happened.
-  const auditLogger = createAuditLogger({ auditDir: paths.auditDir, clock });
+  const auditLogger = createAuditLogger({
+    auditDir: paths.auditDir,
+    clock,
+    retentionDays: config.auditRetentionDays,
+    warn: options.warn,
+  });
 
+  let auditPruneInterval: IntervalHandle | undefined;
   let pidfile: PidfileHandle | undefined;
   let server: RpcServer | undefined;
   let listener: DaemonListener | undefined;
@@ -333,6 +358,13 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
     shuttingDown = true;
 
     try {
+      // Cleared first so a long teardown can't have the daily sweep fire into a half-torn-down
+      // daemon, and so nothing keeps the event loop (or a test runner) alive after `exited`.
+      if (auditPruneInterval !== undefined) {
+        timers.clearInterval(auditPruneInterval);
+        auditPruneInterval = undefined;
+      }
+
       // Reject any calls still in flight before the sockets that would have answered them go away.
       callsManager?.disposeAll();
       // ARCHITECTURE.md §4: close all device sockets (1001) before tearing down the control plane.
@@ -441,7 +473,7 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
     server = await startRpcServer({
       socketPath: getSocketPath(paths),
       dispatch: {
-        [RPC_METHODS.daemonStatus]: (): DaemonStatusResult => {
+        [RPC_METHODS.daemonStatus]: async (): Promise<DaemonStatusResult> => {
           return buildStatusResult(config, startedAt, tls, activeSessionManager, auditLogger, paths.auditDir);
         },
         [RPC_METHODS.daemonShutdown]: (_params, context): DaemonShutdownResult => {
@@ -681,8 +713,21 @@ export const startDaemon = async (options: DaemonOptions): Promise<RunningDaemon
         },
       },
     });
+    // ARCHITECTURE.md §3: audit retention runs once at startup and once a day thereafter. Both are
+    // fire-and-forget — `prune` never rejects, and a daemon must start (and keep running) whether
+    // or not it can delete an old day file. The interval is cleared in `shutdown` (and in the
+    // startup-failure path below) so it never outlives the daemon that scheduled it.
+    auditPruneInterval = timers.setInterval(() => {
+      void auditLogger.prune();
+    }, AUDIT_PRUNE_INTERVAL_MS);
+    void auditLogger.prune();
   } catch (error) {
     // Never leave a half-acquired pidfile/listener/socket behind when startup fails partway through.
+    if (auditPruneInterval !== undefined) {
+      timers.clearInterval(auditPruneInterval);
+      auditPruneInterval = undefined;
+    }
+
     callsManager?.disposeAll();
     sessionManager?.disposeAll(1001, "daemon_startup_failed");
     await listener?.close();
