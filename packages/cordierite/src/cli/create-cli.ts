@@ -37,8 +37,19 @@ export const createCli = () => {
       "--scheme <scheme>",
       "Deep-link URI scheme (also: CORDIERITE_SCHEME; default: app.json's \"expo.scheme\").",
     )
-    .option("--open <target>", "Deliver the link automatically via adb/simctl (android|ios-sim).")
-    .option("--device <id>", "adb serial or simulator udid to target when --open is ambiguous.");
+    .option(
+      "--open <target>",
+      "Deliver the link automatically via adb/simctl/devicectl (android|ios-sim|ios-device; ios-device is experimental).",
+    )
+    .option("--device <id>", "adb serial, simulator udid or paired-device udid to target when --open is ambiguous.")
+    .option(
+      "--bundle-id <id>",
+      "App bundle id for --open ios-device (default: config.json's \"iosBundleId\").",
+    )
+    .option(
+      "--relaunch",
+      "With --open ios-device, terminate a running instance first (try this if delivery to an already-running app does nothing).",
+    );
 
   cli.command("ls", "List Cordierite sessions.");
 

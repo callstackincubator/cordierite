@@ -8,14 +8,22 @@
  * One persistent daemon connection (`stream`) is used for everything except progress-correlated
  * `tools.call`s, which get their own short-lived connection (see `callProxiedTool` below) so the
  * `tool_call_started` event that reveals the call's `callId` is unambiguous.
+ *
+ * This is also where both `"prompt"`-policy consent channels live (ARCHITECTURE.md §12):
+ * `resolveToolCallConsent` prefers `elicitation/create` (issue #10, any client that declares the
+ * `elicitation` capability) over the `_meta["anthropic/requiresUserInteraction"]` flag (issue #14,
+ * Claude Code ≥ v2.1.199 only), and the two never arm for the same call — see
+ * `clientSupportsElicitation` and the `tools/list` handler below.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   CallToolRequestSchema,
+  ErrorCode,
   ListResourcesRequestSchema,
   ListToolsRequestSchema,
+  McpError,
   ReadResourceRequestSchema,
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -145,6 +153,117 @@ const clientHonorsRequiresUserInteraction = (server: Server): boolean => {
   return clientInfo?.name === "claude-code" && isVersionAtLeast(clientInfo.version, REQUIRES_USER_INTERACTION_MIN_VERSION);
 };
 
+/**
+ * Whether the connected MCP client declared the `elicitation` capability at `initialize`
+ * (ARCHITECTURE.md §12 / issue #10) — the preferred `"prompt"`-policy consent channel, checked
+ * fresh on every call rather than cached (same principle as `clientHonorsRequiresUserInteraction`
+ * above: nothing about consent is trusted from a stale snapshot). A bare `elicitation: {}` from the
+ * client normalizes to `{ form: {} }` in the SDK's parsed capabilities (backwards-compat default),
+ * which is what `server.elicitInput`'s own form-mode request actually requires — this check only
+ * needs to know the key is present at all, and lets `elicitInput` itself fail (caught below, and
+ * treated as "no channel", never as approval) if the specific mode turns out unsupported.
+ */
+const clientSupportsElicitation = (server: Server): boolean => {
+  return server.getClientCapabilities()?.elicitation !== undefined;
+};
+
+/** Bounds an elicitation's wait server-side (ARCHITECTURE.md §9/§12 / issue #10) — comfortably
+ * under the 30-minute idle window a stdio MCP tool call gets before Claude Code aborts it, so an
+ * unanswered prompt resolves as a clean decline-shaped result naming the timeout rather than an
+ * opaque abort at the transport's own limit. */
+const ELICITATION_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Caps how much of a call's JSON-stringified `args` is rendered into an elicitation message body —
+ * plenty to show a human what's about to run without flooding a prompt UI with a large payload. */
+const ELICITATION_ARGS_PREVIEW_MAX_CHARS = 2048;
+
+const formatElicitationArgsPreview = (args: Record<string, unknown>): string => {
+  const json = JSON.stringify(args);
+
+  if (json.length <= ELICITATION_ARGS_PREVIEW_MAX_CHARS) {
+    return json;
+  }
+
+  return `${json.slice(0, ELICITATION_ARGS_PREVIEW_MAX_CHARS)}… [truncated at ${ELICITATION_ARGS_PREVIEW_MAX_CHARS} of ${json.length} characters]`;
+};
+
+/** Names the session alias, the tool, and the actual arguments — the human answering this prompt
+ * has nothing else to go on (ARCHITECTURE.md §12 / issue #10). */
+const buildElicitationMessage = (tool: NamespacedTool, args: Record<string, unknown>): string => {
+  return (
+    `Cordierite: allow the MCP tool "${tool.descriptor.name}" to run on session "${tool.selector}"? ` +
+    `Arguments: ${formatElicitationArgsPreview(args)}`
+  );
+};
+
+/** Thrown from `callProxiedTool` when the human declined or cancelled an elicitation prompt (or it
+ * timed out), so the outer `tools/call` handler can turn it into an ordinary MCP tool **result**
+ * with `isError: true` — never a thrown protocol-level error — matching every other error path in
+ * this file (`toolErrorContentFromError` below): the agent reading the result must be able to
+ * branch on "the user said no" the same way it branches on any other tool error. */
+class ElicitationDeclinedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ElicitationDeclinedError";
+  }
+}
+
+/**
+ * Sends one `elicitation/create` request for a `"prompt"`-policy call and interprets the reply
+ * (ARCHITECTURE.md §12 / issue #10). Three outcomes:
+ * - `"accepted"`: the daemon call proceeds with `consent: "elicitation"`.
+ * - `"declined"`: an explicit decline, a cancel, or a server-side timeout — all render as the same
+ *   decline-shaped result to the agent; the daemon is never called.
+ * - `"no-channel"`: the request itself failed even though the client declared the capability (it
+ *   rejected `elicitation/create` as unsupported despite advertising it, a transport error, ...).
+ *   This is deliberately **not** treated as approval — the caller falls through with no consent
+ *   marker, which yields the daemon's existing `policy_denied`/`no_consent_channel` fail-closed
+ *   path, exactly as if no channel had ever been offered.
+ */
+const requestElicitationConsent = async (
+  server: Server,
+  tool: NamespacedTool,
+  args: Record<string, unknown>,
+  // Injectable so tests can exercise the timeout branch without an actual 10-minute wait; every
+  // production caller passes `ELICITATION_TIMEOUT_MS` (via `CreateMcpServerOptions.elicitationTimeoutMs`).
+  timeoutMs: number,
+): Promise<{ type: "accepted" } | { type: "declined"; message: string } | { type: "no-channel" }> => {
+  try {
+    const result = await server.elicitInput(
+      {
+        message: buildElicitationMessage(tool, args),
+        // The accept/decline/cancel action itself is the consent signal — nothing is actually being
+        // collected, so the schema asks for no fields. An empty `properties` record is a valid
+        // restricted-JSON-Schema object per the MCP spec (the SDK's request schema requires the key
+        // but not that it be non-empty), and renders as a plain confirm/decline prompt.
+        requestedSchema: { type: "object", properties: {} },
+      },
+      { timeout: timeoutMs },
+    );
+
+    if (result.action === "accept") {
+      return { type: "accepted" };
+    }
+
+    return {
+      type: "declined",
+      message: `The user ${result.action === "cancel" ? "cancelled" : "declined"} the request to call "${tool.descriptor.name}" on session "${tool.selector}".`,
+    };
+  } catch (error) {
+    if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
+      return {
+        type: "declined",
+        message: `Timed out after ${timeoutMs / 1000}s waiting for a human to respond to the consent prompt for "${tool.descriptor.name}" on session "${tool.selector}".`,
+      };
+    }
+
+    // The client declared the `elicitation` capability at `initialize` but the request itself
+    // failed anyway (rejected as unsupported, transport error, ...). Never treat a failure as
+    // approval.
+    return { type: "no-channel" };
+  }
+};
+
 const toolSuccessContent = (result: unknown): CallToolResult => {
   const content = [{ type: "text" as const, text: JSON.stringify(result) }];
 
@@ -174,6 +293,12 @@ const toolErrorContentFromError = (error: unknown): CallToolResult => {
 
   if (error instanceof McpBuiltinToolError) {
     return toolErrorContent(error.type, error.message);
+  }
+
+  // A human declined/cancelled an elicitation prompt, or it timed out (ARCHITECTURE.md §12 /
+  // issue #10) — the daemon was never called for this attempt.
+  if (error instanceof ElicitationDeclinedError) {
+    return toolErrorContent("consent_declined", error.message);
   }
 
   if (error instanceof Error) {
@@ -228,8 +353,15 @@ export type CreateMcpServerOptions = {
   /** Every location consulted while resolving {@link scheme}, so `cordierite_connect` can name
    * them when it has to fail. Only meaningful when `scheme` is undefined. */
   schemeTried?: string[];
+  /** `config.json`'s `iosBundleId`; the default bundle id for `cordierite_connect`'s experimental
+   * `ios-device` target (issue #31). */
+  iosBundleId?: string;
   exec?: ExecFn;
   env?: NodeJS.ProcessEnv;
+  /** Overrides `ELICITATION_TIMEOUT_MS` (ARCHITECTURE.md §12 / issue #10) — test-only seam so the
+   * timeout branch of `requestElicitationConsent` can be exercised without an actual 10-minute
+   * wait. Every real caller (`cli/mcp-command.ts`) leaves this unset. */
+  elicitationTimeoutMs?: number;
 };
 
 export type McpServerHandle = {
@@ -266,11 +398,60 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
   // The `mcpName`s this connection's *most recent* `tools/list` response actually emitted
   // `_meta["anthropic/requiresUserInteraction"]` for — repopulated on every `tools/list` request,
   // never on the internal `list_changed` refresh below (which doesn't answer a client request, so
-  // nothing was shown to a human). `callProxiedTool` requires membership here in addition to
+  // nothing was shown to a human). `resolveToolCallConsent` requires membership here in addition to
   // recomputing the tool's live policy and the client check, so `consent: "client"` reflects an
   // MCP `Tool` the client actually listed with the flag set on *this* connection, not merely a
-  // client that happens to qualify version-wise (ARCHITECTURE.md §12 / issue #14).
+  // client that happens to qualify version-wise (ARCHITECTURE.md §12 / issue #14). Stays empty for
+  // any connection where elicitation is preferred (issue #10) — see the `tools/list` handler below.
   const emittedRequiresUserInteraction = new Set<string>();
+
+  /**
+   * Resolves the `consent` param for one `"prompt"`-policy `tools.call` (ARCHITECTURE.md §12),
+   * shared by both call paths below so the two channels' logic exists exactly once. Recomputes the
+   * tool's live policy's implications at call time — never trusts anything cached from a prior
+   * `tools/list` snapshot except membership in `emittedRequiresUserInteraction` above, which by
+   * construction can only be true for *this* connection's most recent listing.
+   *
+   * Channel preference (never both armed for one call): elicitation (issue #10) whenever the
+   * client declared the capability, else the flag-based gate (issue #14) as a fallback. An
+   * elicitation decline/cancel/timeout throws `ElicitationDeclinedError` — the caller must not
+   * catch it, since it belongs in the outer `tools/call` handler's result path, not lumped in with
+   * "no consent obtained".
+   */
+  const resolveToolCallConsent = async (
+    tool: NamespacedTool,
+    args: Record<string, unknown>,
+  ): Promise<"client" | "elicitation" | undefined> => {
+    if (tool.policy !== "prompt") {
+      return undefined;
+    }
+
+    if (clientSupportsElicitation(server)) {
+      const outcome = await requestElicitationConsent(
+        server,
+        tool,
+        args,
+        options.elicitationTimeoutMs ?? ELICITATION_TIMEOUT_MS,
+      );
+
+      if (outcome.type === "accepted") {
+        return "elicitation";
+      }
+
+      if (outcome.type === "declined") {
+        throw new ElicitationDeclinedError(outcome.message);
+      }
+
+      // "no-channel": never fabricate approval from a failed request — fall through with no
+      // consent so the daemon's own "prompt" gate denies the call exactly as it would for any
+      // other ungated caller (ARCHITECTURE.md §12).
+      return undefined;
+    }
+
+    return clientHonorsRequiresUserInteraction(server) && emittedRequiresUserInteraction.has(tool.mcpName)
+      ? "client"
+      : undefined;
+  };
 
   // One mapper per server: it owns the dedup for the "this schema had to be degraded" stderr
   // notices, which would otherwise repeat on every `tools/list` and every list-changed refresh.
@@ -287,15 +468,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
     // `callId` to cancel by until it has already resolved.
     signal: AbortSignal,
   ): Promise<unknown> => {
-    // Recomputed at call time (never cached from the `tools/list` snapshot) so a stale `_meta`
-    // can't be replayed to manufacture consent (ARCHITECTURE.md §12 / issue #14): this is the
-    // daemon's sole evidence a human gate exists for a "prompt"-policy tool.
-    const consent: "client" | undefined =
-      tool.policy === "prompt" &&
-      clientHonorsRequiresUserInteraction(server) &&
-      emittedRequiresUserInteraction.has(tool.mcpName)
-        ? "client"
-        : undefined;
+    const consent = await resolveToolCallConsent(tool, args);
 
     // The deadline this call runs under, resolved once from the `tools.list` snapshot it was
     // matched against, and sent explicitly rather than left to the daemon's `?? tool.timeout_ms`
@@ -412,11 +585,17 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools = await fetchEffectiveTools(stream.call);
-    const clientHonors = clientHonorsRequiresUserInteraction(server);
+    // Channel preference (ARCHITECTURE.md §12 / issues #10 & #14): elicitation always wins over the
+    // flag-based gate when the client declared it, so a "prompt" tool never arms two consent UIs
+    // for one call. When elicitation is preferred, the flag is suppressed entirely — this listing
+    // never sets `_meta["anthropic/requiresUserInteraction"]`, `emittedRequiresUserInteraction`
+    // stays empty, and `resolveToolCallConsent` above takes the elicitation branch at call time
+    // instead.
+    const emitRequiresUserInteractionFlag = !clientSupportsElicitation(server) && clientHonorsRequiresUserInteraction(server);
 
     emittedRequiresUserInteraction.clear();
     for (const tool of tools) {
-      if (tool.policy === "prompt" && clientHonors) {
+      if (tool.policy === "prompt" && emitRequiresUserInteractionFlag) {
         emittedRequiresUserInteraction.add(tool.mcpName);
       }
     }
@@ -427,7 +606,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
         WAIT_FOR_SESSION_TOOL_DESCRIPTOR,
         EVENTS_TOOL_DESCRIPTOR,
         WAIT_FOR_EVENT_TOOL_DESCRIPTOR,
-        ...tools.map((tool) => mapToMcpTool(tool, clientHonors)),
+        ...tools.map((tool) => mapToMcpTool(tool, emitRequiresUserInteractionFlag)),
       ],
     };
   });
@@ -444,6 +623,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
             call: stream.call,
             scheme: options.scheme,
             schemeTried: options.schemeTried,
+            iosBundleId: options.iosBundleId,
             exec: options.exec,
             env: options.env,
           }),

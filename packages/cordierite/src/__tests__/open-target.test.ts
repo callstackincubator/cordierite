@@ -3,16 +3,23 @@
  * injectable `ExecFn` seam — no real `adb`/`xcrun` process is ever spawned.
  */
 
+import { existsSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+
 import { describe, expect, test } from "vitest";
 
 import {
   deliverToOpenTarget,
   detectBootedTargets,
+  isLoopbackAddress,
   isOpenTarget,
+  usesLoopbackAddress,
   type ExecFn,
 } from "../cli/open-target.js";
 
 const DEEP_LINK = "playground:///?cordierite=abc123";
+const BUNDLE_ID = "com.example.playground";
 
 const bootedSimJson = JSON.stringify({
   devices: { "iOS 17.0": [{ state: "Booted", udid: "AAAA", name: "iPhone 15" }] },
@@ -31,12 +38,113 @@ const twoBootedSimsJson = JSON.stringify({
   },
 });
 
+/** `devicectl list devices --json-output <file>` writes to a *file*, so a stub `exec` has to
+ * simulate that side effect rather than return stdout. Every ios-device stub goes through this. */
+const devicectlExec = (
+  calls: Array<{ command: string; args: string[] }>,
+  listing: unknown,
+  options: { failLaunch?: Error; failList?: Error } = {},
+): ExecFn => {
+  return async (command, args) => {
+    calls.push({ command, args });
+
+    const jsonOutputIndex = args.indexOf("--json-output");
+
+    if (jsonOutputIndex !== -1) {
+      if (options.failList) {
+        throw options.failList;
+      }
+
+      const file = args[jsonOutputIndex + 1]!;
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, typeof listing === "string" ? listing : JSON.stringify(listing), "utf8");
+      return { stdout: "", stderr: "" };
+    }
+
+    if (options.failLaunch) {
+      throw options.failLaunch;
+    }
+
+    return { stdout: "", stderr: "" };
+  };
+};
+
+type DevicectlFixtureDevice = {
+  udid?: string;
+  identifier?: string;
+  name?: string;
+  /** Omitted entirely when `null`, so the "field absent ⇒ keep the device" rule is testable. */
+  platform?: string | null;
+  tunnelState?: string;
+  pairingState?: string;
+};
+
+const devicectlListing = (devices: DevicectlFixtureDevice[]): unknown => ({
+  info: { outcome: "success" },
+  result: {
+    devices: devices.map((device) => ({
+      ...(device.identifier === undefined ? {} : { identifier: device.identifier }),
+      deviceProperties: { name: device.name },
+      connectionProperties: {
+        ...(device.tunnelState === undefined ? {} : { tunnelState: device.tunnelState }),
+        ...(device.pairingState === undefined ? {} : { pairingState: device.pairingState }),
+      },
+      hardwareProperties: {
+        ...(device.udid === undefined ? {} : { udid: device.udid }),
+        ...(device.platform === null ? {} : { platform: device.platform ?? "iOS" }),
+      },
+    })),
+  },
+});
+
+/** The launch argv for a device, so the expectations stay in one place as the flags evolve.
+ * `--terminate-existing` appears only with `relaunch: true` (the opt-in `--relaunch` flag). */
+const launchArgs = (
+  udid: string,
+  deepLink: string,
+  bundleId: string,
+  options: { relaunch?: boolean } = {},
+): string[] => [
+  "devicectl",
+  "device",
+  "process",
+  "launch",
+  "--device",
+  udid,
+  ...(options.relaunch ? ["--terminate-existing"] : []),
+  "--payload-url",
+  deepLink,
+  bundleId,
+];
+
+/** The directory `runDevicectlJson` creates and must remove; asserted gone after every call. */
+const devicectlTempDirs = (calls: Array<{ command: string; args: string[] }>): string[] => {
+  return calls
+    .map((call) => {
+      const index = call.args.indexOf("--json-output");
+      return index === -1 ? undefined : path.dirname(call.args[index + 1]!);
+    })
+    .filter((dir): dir is string => dir !== undefined);
+};
+
 describe("isOpenTarget", () => {
-  test("accepts android/ios-sim, rejects anything else", () => {
+  test("accepts android/ios-sim/ios-device, rejects anything else", () => {
     expect(isOpenTarget("android")).toBe(true);
     expect(isOpenTarget("ios-sim")).toBe(true);
+    expect(isOpenTarget("ios-device")).toBe(true);
     expect(isOpenTarget("ios")).toBe(false);
+    expect(isOpenTarget("iOS-Device")).toBe(false);
     expect(isOpenTarget("")).toBe(false);
+  });
+});
+
+describe("usesLoopbackAddress", () => {
+  test("android and ios-sim reach the daemon over loopback; a physical iPhone does not", () => {
+    // The one decision that keeps `--open ios-device` usable at all: a `127.0.0.1` bootstrap
+    // address would point the phone at itself, and the session would never be claimed.
+    expect(usesLoopbackAddress("android")).toBe(true);
+    expect(usesLoopbackAddress("ios-sim")).toBe(true);
+    expect(usesLoopbackAddress("ios-device")).toBe(false);
   });
 });
 
@@ -130,6 +238,470 @@ describe("deliverToOpenTarget: ios-sim", () => {
     });
 
     expect(calls).toEqual([{ command: "xcrun", args: ["simctl", "openurl", "BBBB", DEEP_LINK] }]);
+  });
+});
+
+describe("deliverToOpenTarget: ios-device", () => {
+  test("happy path: devicectl lists one paired device into its --json-output file, then launches with --payload-url", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(calls, devicectlListing([{ udid: "00008030-AAAA", name: "My iPhone" }]));
+
+    await deliverToOpenTarget({
+      target: "ios-device",
+      deepLink: DEEP_LINK,
+      wssPort: 8443,
+      bundleId: BUNDLE_ID,
+      exec,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.command).toBe("xcrun");
+    expect(calls[0]!.args.slice(0, 5)).toEqual(["devicectl", "list", "devices", "--timeout", "5"]);
+    expect(calls[0]!.args[5]).toBe("--json-output");
+    expect(calls[1]).toEqual({
+      command: "xcrun",
+      args: launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID),
+    });
+
+    // The deep link is one argv element, unquoted: `execFile` never re-tokenizes and, unlike
+    // android's `adb shell`, nothing re-parses it on the device.
+    expect(calls[1]!.args).toContain(DEEP_LINK);
+  });
+
+  test("the --json-output temp directory is removed after a successful listing", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(calls, devicectlListing([{ udid: "00008030-AAAA", name: "My iPhone" }]));
+
+    await deliverToOpenTarget({
+      target: "ios-device",
+      deepLink: DEEP_LINK,
+      wssPort: 8443,
+      bundleId: BUNDLE_ID,
+      exec,
+    });
+
+    const dirs = devicectlTempDirs(calls);
+    expect(dirs).toHaveLength(1);
+    expect(existsSync(dirs[0]!)).toBe(false);
+  });
+
+  test("the temp directory is removed even when devicectl itself fails", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(calls, undefined, {
+      failList: Object.assign(new Error("Command failed"), { stderr: "no devices are available" }),
+    });
+
+    await expect(
+      deliverToOpenTarget({
+        target: "ios-device",
+        deepLink: DEEP_LINK,
+        wssPort: 8443,
+        bundleId: BUNDLE_ID,
+        exec,
+      }),
+    ).rejects.toThrow(/no devices are available/u);
+
+    const dirs = devicectlTempDirs(calls);
+    expect(dirs).toHaveLength(1);
+    expect(existsSync(dirs[0]!)).toBe(false);
+  });
+
+  test("--device passthrough: launches that udid directly, no list preflight", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(calls, devicectlListing([]));
+
+    await deliverToOpenTarget({
+      target: "ios-device",
+      deepLink: DEEP_LINK,
+      wssPort: 8443,
+      device: "00008030-BBBB",
+      bundleId: BUNDLE_ID,
+      exec,
+    });
+
+    expect(calls).toEqual([
+      { command: "xcrun", args: launchArgs("00008030-BBBB", DEEP_LINK, BUNDLE_ID) },
+    ]);
+  });
+
+  test("no paired device: a clear error naming what to check, and no launch attempt", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(calls, devicectlListing([]));
+
+    await expect(
+      deliverToOpenTarget({
+        target: "ios-device",
+        deepLink: DEEP_LINK,
+        wssPort: 8443,
+        bundleId: BUNDLE_ID,
+        exec,
+      }),
+    ).rejects.toThrow(/no connected ios device was found/iu);
+
+    expect(calls).toHaveLength(1);
+  });
+
+  test("several paired devices: ambiguous, error names both, no launch attempt", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(
+      calls,
+      devicectlListing([
+        { udid: "00008030-AAAA", name: "My iPhone" },
+        { udid: "00008030-BBBB", name: "Test iPad" },
+      ]),
+    );
+
+    await expect(
+      deliverToOpenTarget({
+        target: "ios-device",
+        deepLink: DEEP_LINK,
+        wssPort: 8443,
+        bundleId: BUNDLE_ID,
+        exec,
+      }),
+    ).rejects.toThrow(/My iPhone \(00008030-AAAA\).*Test iPad \(00008030-BBBB\)/su);
+
+    expect(calls).toHaveLength(1);
+  });
+
+  test("missing bundle id: a usage error naming both ways to supply one, before anything is run", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(calls, devicectlListing([{ udid: "00008030-AAAA", name: "My iPhone" }]));
+
+    await expect(
+      deliverToOpenTarget({ target: "ios-device", deepLink: DEEP_LINK, wssPort: 8443, exec }),
+    ).rejects.toThrow(/--bundle-id.*iosBundleId/su);
+
+    // Checked first: spending devicectl's list timeout would only delay the same error.
+    expect(calls).toHaveLength(0);
+  });
+
+  test("missing xcrun binary: a clear error naming the tool", async () => {
+    const exec: ExecFn = async () => {
+      throw Object.assign(new Error("spawn xcrun ENOENT"), { code: "ENOENT" });
+    };
+
+    await expect(
+      deliverToOpenTarget({
+        target: "ios-device",
+        deepLink: DEEP_LINK,
+        wssPort: 8443,
+        bundleId: BUNDLE_ID,
+        exec,
+      }),
+    ).rejects.toThrow(/"xcrun" was not found on PATH/u);
+  });
+
+  test("a failing launch surfaces devicectl's stderr", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(calls, devicectlListing([{ udid: "00008030-AAAA", name: "My iPhone" }]), {
+      failLaunch: Object.assign(new Error("Command failed"), {
+        stderr: "The application com.example.playground is not installed",
+      }),
+    });
+
+    await expect(
+      deliverToOpenTarget({
+        target: "ios-device",
+        deepLink: DEEP_LINK,
+        wssPort: 8443,
+        bundleId: BUNDLE_ID,
+        exec,
+      }),
+    ).rejects.toThrow(/is not installed/u);
+  });
+
+  test("a device listed without hardwareProperties.udid falls back to its CoreDevice identifier", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(
+      calls,
+      devicectlListing([{ identifier: "1A2B-3C4D", name: "My iPhone" }]),
+    );
+
+    await deliverToOpenTarget({
+      target: "ios-device",
+      deepLink: DEEP_LINK,
+      wssPort: 8443,
+      bundleId: BUNDLE_ID,
+      exec,
+    });
+
+    expect(calls[1]!.args[5]).toBe("1A2B-3C4D");
+  });
+
+  test("unparseable devicectl output reads as an empty listing, not a JSON syntax error", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec = devicectlExec(calls, "not json at all");
+
+    await expect(
+      deliverToOpenTarget({
+        target: "ios-device",
+        deepLink: DEEP_LINK,
+        wssPort: 8443,
+        bundleId: BUNDLE_ID,
+        exec,
+      }),
+    ).rejects.toThrow(/no connected ios device was found/iu);
+  });
+
+  test("devicectl exiting 0 without writing the file at all reads as an empty listing", async () => {
+    // The ENOENT branch, distinct from "wrote something unparseable": `readFile` throws before
+    // `JSON.parse` is ever reached, and that must still degrade to "no device found".
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const exec: ExecFn = async (command, args) => {
+      calls.push({ command, args });
+      return { stdout: "", stderr: "" };
+    };
+
+    await expect(
+      deliverToOpenTarget({
+        target: "ios-device",
+        deepLink: DEEP_LINK,
+        wssPort: 8443,
+        bundleId: BUNDLE_ID,
+        exec,
+      }),
+    ).rejects.toThrow(/no connected ios device was found/iu);
+
+    expect(calls).toHaveLength(1);
+    expect(existsSync(devicectlTempDirs(calls)[0]!)).toBe(false);
+  });
+});
+
+describe("deliverToOpenTarget: ios-device listing hygiene", () => {
+  const deliverTo = async (
+    devices: DevicectlFixtureDevice[],
+    calls: Array<{ command: string; args: string[] }>,
+  ): Promise<void> => {
+    await deliverToOpenTarget({
+      target: "ios-device",
+      deepLink: DEEP_LINK,
+      wssPort: 8443,
+      bundleId: BUNDLE_ID,
+      exec: devicectlExec(calls, devicectlListing(devices)),
+    });
+  };
+
+  test("non-iOS CoreDevices are ignored, so a paired Watch/Vision Pro never creates ambiguity", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    // `devicectl list devices` returns every CoreDevice the Mac has paired, whatever the platform.
+    // Counting these would turn the one deliverable iPhone into "multiple devices, specify --device".
+    await deliverTo(
+      [
+        { udid: "WATCH-1", name: "My Watch", platform: "watchOS" },
+        { udid: "VISION-1", name: "My Vision Pro", platform: "xrOS" },
+        { udid: "MAC-1", name: "My Mac", platform: "macOS" },
+        { udid: "00008030-AAAA", name: "My iPhone", platform: "iOS" },
+      ],
+      calls,
+    );
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
+  });
+
+  test("unavailable and unpaired devices are ignored, leaving the one that is actually reachable", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    await deliverTo(
+      [
+        { udid: "OLD-2", name: "An iPad in a drawer", tunnelState: "unavailable" },
+        { udid: "OLD-3", name: "A phone that was never trusted", pairingState: "unpaired" },
+        { udid: "00008030-AAAA", name: "My iPhone", tunnelState: "connected", pairingState: "paired" },
+      ],
+      calls,
+    );
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
+  });
+
+  test("platform matching is case-insensitive, so an \"ios\" spelling is still deliverable", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    await deliverTo([{ udid: "00008030-AAAA", name: "My iPhone", platform: "ios" }], calls);
+
+    expect(calls[1]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
+  });
+
+  test("a listing with none of the filter fields keeps the device rather than silently finding nothing", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    // Every one of these fields is undocumented. If a future devicectl stops emitting them, the
+    // right failure is a loud launch error, not a silent "no device found" on a plugged-in phone.
+    await deliverTo([{ udid: "00008030-AAAA", name: "My iPhone", platform: null }], calls);
+
+    expect(calls[1]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
+  });
+
+  test("only disconnected/non-iOS entries: reports none found, and says what was ignored", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    await expect(
+      deliverTo(
+        [
+          { udid: "WATCH-1", name: "My Watch", platform: "watchOS" },
+          { udid: "OLD-1", name: "An iPad in a drawer", tunnelState: "unavailable" },
+        ],
+        calls,
+      ),
+    ).rejects.toThrow(/no connected ios device was found/iu);
+
+    // The wording has to explain the disappearance, or a user staring at a Watch in Xcode's device
+    // list has no idea why Cordierite says there is nothing there.
+    await expect(deliverTo([{ udid: "WATCH-1", platform: "watchOS" }], [])).rejects.toThrow(
+      /disconnected devices and non-iOS ones/iu,
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  test("two connected iOS devices are still ambiguous once filtering has run", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    // Captured rather than asserted with `.rejects.not.toThrow(...)`, which passes for *any*
+    // rejection and so would not have caught a Watch leaking into the list.
+    const error = await deliverTo(
+      [
+        { udid: "00008030-AAAA", name: "My iPhone", tunnelState: "connected" },
+        { udid: "00008030-BBBB", name: "Test iPad", tunnelState: "connected" },
+        { udid: "WATCH-1", name: "My Watch", platform: "watchOS" },
+      ],
+      calls,
+    ).then(
+      () => undefined,
+      (reason: unknown) => reason as Error,
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error!.message).toMatch(/My iPhone \(00008030-AAAA\)/u);
+    expect(error!.message).toMatch(/Test iPad \(00008030-BBBB\)/u);
+    // The Watch is not a choice, so it must not appear in the disambiguation list.
+    expect(error!.message).not.toMatch(/My Watch/u);
+    expect(error!.message).not.toMatch(/WATCH-1/u);
+  });
+
+  test('a wired iPhone reporting tunnelState "disconnected" is still delivered to', async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    // The tunnel is brought up on demand, so a plugged-in, trusted iPhone routinely reports
+    // "disconnected". Excluding it would drop exactly the device this target exists to reach —
+    // the vendored Expo CLI keeps it too and excludes only "unavailable".
+    await deliverTo(
+      [
+        {
+          udid: "00008030-AAAA",
+          name: "My iPhone",
+          tunnelState: "disconnected",
+          pairingState: "paired",
+        },
+      ],
+      calls,
+    );
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
+  });
+});
+
+describe("deliverToOpenTarget: ios-device --relaunch", () => {
+  const deliver = async (
+    relaunch: boolean | undefined,
+    calls: Array<{ command: string; args: string[] }>,
+  ): Promise<void> => {
+    await deliverToOpenTarget({
+      target: "ios-device",
+      deepLink: DEEP_LINK,
+      wssPort: 8443,
+      device: "00008030-AAAA",
+      bundleId: BUNDLE_ID,
+      relaunch,
+      exec: devicectlExec(calls, devicectlListing([])),
+    });
+  };
+
+  test("by default the launch is plain, with no --terminate-existing", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await deliver(undefined, calls);
+
+    // A plain `process launch` is what the vendored Expo CLI does, so it is the better-attested
+    // default; terminating a running app is a behaviour nobody should get without asking.
+    expect(calls[0]!.args).toEqual(launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID));
+    expect(calls[0]!.args).not.toContain("--terminate-existing");
+  });
+
+  test("relaunch: true adds --terminate-existing, before --payload-url", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await deliver(true, calls);
+
+    expect(calls[0]!.args).toEqual(
+      launchArgs("00008030-AAAA", DEEP_LINK, BUNDLE_ID, { relaunch: true }),
+    );
+  });
+
+  test("relaunch: false is the same as omitting it", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await deliver(false, calls);
+
+    expect(calls[0]!.args).not.toContain("--terminate-existing");
+  });
+});
+
+describe("isLoopbackAddress", () => {
+  test("recognises every form a phone could not reach", () => {
+    // `daemon/address.ts` falls back to 127.0.0.1 with no routable interface; delivering that to a
+    // phone points it at itself and `wait_for_session` hangs with nothing explaining why.
+    for (const address of ["127.0.0.1", "127.1.2.3", "::1", "[::1]", "localhost", "LOCALHOST", "0.0.0.0", "::", " 127.0.0.1 "]) {
+      expect(isLoopbackAddress(address)).toBe(true);
+    }
+  });
+
+  test("a routable LAN address is not loopback", () => {
+    for (const address of ["192.168.1.10", "10.0.0.4", "203.0.113.9", "fd00::1", "[fd00::1]"]) {
+      expect(isLoopbackAddress(address)).toBe(false);
+    }
+  });
+});
+
+describe("deliverToOpenTarget: ios-device bundle id validation", () => {
+  const deliverWithBundleId = (bundleId: string, calls: Array<{ command: string; args: string[] }>) =>
+    deliverToOpenTarget({
+      target: "ios-device",
+      deepLink: DEEP_LINK,
+      wssPort: 8443,
+      device: "00008030-AAAA",
+      bundleId,
+      exec: devicectlExec(calls, devicectlListing([])),
+    });
+
+  test("a bundle id starting with a dash is rejected before it can be read as a devicectl option", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    // The bundle id is the launch argv's only trailing positional: `--console` here would not be
+    // "the app to launch", it would change what the command does.
+    await expect(deliverWithBundleId("--console", calls)).rejects.toThrow(/not a valid iOS bundle id/u);
+    await expect(deliverWithBundleId("-x", calls)).rejects.toThrow(/not a valid iOS bundle id/u);
+
+    expect(calls).toEqual([]);
+  });
+
+  test("bundle ids containing shell/argv metacharacters or whitespace are rejected", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    for (const bad of ["com.example app", "com.example;rm -rf /", "com.example/../x", "com.$(id)"]) {
+      await expect(deliverWithBundleId(bad, calls)).rejects.toThrow(/not a valid iOS bundle id/u);
+    }
+
+    expect(calls).toEqual([]);
+  });
+
+  test("ordinary reverse-DNS bundle ids, including digits and hyphens, are accepted", async () => {
+    for (const good of ["com.example.playground", "com.example.my-app", "com.example.App2"]) {
+      const calls: Array<{ command: string; args: string[] }> = [];
+      await deliverWithBundleId(good, calls);
+      expect(calls[0]!.args.at(-1)).toBe(good);
+    }
   });
 });
 
@@ -324,6 +896,29 @@ describe("detectBootedTargets", () => {
       detected: { target: "android", device: "ZY3239", label: "ZY3239" },
     });
     expect(commands).not.toContain("adb");
+  });
+
+  test("a paired physical iPhone is never auto-detected, and devicectl is never even run", async () => {
+    const invocations: string[] = [];
+    const exec: ExecFn = async (command, args) => {
+      invocations.push(`${command} ${args.join(" ")}`);
+
+      // A `devicectl list devices` here would still find nothing to return through stdout, so the
+      // real assertion is that it is never reached: the paired iPhone below stays invisible.
+      if (command === "xcrun") {
+        return { stdout: noBootedSimJson, stderr: "" };
+      }
+
+      return { stdout: noAndroid, stderr: "" };
+    };
+
+    // Nothing booted, nothing attached — but a paired iPhone would be sitting right there. It must
+    // not turn into `{ kind: "single" }` and silently receive a link (issue #31: a paired iPhone is
+    // often someone's personal phone, and delivery may cold-launch the app).
+    await expect(detectBootedTargets({ exec, env: {} })).resolves.toEqual({ kind: "none" });
+
+    expect(invocations.some((invocation) => invocation.includes("devicectl"))).toBe(false);
+    expect(invocations).toEqual(["xcrun simctl list devices booted --json", "adb devices"]);
   });
 
   test("missing tooling is not an error: a machine with no xcrun/adb detects nothing", async () => {

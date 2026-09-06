@@ -158,8 +158,11 @@ describe("cordierite mcp command", () => {
     const data = result.structuredContent as { deepLink: string };
     expect(data.deepLink.startsWith("cordierite-test:///?cordierite=")).toBe(true);
 
-    const payload = data.deepLink.split("cordierite=")[1]!;
+    // `cordierite_connect`'s link now carries the same `&pin=` param the CLI's does, so the payload
+    // has to be cut at the next `&` rather than read to the end of the string.
+    const payload = data.deepLink.split("cordierite=")[1]!.split("&")[0]!;
     expect(decodeBootstrap(payload)).not.toBeNull();
+    expect(data.deepLink).toContain("&pin=");
   });
 
   // Issue #29 acceptance: `cordierite mcp --scheme myapp` works with an empty state dir, so an MCP

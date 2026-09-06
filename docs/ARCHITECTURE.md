@@ -27,9 +27,11 @@ Deliberately out of scope, so the boundaries of the design are explicit:
 - Arbitrary code execution inside the app — only pre-registered, named tools.
 - Anonymous or unauthenticated remote access.
 - Treating deep links as proof of authority.
-- A general-purpose interactive consent UI. `policy: "prompt"` (§12) exists, but its only
-  implemented gate is an MCP client that enforces `_meta["anthropic/requiresUserInteraction"]`
-  — every other caller fails closed rather than getting a prompt of its own.
+- A general-purpose interactive consent UI. `policy: "prompt"` (§12) exists, but its only two
+  implemented gates are both MCP-only: an MCP client that declares the `elicitation` capability
+  (preferred) or one that enforces `_meta["anthropic/requiresUserInteraction"]` (fallback) —
+  every other caller (the CLI, an MCP client on neither channel) fails closed rather than getting
+  a prompt of its own.
 - Remote relay to hosts outside the operator machine.
 - Pinning an offline anchor CA that signs short-lived leaf certs. The current model pins
   the same key used for the TLS leaf; overlapping pin sets are the supported rotation
@@ -94,6 +96,7 @@ The daemon refuses to load a key file that is group/world-readable.
   "policy": { "default": "allow", "destructive": "allow" },
   "advertisedIp": null,
   "scheme": null,
+  "iosBundleId": null,
   "restartDaemonOnVersionMismatch": false
 }
 ```
@@ -101,6 +104,8 @@ The daemon refuses to load a key file that is group/world-readable.
 `advertisedIp` overrides auto-detection of the address advertised in minted bootstrap
 payloads. `scheme` is the deep-link URI scheme composed into `cordierite link`'s output
 when `--scheme` is not passed (§10) — set it once here instead of on every invocation.
+`iosBundleId` is the same idea for `--open ios-device` (§8): the app `xcrun devicectl`
+should launch, overridable per invocation by `--bundle-id` / the `bundleId` MCP argument.
 `eventBufferSize` caps the per-session `events.since` retention buffer (§5).
 `restartDaemonOnVersionMismatch` makes version-drift restarts unconditional rather than
 only-when-no-sessions-are-live (§4, "Version drift").
@@ -239,7 +244,7 @@ Methods:
 | `sessions.describe` | `{ selector? }` | full session detail incl. device metadata, state timestamps, tool count |
 | `sessions.revoke` | `{ selector? }` | `{ ok: true }` — closes socket (code 1000), frees alias |
 | `tools.list` | `{ selector? }` | `ToolsListEntry[]` — `ToolDescriptor` (full schema + annotations) plus the tool's effective `policy: "allow" \| "deny" \| "prompt"` (§12), resolved daemon-side |
-| `tools.call` | `{ selector?, name, args, timeoutMs?, caller?: "cli" \| "mcp", consent?: "client" }` | `{ result, callId }` on success — `callId` lets a caller with several in-flight calls match `tool_call_progress`/`tool_call_finished` events back to this call; JSON-RPC error with `data.type` preserving the wire error type on failure. `caller` attributes the audit record (§12); `consent` is the MCP server's evidence of a `"prompt"`-policy human gate (§12) — absent for the CLI. |
+| `tools.call` | `{ selector?, name, args, timeoutMs?, caller?: "cli" \| "mcp", consent?: "client" \| "elicitation" }` | `{ result, callId }` on success — `callId` lets a caller with several in-flight calls match `tool_call_progress`/`tool_call_finished` events back to this call; JSON-RPC error with `data.type` preserving the wire error type on failure. `caller` attributes the audit record (§12); `consent` is the MCP server's evidence of a `"prompt"`-policy human gate (§12) — `"client"` (the flag-based gate) or `"elicitation"` (the elicitation-based gate), absent for the CLI. |
 | `tools.cancel` | `{ selector?, callId, reason? }` | `{ cancelled: boolean }` — sends `tool_cancel` (§7) to the app for a still-pending call; `false` for an unknown/already-finished `callId` or no active socket (a no-op, not an error) |
 | `events.subscribe` | `{ sessionSelector?, kinds? }` | `{ ok: true }`, then `event` notifications on this connection |
 | `events.since` | `{ selector?, since?, kinds?, limit? }` | `{ events: EventNotification[], cursor }` — pull counterpart to `events.subscribe`, draining the per-session retention buffer described below |
@@ -376,6 +381,44 @@ belong here:
   the `&` — a naive "slice to end of string" swallows the pin and corrupts the payload.
 - The `pin` matters only to a build whose effective `trust` is `"link"` (§11). Embedded pins,
   when configured, always win — see [SECURITY.md](SECURITY.md)'s "Trust modes".
+- **The address baked into the payload is decided by the delivery path, before the link is
+  minted, and cannot be revised afterwards.** `--open android` and `--open ios-sim` force
+  `127.0.0.1` because `adb reverse` and the simulator's shared network stack both make the
+  daemon reachable there; every other path — a QR code, and the experimental `--open
+  ios-device` (issue #31) — keeps the detected LAN address, because a physical phone has no
+  such tunnel. `cli/open-target.ts`'s `usesLoopbackAddress` is the single predicate both
+  `link.ts` and `mcp/connect-tool.ts` consult, so the CLI and MCP paths cannot disagree; it is
+  also why `cordierite_connect` decides on a target *first* and mints a second, correctly
+  addressed link when it falls back to a QR.
+- `--open ios-device` is **explicit opt-in only**: `detectBootedTargets` enumerates booted
+  simulators and attached Android devices and never runs `devicectl`, so a paired iPhone — which
+  is often a personal phone, and which delivery may cold-launch — is never picked automatically.
+  It is experimental: `devicectl`'s `--payload-url` is undocumented by Apple and cannot be
+  exercised in CI, so all of it sits behind the injectable `ExecFn` seam. Prerequisites are in
+  the [`cordierite` package README](../packages/cordierite/README.md).
+- `devicectl list devices` returns **every CoreDevice the Mac has ever paired**, across platforms
+  and regardless of whether it is connected, so entries are filtered before the "exactly one
+  device" rule counts them — otherwise a paired Watch, or a phone in someone's pocket, turns the
+  one connected iPhone into a spurious ambiguity error. The rules mirror the vendored Expo CLI's
+  own `devicectl` integration (`@expo/cli`'s `AppleDevice.js`): exclude `tunnelState`
+  `"unavailable"` and require `pairingState` `"paired"`, plus an iOS `platform` check. Note that
+  `tunnelState: "disconnected"` is **kept** — a wired, trusted iPhone reports it routinely, since
+  the tunnel is brought up on demand, so excluding it would drop exactly the device this target
+  exists to reach. Filtering is client-side rather than via `devicectl --filter` so every rule is
+  covered by the `ExecFn` tests instead of by an NSPredicate no test can evaluate. Each rule drops
+  an entry only when the field is present and disqualifying — the one deliberate departure from
+  Expo, which tests `pairingState` positively and would therefore find nothing at all if these
+  undocumented keys were ever renamed; here that degrades to a loud launch failure instead.
+- The bundle id is the launch argv's only **trailing positional**, so it is shape-validated
+  (letters, digits, `.`, `-`) at each use site — a value starting with `-` would be read by
+  `devicectl` as an option. It is *not* validated in `daemon/config.ts`, which keeps the plain
+  non-empty-string check `scheme` uses: that loader runs on every daemon start, and a typo in a
+  CLI-side convenience key must not stop the daemon from starting.
+- `ios-device` also **refuses to deliver a loopback link**. `daemon/address.ts` falls back to
+  `127.0.0.1` when it finds no routable interface; delivered to a phone, that link points the
+  phone at itself, and the failure is silent — `wait_for_session` simply blocks for its whole
+  timeout. Both the CLI and MCP paths check the minted `endpoint.address` and raise a usage error
+  naming `advertisedIp` instead.
 
 ## 9. MCP server
 
@@ -387,62 +430,30 @@ proxies daemon RPC (auto-spawning the daemon like any client):
   `notifications/tools/list_changed`, so an agent's tool list tracks the device.
 - Tool calls, progress frames, errors (with their `type` preserved), and descriptor
   annotations all map through verbatim. Two semantics the MCP surface does add:
-  `"prompt"`-policy consent (§12) — `tools/list` emits
-  `_meta["anthropic/requiresUserInteraction"]` for a tool whose effective policy is
-  `"prompt"`, gated on the connected client's `initialize` `clientInfo`, and `tools/call`
-  echoes that gate back to the daemon as `consent: "client"`, only for a tool this same
-  connection's most recent listing actually flagged — and cancellation: an MCP client's
-  `notifications/cancelled` maps to `tools.cancel` (§5), only for a call that requested
-  progress (the SDK only assigns a `progressToken`, and only the progress-tracked path
-  opens the dedicated connection that learns `callId` while the call is still in flight;
-  a non-progress call has no `callId` to cancel by until it has already resolved, at
-  which point cancelling it is moot).
-- **Schemas are gated on what MCP will actually accept** (issue #26). A client validates the
-  entire `tools/list` result against the SDK's `ToolSchema`, so one entry it rejects makes the
-  agent see *zero* tools from that app. `ToolSchema` requires `inputSchema.type` and
-  `outputSchema.type` to be the literal `"object"` — excluding `z.array`, `z.string`, a
-  `z.union`'s `anyOf`, and a `z.discriminatedUnion`'s `oneOf` or `z.intersection`'s `allOf` even
-  when every branch is an object — *and* constrains `properties` to a record of object
-  subschemas (the `properties: { a: true }` shorthand is rejected) and `required` to an array.
-  Rather than restate those rules, `mcp/tool-mapping.ts` parses the composed tool with the SDK's
-  own `ToolSchema`: a rejected `output_schema` is dropped, a rejected `input_schema` is replaced
-  with the permissive empty object schema, and each degradation is logged once on stderr
-  (deduped per session + tool + offending schema). The tool stays listed and callable either
-  way. Only the MCP surface degrades — the daemon registry, `cordierite invoke`/`--json`, the JS
-  client, and app-side result validation all keep the real schema.
-- A tool whose `output_schema` *was* emitted always answers with `structuredContent`, because a
-  client requires it for every tool it listed an `outputSchema` for; the emit decision and this
-  one are literally the same predicate, so they cannot drift. A handler returning a non-object
-  anyway (reachable only when the schema's validator is looser than its declared shape) fails as
-  `tool_output_validation_error` content rather than as an opaque client-side protocol error. A
-  tool whose schema was dropped, or that never had one, is unconstrained: its result is always
-  JSON text content, and additionally `structuredContent` when the result happens to be an
-  object — allowed, because the client has no schema to validate it against. One caveat is
-  inherent to MCP: a client caches output schemas from the `tools/list` it last read, so if a
-  tool's `output_schema` stops being emitted (the app re-registers it with a shape MCP rejects),
-  a client still holding the older listing keeps demanding `structuredContent` for it until it
-  re-lists. `notifications/tools/list_changed` fires on exactly that change, so the window is the
-  client's own refresh latency, not something the server can close.
-- A proxied `tools/call` sends the tool's own declared `timeout_ms` (clamped, §5) as the
-  call's `timeoutMs` param, and sizes its daemon connection's request timeout from that same
-  number via `deriveCallTransportTimeoutMs` (§5). It is sent explicitly rather than left to
-  the daemon's `?? tool.timeout_ms` fallback so both numbers come from one value: the MCP
-  server resolves the tool from a `tools/list` snapshot while the daemon reads its live
-  registry, and a re-registration in between would otherwise leave a watchdog sized for the
-  old deadline to fire first and mask the daemon's real `tool_timeout`. A tool that declares
-  nothing gets the same 10 s default folded in by that clamp, so there is one number rather
-  than a conditional. Without any of this the connection's own 10 s default would race the
-  daemon's timer, and a long tool would surface as a generic transport error rather than
-  being reachable at all.
-- None of that lifts the MCP **client's** own per-request timeout, which is a third ceiling
-  outside this daemon's control (the SDK's default is 60 s, and Claude Code allows a stdio
-  tool call far longer). A tool declaring more than the calling agent will wait for still
-  fails on the client side, so a genuinely long tool should report progress — a
-  `progressToken` call resets many clients' idle timer — rather than rely on the deadline
-  alone.
+  `"prompt"`-policy consent (§12) — two channels, preferred in this order per connection:
+  (1) elicitation (issue #10), whenever the client declared the `elicitation` capability at
+  `initialize`: a `"prompt"`-policy call sends one `elicitation/create` request naming the
+  tool, the session alias, and the call's arguments, and an `action: "accept"` reply becomes
+  `consent: "elicitation"` on `tools.call`; a decline/cancel/timeout short-circuits to an MCP
+  tool result with `isError: true` without ever reaching the daemon; a failed request (declared
+  but rejected as unsupported, a transport error) is treated as no consent, never as approval.
+  (2) the flag-based fallback (issue #14), only reachable when the client didn't declare
+  elicitation: `tools/list` emits `_meta["anthropic/requiresUserInteraction"]` for a tool whose
+  effective policy is `"prompt"`, gated on the connected client's `initialize` `clientInfo`, and
+  `tools/call` echoes that gate back to the daemon as `consent: "client"`, only for a tool this
+  same connection's most recent listing actually flagged. The two channels never both arm for
+  the same call: whenever elicitation is preferred, the flag is never emitted at all. And
+  cancellation: an MCP client's `notifications/cancelled` maps to `tools.cancel` (§5), only for
+  a call that requested progress (the SDK only assigns a `progressToken`, and only the
+  progress-tracked path opens the dedicated connection that learns `callId` while the call is
+  still in flight; a non-progress call has no `callId` to cancel by until it has already
+  resolved, at which point cancelling it is moot).
 - Two built-in management tools, `cordierite_connect` and `cordierite_wait_for_session`,
   let an agent mint a bootstrap link, deliver it to an emulator/simulator, and wait for the
-  claim — without shell access. This is what makes the agent path self-service.
+  claim — without shell access. This is what makes the agent path self-service. `target:
+  "ios-device"` extends that to a paired physical iPhone/iPad (§8), but only when the agent
+  names it and supplies `bundleId`; the "nothing detected" note says so, so an agent that
+  finds no simulator knows the option exists rather than defaulting to a QR nobody scans.
 - Two more built-in tools, `cordierite_events` and `cordierite_wait_for_event` (issue #6),
   give an agent a pull surface over `postEvent()`-pushed `app_event`s: `cordierite_events`
   is a thin proxy over `events.since`; `cordierite_wait_for_event` blocks for a matching
@@ -697,26 +708,50 @@ it.
   `policy.tools["<alias>/<name>"]`, each `"allow" | "deny" | "prompt"`. `allow`/`deny`
   behave as before; denied calls return `policy_denied` and are audited.
 - `"prompt"` means "a human gate is required; if one cannot be guaranteed, deny" — it
-  fails closed rather than silently behaving like `allow`. The only implemented gate
-  today is MCP: `tools/list` emits `_meta["anthropic/requiresUserInteraction"] = true`
-  for a `"prompt"` tool, per connection, only when the connected client's `initialize`
-  `clientInfo` is known to enforce it (Claude Code ≥ v2.1.199 — every other client
-  ignores the flag). `tools/call` then sets `consent: "client"` only for a tool this
-  same connection's most recent `tools/list` actually flagged that way — not merely a
-  tool whose live policy happens to be `"prompt"` on a client that happens to qualify —
-  so a call can't ride on a stale or hypothetical listing. Every other caller (CLI, an
-  older or non-compliant MCP client) is denied with `policy_denied`, reason
-  `no_consent_channel`.
-  - This is evidence the flag was *emitted*, not that a human answered a prompt: the
-    daemon never observes the client's own permission-prompt UI or its answer, only
-    that the call arrived carrying the marker. `clientInfo` is self-reported, and
-    `consent` is an ordinary RPC param on `daemon.sock` — any local process that can
-    reach the socket (the CLI, or an agent with shell access, which is the typical
-    Claude Code setup this feature targets) can set it directly, same as it could send
-    any other RPC call. `"prompt"` guards against a compliant client silently
-    auto-approving on the caller's behalf; it is not a defense against a hostile
-    process on the operator's own machine — see `docs/SECURITY.md`'s threat model,
+  fails closed rather than silently behaving like `allow`. Two gates are implemented today,
+  both MCP-only, tried in this order per connection (issues #10 and #14):
+  1. **Elicitation** (issue #10): whenever the connected client declared the `elicitation`
+     capability at `initialize` (checked via the SDK Server's `getClientCapabilities()`), a
+     `"prompt"`-policy call sends one `elicitation/create` request — message naming the tool,
+     the session alias, and the call's arguments (JSON, truncated past a small bound) — and
+     waits, bounded server-side at 10 minutes (comfortably under the 30-minute stdio idle
+     window, §9). `action: "accept"` sets `consent: "elicitation"` on `tools.call`.
+     `"decline"`, `"cancel"`, or the timeout never reach the daemon at all: the MCP server
+     returns an ordinary tool result with `isError: true` naming what happened, so the calling
+     agent is informed and can adapt, rather than a thrown protocol error. If the request
+     itself fails — the client declared the capability but rejected `elicitation/create` as
+     unsupported anyway, or a transport error — that is treated as **no consent obtained**,
+     never as approval: the call falls through to the daemon with no `consent` marker, landing
+     on the same `policy_denied`/`no_consent_channel` path as any other ungated caller.
+  2. **The flag-based fallback** (issue #14), reached only when the client did **not** declare
+     elicitation: `tools/list` emits `_meta["anthropic/requiresUserInteraction"] = true` for a
+     `"prompt"` tool, per connection, only when the connected client's `initialize`
+     `clientInfo` is known to enforce it (Claude Code ≥ v2.1.199 — every other client ignores
+     the flag). `tools/call` then sets `consent: "client"` only for a tool this same
+     connection's most recent `tools/list` actually flagged that way — not merely a tool whose
+     live policy happens to be `"prompt"` on a client that happens to qualify — so a call can't
+     ride on a stale or hypothetical listing.
+
+  The two channels are mutually exclusive per connection, never both armed for the same call:
+  whenever a client declares elicitation, `tools/list` never emits the `requiresUserInteraction`
+  flag for it, so a "prompt" tool can't trigger two consent prompts for one call. Every caller on
+  neither channel (the CLI, an MCP client that declares neither capability) is denied with
+  `policy_denied`, reason `no_consent_channel`.
+  - Elicitation is the stronger of the two: it carries an *observed decision* (the client's
+    reply to a specific request), where the flag is only evidence the client *armed itself* to
+    ask — the daemon never sees the client's own prompt UI either way. `clientInfo` and a
+    client's declared capabilities are self-reported, and `consent` is an ordinary RPC param on
+    `daemon.sock` — any local process that can reach the socket (the CLI, or an agent with
+    shell access, which is the typical Claude Code setup this feature targets) can set it
+    directly, same as it could send any other RPC call. `"prompt"` guards against a compliant
+    client silently auto-approving on the caller's behalf; it is not a defense against a
+    hostile process on the operator's own machine — see `docs/SECURITY.md`'s threat model,
     which already treats socket access as full daemon control.
+  - Known limitation: a client can declare the `elicitation` capability and then always reply
+    `"decline"` or `"cancel"` without ever really surfacing the prompt to a human (older Codex
+    behavior at the time of writing). This fails closed — the tool is simply never callable
+    through that client — which is the acceptable failure mode; it is not distinguishable from
+    a human genuinely saying no.
   - Two client-observable behaviors worth documenting rather than filing as bugs:
     non-interactive Claude Code (`--permission-prompt-tool`) converts an `allow` result
     for a flagged tool into a denial (`MCP tool requires user interaction; not
@@ -726,12 +761,13 @@ it.
     unattended must set `allow`/`deny` explicitly for it rather than `"prompt"`.
 - Audit: every `tools.call` appends one JSONL record to `audit/<date>.jsonl`:
   `{ ts, sessionId, alias, tool, argsSha256, outcome: "ok"|"error"|"denied"|"cancelled",
-  errorType?, durationMs, caller: "cli"|"mcp"|"client", consent?: "client" }`. `consent` is set
-  only when a `"prompt"` call proceeded on the MCP client-gate channel above — kept
-  distinct from a plain `"ok"` since the daemon never observes the consent decision
-  itself, only that the call arrived carrying this marker. Raw args are never logged.
-  Day files are pruned on the `auditRetentionDays` schedule described in §3, and
-  `daemon status` surfaces the directory's file count, size, and failure counters.
+  errorType?, durationMs, caller: "cli"|"mcp"|"client", consent?: "client"|"elicitation" }`.
+  `consent` is set only when a `"prompt"` call proceeded on one of the two channels above, and
+  its value names which one — `"client"` for the flag-based gate, `"elicitation"` for an
+  observed accept — kept distinct from a plain `"ok"` since the daemon never observes either
+  channel's client-side behavior itself, only that the call arrived carrying this marker. Raw
+  args are never logged. Day files are pruned on the `auditRetentionDays` schedule described in
+  §3, and `daemon status` surfaces the directory's file count, size, and failure counters.
 
 ## 13. Package layout
 
@@ -759,7 +795,10 @@ named-pipe path `\\.\pipe\cordierite-<user>` behind the same client API.
 
 ## 14. Current limitations
 
-- Interactive consent prompts (the policy configuration reserves `prompt`).
+- A general-purpose interactive consent UI. `policy: "prompt"` (§12) has two implemented
+  MCP-only gates (elicitation, issue #10; the `requiresUserInteraction` flag, issue #14) — the
+  CLI, and an MCP client that declares neither channel, still fail closed with no prompt of
+  their own.
 - Remote relay / hosts outside the operator machine.
 - Pinning an offline anchor CA that signs short-lived leaves (rotation uses overlapping
   pin sets; the anchor-CA design is a future option).

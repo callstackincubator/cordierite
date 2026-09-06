@@ -25,7 +25,12 @@ socket, and each gets its own session.
 
 ## 2. Bootstrap payload (v2)
 
-Deep link shape (unchanged from v1): `<scheme>:///?cordierite=<base64url-no-padding>`.
+Deep link shape: `<scheme>:///?cordierite=<base64url-no-padding>&pin=<sha256/...>`. The
+`cordierite` payload is unchanged from v1; `pin` is a separate, percent-encoded query param
+carrying the daemon's SPKI fingerprint (see `docs/ARCHITECTURE.md` §8), appended by both
+`cordierite link` and `cordierite_connect`. **Anything reading the payload must stop at the
+`&`** — slicing to the end of the string swallows the pin and corrupts the blob.
+
 The `cordierite` query value decodes to this binary layout — all multi-byte integers
 big-endian:
 
@@ -54,7 +59,15 @@ endpoint and brackets IPv6 literals: `wss://[fd00::1]:8443` vs. `wss://192.168.1
    advertised address forced to `127.0.0.1`, `adb reverse`/`simctl openurl` delivers it —
    no human, fully scriptable.
 2. **Physical device on LAN**: printed deep link + QR (`cordierite link --qr`).
-3. **Remote/production**: the same deep link delivered out-of-band; policy and audit
+3. **Physical iOS device, experimental** (`--open ios-device` / `target: "ios-device"`,
+   issue #31): `xcrun devicectl device process launch --device <udid> --payload-url <link>
+   <bundle-id>` hands the link to an installed, dev-signed app on a connected iOS 17+ device
+   (`--relaunch` adds `--terminate-existing`; what a plain launch does to an *already-running*
+   app is unverified on hardware). This is path 2's addressing with path 1's automation: the
+   link keeps the **detected LAN address** — there is no `adb reverse` equivalent on iOS, so
+   `127.0.0.1` would point the phone at itself, and a link that would advertise loopback is
+   refused rather than delivered. Never auto-detected, and needs the app's bundle id.
+4. **Remote/production**: the same deep link delivered out-of-band; policy and audit
    apply identically (§6 below, `docs/ARCHITECTURE.md` §12).
 
 ## 3. Connection-level rules

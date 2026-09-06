@@ -15,7 +15,7 @@ import WebSocket from "ws";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { CallToolResultSchema, ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolResultSchema, ElicitRequestSchema, ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
 
 import { decodeBootstrap, type EventKind, type EventNotification } from "@cordierite/shared";
 
@@ -236,7 +236,7 @@ type AuditRecord = {
   deniedReason?: "policy" | "no_consent_channel";
   durationMs: number;
   caller: "cli" | "mcp";
-  consent?: "client";
+  consent?: "client" | "elicitation";
 };
 
 const readAuditRecords = async (stateDir: string): Promise<AuditRecord[]> => {
@@ -683,6 +683,198 @@ describe("policy: prompt via MCP requiresUserInteraction", () => {
     expect(record?.outcome).toBe("error");
     expect(record?.consent).toBe("client");
   });
+});
+
+describe("policy: prompt via MCP elicitation (issue #10)", () => {
+  /** A client that declares the `elicitation` capability and answers every `elicitation/create`
+   * request with `onElicit` — the preferred consent channel (ARCHITECTURE.md §12), checked ahead of
+   * the `_meta["anthropic/requiresUserInteraction"]` flag whenever it's present. */
+  const connectElicitationClient = async (
+    mcpHandle: McpServerHandle,
+    onElicit: (message: string) => { action: "accept" | "decline" | "cancel" },
+  ): Promise<Client> => {
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await mcpHandle.connect(serverTransport);
+    const client = new Client({ name: "test-elicitation-client", version: "1.0.0" }, { capabilities: { elicitation: {} } });
+    client.setRequestHandler(ElicitRequestSchema, async (request) => onElicit(request.params.message));
+    await client.connect(clientTransport);
+    return client;
+  };
+
+  test('tools/list never emits _meta["anthropic/requiresUserInteraction"] for a client that declares elicitation, even for a "prompt" tool (channel preference)', async () => {
+    const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "echo" }]);
+
+    const mcpHandle = await createMcpServer({ stateDir, spawn: () => { throw new Error("must not auto-spawn"); } });
+    mcpHandles.push(mcpHandle);
+    const client = await connectElicitationClient(mcpHandle, () => ({ action: "accept" }));
+
+    const listed = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
+    expect(listed.tools.find((tool) => tool.name === "echo")?._meta).toBeUndefined();
+
+    app.socket.close();
+  });
+
+  test('a "prompt" tool call accepted via elicitation proceeds, forwards the tool name/session alias/args in the prompt message, and is audited with consent: "elicitation"', async () => {
+    const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "echo" }]);
+
+    app.socket.on("message", (data) => {
+      const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+      if (msg.type === "tool_call") {
+        app.socket.send(JSON.stringify({ type: "tool_result", session_id: app.sessionId, id: msg.id, result: "ok" }));
+      }
+    });
+
+    const mcpHandle = await createMcpServer({ stateDir, spawn: () => { throw new Error("must not auto-spawn"); } });
+    mcpHandles.push(mcpHandle);
+
+    const elicitMessages: string[] = [];
+    const client = await connectElicitationClient(mcpHandle, (message) => {
+      elicitMessages.push(message);
+      return { action: "accept" };
+    });
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "echo", arguments: { text: "hi there" } } },
+      CallToolResultSchema,
+    );
+    expect(result.isError).not.toBe(true);
+
+    expect(elicitMessages).toHaveLength(1);
+    expect(elicitMessages[0]).toContain("echo");
+    expect(elicitMessages[0]).toContain("pixel-8");
+    expect(elicitMessages[0]).toContain("hi there");
+
+    app.socket.close();
+    await shutdownNow(daemon);
+
+    const records = await readAuditRecords(stateDir);
+    const record = records.find((r) => r.tool === "echo" && r.caller === "mcp");
+    expect(record?.outcome).toBe("ok");
+    expect(record?.consent).toBe("elicitation");
+  });
+
+  test.each(["decline", "cancel"] as const)(
+    'a "prompt" tool call %s\'d via elicitation never reaches the app, and the agent gets an isError result naming it',
+    async (action) => {
+      const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+      const app = await claimApp(daemon, port, "Pixel 8");
+      await snapshotTools(daemon, app, [{ name: "echo" }]);
+
+      const receivedByApp: Record<string, unknown>[] = [];
+      app.socket.on("message", (data) => {
+        receivedByApp.push(JSON.parse(data.toString("utf8")) as Record<string, unknown>);
+      });
+
+      const mcpHandle = await createMcpServer({ stateDir, spawn: () => { throw new Error("must not auto-spawn"); } });
+      mcpHandles.push(mcpHandle);
+      const client = await connectElicitationClient(mcpHandle, () => ({ action }));
+
+      const result = await client.request(
+        { method: "tools/call", params: { name: "echo", arguments: {} } },
+        CallToolResultSchema,
+      );
+      expect(result.isError).toBe(true);
+      const text = (result.content[0] as { text: string }).text;
+      expect(text).toContain("echo");
+      expect(text).toMatch(action === "cancel" ? /cancelled/u : /declined/u);
+
+      expect(receivedByApp.some((msg) => msg.type === "tool_call")).toBe(false);
+
+      app.socket.close();
+      await shutdownNow(daemon);
+
+      // The daemon was never called for this attempt — no audit record exists for it at all,
+      // never mind a fabricated "denied" one.
+      const raw = await readFile(todayAuditPath(stateDir), "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") {
+          return "";
+        }
+        throw error;
+      });
+      expect(raw).not.toContain('"tool":"echo"');
+    },
+  );
+
+  test("an elicitation request the client rejects as unsupported (despite declaring the capability) denies the call exactly like no channel at all — never treated as approval", async () => {
+    const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "echo" }]);
+
+    const mcpHandle = await createMcpServer({ stateDir, spawn: () => { throw new Error("must not auto-spawn"); } });
+    mcpHandles.push(mcpHandle);
+
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await mcpHandle.connect(serverTransport);
+    // Declares `elicitation` but never registers an `elicitation/create` handler — the SDK's own
+    // "Method not found" auto-reply exercises the "capability declared, request itself fails"
+    // path distinct from an ordinary decline.
+    const client = new Client({ name: "test-broken-elicitation-client", version: "1.0.0" }, { capabilities: { elicitation: {} } });
+    await client.connect(clientTransport);
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "echo", arguments: {} } },
+      CallToolResultSchema,
+    );
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("policy_denied");
+    expect(text).toContain("no_consent_channel");
+
+    app.socket.close();
+    await shutdownNow(daemon);
+    const records = await readAuditRecords(stateDir);
+    const record = records.find((r) => r.tool === "echo" && r.caller === "mcp");
+    expect(record?.outcome).toBe("denied");
+    expect(record?.deniedReason).toBe("no_consent_channel");
+    expect(record?.consent).toBeUndefined();
+  });
+
+  test("an elicitation that times out denies the call with a decline-shaped result naming the timeout, without calling the daemon", async () => {
+    const { daemon, port, stateDir } = await startTestDaemon({ policy: { tools: { "pixel-8/echo": "prompt" } } });
+    const app = await claimApp(daemon, port, "Pixel 8");
+    await snapshotTools(daemon, app, [{ name: "echo" }]);
+
+    const receivedByApp: Record<string, unknown>[] = [];
+    app.socket.on("message", (data) => {
+      receivedByApp.push(JSON.parse(data.toString("utf8")) as Record<string, unknown>);
+    });
+
+    // A tiny server-side timeout so this test doesn't wait out the real 10-minute bound
+    // (ARCHITECTURE.md §12 / issue #10) — `elicitationTimeoutMs` is a test-only seam.
+    const mcpHandle = await createMcpServer({
+      stateDir,
+      spawn: () => {
+        throw new Error("must not auto-spawn");
+      },
+      elicitationTimeoutMs: 50,
+    });
+    mcpHandles.push(mcpHandle);
+
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await mcpHandle.connect(serverTransport);
+    const client = new Client({ name: "test-silent-elicitation-client", version: "1.0.0" }, { capabilities: { elicitation: {} } });
+    // Registers a handler, but one that never resolves — the request is left hanging until the
+    // server-side timeout fires, distinct from the client declining outright.
+    client.setRequestHandler(ElicitRequestSchema, () => new Promise(() => {}));
+    await client.connect(clientTransport);
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "echo", arguments: {} } },
+      CallToolResultSchema,
+    );
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toMatch(/timed out/iu);
+    expect(text).toContain("echo");
+
+    expect(receivedByApp.some((msg) => msg.type === "tool_call")).toBe(false);
+
+    app.socket.close();
+  }, 10_000);
 });
 
 describe("audit: one line per tools.call attempt", () => {

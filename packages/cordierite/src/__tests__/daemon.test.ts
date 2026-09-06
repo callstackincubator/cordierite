@@ -288,6 +288,42 @@ describe("daemon lifecycle", () => {
     await rm(stateDir, { force: true, recursive: true });
   });
 
+  test("config.json iosBundleId is a known key, loaded as-is and validated as a non-empty string", async () => {
+    const stateDir = await makeTempStateDir();
+    const paths = getStateDirPaths(stateDir);
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(stateDir, { recursive: true });
+    const { loadConfig } = await import("../daemon/config.js");
+
+    await writeFile(paths.configPath, JSON.stringify({ iosBundleId: "com.example.playground" }));
+
+    const warnings: string[] = [];
+    const config = await loadConfig(paths, { warn: (message) => warnings.push(message) });
+
+    expect(config.iosBundleId).toBe("com.example.playground");
+    // A key that warned as unknown would still "work" via the `--bundle-id` flag, hiding a typo'd
+    // config from the operator for as long as they only ever passed the flag.
+    expect(warnings).toEqual([]);
+
+    await writeFile(paths.configPath, JSON.stringify({ iosBundleId: "" }));
+    await expect(loadConfig(paths)).rejects.toThrow(/iosBundleId/u);
+
+    await writeFile(paths.configPath, JSON.stringify({ iosBundleId: 42 }));
+    await expect(loadConfig(paths)).rejects.toThrow(/iosBundleId/u);
+
+    await writeFile(paths.configPath, JSON.stringify({ iosBundleId: "com.example.my-app2" }));
+    await expect(loadConfig(paths)).resolves.toMatchObject({ iosBundleId: "com.example.my-app2" });
+
+    // Deliberately *not* charset-checked here, only where the value is used. This loader runs on
+    // every daemon start, so a typo in a CLI-side convenience key must not stop the daemon from
+    // starting — it surfaces as a usage error against the `link`/`connect` call that needed it.
+    await writeFile(paths.configPath, JSON.stringify({ iosBundleId: "--console" }));
+    await expect(loadConfig(paths)).resolves.toMatchObject({ iosBundleId: "--console" });
+    await expect(startTrackedDaemon(stateDir)).resolves.toBeDefined();
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
+
   test("restartDaemonOnVersionMismatch defaults to false and must be a boolean", async () => {
     const stateDir = await makeTempStateDir();
     const paths = getStateDirPaths(stateDir);
