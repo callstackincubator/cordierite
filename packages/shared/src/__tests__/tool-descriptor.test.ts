@@ -26,19 +26,13 @@ describe("isToolDescriptor", () => {
         ...valid(),
         input_schema: { type: "object" },
         output_schema: { type: "object", properties: {} },
-        annotations: {
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: true,
-        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
       }),
     ).toBe(true);
   });
 
   test("accepts partial annotations", () => {
-    expect(
-      isToolDescriptor({ ...valid(), annotations: { readOnlyHint: true } }),
-    ).toBe(true);
+    expect(isToolDescriptor({ ...valid(), annotations: { readOnlyHint: true } })).toBe(true);
   });
 
   test.each([
@@ -66,39 +60,25 @@ describe("isToolDescriptor", () => {
   });
 
   test("rejects an oversized description", () => {
-    expect(
-      isToolDescriptor({
-        ...valid(),
-        description: "a".repeat(MAX_TOOL_DESCRIPTION_LENGTH + 1),
-      }),
-    ).toBe(false);
+    expect(isToolDescriptor({ ...valid(), description: "a".repeat(MAX_TOOL_DESCRIPTION_LENGTH + 1) })).toBe(
+      false,
+    );
   });
 
   test("rejects a non-object input_schema", () => {
-    expect(
-      isToolDescriptor({ ...valid(), input_schema: "not-an-object" }),
-    ).toBe(false);
+    expect(isToolDescriptor({ ...valid(), input_schema: "not-an-object" })).toBe(false);
   });
 
   test("rejects a non-object output_schema", () => {
-    expect(
-      isToolDescriptor({ ...valid(), output_schema: ["not", "an", "object"] }),
-    ).toBe(false);
+    expect(isToolDescriptor({ ...valid(), output_schema: ["not", "an", "object"] })).toBe(false);
   });
 
   test("rejects annotation keys outside the three boolean hints", () => {
-    expect(
-      isToolDescriptor({
-        ...valid(),
-        annotations: { readOnlyHint: true, extra: true },
-      }),
-    ).toBe(false);
+    expect(isToolDescriptor({ ...valid(), annotations: { readOnlyHint: true, extra: true } })).toBe(false);
   });
 
   test("rejects a non-boolean annotation value", () => {
-    expect(
-      isToolDescriptor({ ...valid(), annotations: { readOnlyHint: "yes" } }),
-    ).toBe(false);
+    expect(isToolDescriptor({ ...valid(), annotations: { readOnlyHint: "yes" } })).toBe(false);
   });
 
   test("accepts a positive integer timeout_ms", () => {
@@ -171,13 +151,7 @@ describe("isObjectRootedSchema", () => {
   });
 
   test("accepts the shapes zod exports for a passthrough object and a record", () => {
-    expect(
-      isObjectRootedSchema({
-        type: "object",
-        properties: {},
-        additionalProperties: {},
-      }),
-    ).toBe(true);
+    expect(isObjectRootedSchema({ type: "object", properties: {}, additionalProperties: {} })).toBe(true);
     expect(
       isObjectRootedSchema({
         type: "object",
@@ -199,20 +173,11 @@ describe("isObjectRootedSchema", () => {
 
   test.each([
     ["union (anyOf)", { anyOf: [{ type: "object" }, { type: "object" }] }],
-    [
-      "discriminated union (oneOf)",
-      { oneOf: [{ type: "object" }, { type: "object" }] },
-    ],
-    [
-      "intersection (allOf)",
-      { allOf: [{ type: "object" }, { type: "object" }] },
-    ],
-  ])(
-    "rejects a %s schema even though every branch is an object",
-    (_label, schema) => {
-      expect(isObjectRootedSchema(schema)).toBe(false);
-    },
-  );
+    ["discriminated union (oneOf)", { oneOf: [{ type: "object" }, { type: "object" }] }],
+    ["intersection (allOf)", { allOf: [{ type: "object" }, { type: "object" }] }],
+  ])("rejects a %s schema even though every branch is an object", (_label, schema) => {
+    expect(isObjectRootedSchema(schema)).toBe(false);
+  });
 
   test('rejects a union type that merely includes "object"', () => {
     expect(isObjectRootedSchema({ type: ["object", "null"] })).toBe(false);
@@ -224,12 +189,8 @@ describe("isObjectRootedSchema", () => {
   });
 
   test("is only the root-type gate: object-rooted shapes MCP still rejects pass here", () => {
-    expect(
-      isObjectRootedSchema({ type: "object", properties: { a: true } }),
-    ).toBe(true);
-    expect(isObjectRootedSchema({ type: "object", required: "name" })).toBe(
-      true,
-    );
+    expect(isObjectRootedSchema({ type: "object", properties: { a: true } })).toBe(true);
+    expect(isObjectRootedSchema({ type: "object", required: "name" })).toBe(true);
   });
 });
 
@@ -244,9 +205,7 @@ describe("clampToolTimeoutMs", () => {
     expect(clampToolTimeoutMs(-1)).toBe(MIN_TOOL_TIMEOUT_MS);
     expect(clampToolTimeoutMs(999)).toBe(MIN_TOOL_TIMEOUT_MS);
     expect(clampToolTimeoutMs(900_000)).toBe(MAX_TOOL_TIMEOUT_MS);
-    expect(clampToolTimeoutMs(Number.MAX_SAFE_INTEGER)).toBe(
-      MAX_TOOL_TIMEOUT_MS,
-    );
+    expect(clampToolTimeoutMs(Number.MAX_SAFE_INTEGER)).toBe(MAX_TOOL_TIMEOUT_MS);
   });
 
   test("always returns a value the descriptor guard accepts", () => {

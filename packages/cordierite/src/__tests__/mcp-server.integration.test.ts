@@ -55,9 +55,7 @@ afterEach(async () => {
 });
 
 const failIfCalled = (): never => {
-  throw new Error(
-    "auto-spawn should never be needed: the test daemon is already running.",
-  );
+  throw new Error("auto-spawn should never be needed: the test daemon is already running.");
 };
 
 const pickFreePort = async (): Promise<number> => {
@@ -86,11 +84,7 @@ const startTestDaemon = async (): Promise<TestDaemon> => {
   const port = await pickFreePort();
   await writeFile(
     path.join(stateDir, "config.json"),
-    JSON.stringify({
-      wssPort: port,
-      advertisedIp: "127.0.0.1",
-      scheme: "cordierite",
-    }),
+    JSON.stringify({ wssPort: port, advertisedIp: "127.0.0.1", scheme: "cordierite" }),
   );
 
   const daemon = await startDaemon({ stateDir });
@@ -99,19 +93,13 @@ const startTestDaemon = async (): Promise<TestDaemon> => {
   return { daemon, stateDir, port };
 };
 
-const rpcCall = (
-  socketPath: string,
-  method: string,
-  params?: unknown,
-): Promise<unknown> => {
+const rpcCall = (socketPath: string, method: string, params?: unknown): Promise<unknown> => {
   return new Promise((resolve, reject) => {
     const socket: Socket = connectUds(socketPath);
     let buffer = "";
 
     socket.once("connect", () => {
-      socket.write(
-        `${JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: params ?? {} })}\n`,
-      );
+      socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: params ?? {} })}\n`);
     });
 
     socket.on("data", (chunk: Buffer) => {
@@ -125,17 +113,10 @@ const rpcCall = (
       const line = buffer.slice(0, newlineIndex);
       socket.destroy();
 
-      const parsed = JSON.parse(line) as {
-        result?: unknown;
-        error?: { message: string; data?: unknown };
-      };
+      const parsed = JSON.parse(line) as { result?: unknown; error?: { message: string; data?: unknown } };
 
       if (parsed.error) {
-        reject(
-          Object.assign(new Error(parsed.error.message), {
-            data: parsed.error.data,
-          }),
-        );
+        reject(Object.assign(new Error(parsed.error.message), { data: parsed.error.data }));
         return;
       }
 
@@ -146,10 +127,7 @@ const rpcCall = (
   });
 };
 
-const waitForEvent = (
-  daemon: RunningDaemon,
-  kind: string,
-): Promise<{ kind: string; sessionId?: string; alias?: string }> => {
+const waitForEvent = (daemon: RunningDaemon, kind: string): Promise<{ kind: string; sessionId?: string; alias?: string }> => {
   return new Promise((resolve) => {
     const unsubscribe = daemon.eventBus.subscribe((event) => {
       if (event.kind === kind) {
@@ -162,9 +140,7 @@ const waitForEvent = (
 
 const connectClient = (port: number): Promise<WebSocket> => {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`wss://127.0.0.1:${port}`, {
-      rejectUnauthorized: false,
-    });
+    const socket = new WebSocket(`wss://127.0.0.1:${port}`, { rejectUnauthorized: false });
     socket.once("open", () => resolve(socket));
     socket.once("error", reject);
   });
@@ -191,9 +167,7 @@ type ClaimedApp = {
 const createLinkAndDecode = async (
   daemon: RunningDaemon,
 ): Promise<{ sessionId: string; token: string }> => {
-  const result = (await rpcCall(daemon.paths.socketPath, "link.create", {
-    ttlSeconds: 60,
-  })) as {
+  const result = (await rpcCall(daemon.paths.socketPath, "link.create", { ttlSeconds: 60 })) as {
     deepLinkPayload: string;
   };
   const decoded = decodeBootstrap(result.deepLinkPayload);
@@ -202,11 +176,7 @@ const createLinkAndDecode = async (
   return { sessionId: decoded!.sessionId, token: decoded!.token };
 };
 
-const claimApp = async (
-  daemon: RunningDaemon,
-  port: number,
-  deviceModel = "Pixel 8",
-): Promise<ClaimedApp> => {
+const claimApp = async (daemon: RunningDaemon, port: number, deviceModel = "Pixel 8"): Promise<ClaimedApp> => {
   const link = await createLinkAndDecode(daemon);
   const socket = await connectClient(port);
 
@@ -268,10 +238,7 @@ const noDevicesExec: ExecFn = async (command) => {
   return { stdout: "List of devices attached\n\n", stderr: "" };
 };
 
-const createMcpHandle = async (
-  stateDir: string,
-  exec: ExecFn = noDevicesExec,
-): Promise<McpServerHandle> => {
+const createMcpHandle = async (stateDir: string, exec: ExecFn = noDevicesExec): Promise<McpServerHandle> => {
   const handle = await createMcpServer({
     stateDir,
     spawn: failIfCalled,
@@ -284,11 +251,8 @@ const createMcpHandle = async (
 };
 
 /** Connects an SDK `Client` to `handle` over an in-process linked transport pair. */
-const connectInMemoryClient = async (
-  handle: McpServerHandle,
-): Promise<Client> => {
-  const [serverTransport, clientTransport] =
-    InMemoryTransport.createLinkedPair();
+const connectInMemoryClient = async (handle: McpServerHandle): Promise<Client> => {
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   await handle.connect(serverTransport);
 
   const client = new Client({ name: "test-client", version: "0.0.0" });
@@ -305,28 +269,19 @@ describe("mcp: tools/list and tools/call", () => {
       {
         name: "echo",
         description: "Echoes its input.",
-        input_schema: {
-          type: "object",
-          properties: { text: { type: "string" } },
-        },
+        input_schema: { type: "object", properties: { text: { type: "string" } } },
       },
     ]);
 
     const handle = await createMcpHandle(stateDir);
     const client = await connectInMemoryClient(handle);
 
-    const listed = await client.request(
-      { method: "tools/list", params: {} },
-      ListToolsResultSchema,
-    );
+    const listed = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
     const proxiedTools = withoutBuiltinTools(listed.tools);
     expect(proxiedTools).toHaveLength(1);
     expect(proxiedTools[0]!.name).toBe("echo");
     expect(proxiedTools[0]!.description).toBe("Echoes its input.");
-    expect(proxiedTools[0]!.inputSchema).toEqual({
-      type: "object",
-      properties: { text: { type: "string" } },
-    });
+    expect(proxiedTools[0]!.inputSchema).toEqual({ type: "object", properties: { text: { type: "string" } } });
 
     app.socket.on("message", (data) => {
       const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
@@ -344,10 +299,7 @@ describe("mcp: tools/list and tools/call", () => {
     });
 
     const called = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "echo", arguments: { text: "hello" } },
-      },
+      { method: "tools/call", params: { name: "echo", arguments: { text: "hello" } } },
       CallToolResultSchema,
     );
 
@@ -385,16 +337,8 @@ describe("mcp: tools/list and tools/call", () => {
         description: "Returns one of two shapes.",
         output_schema: {
           anyOf: [
-            {
-              type: "object",
-              properties: { ok: { type: "boolean" } },
-              required: ["ok"],
-            },
-            {
-              type: "object",
-              properties: { error: { type: "string" } },
-              required: ["error"],
-            },
+            { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+            { type: "object", properties: { error: { type: "string" } }, required: ["error"] },
           ],
         },
       },
@@ -428,15 +372,9 @@ describe("mcp: tools/list and tools/call", () => {
     // the output schemas `callTool` below enforces — exactly what a real client does.
     const listed = await client.listTools();
     const proxiedTools = withoutBuiltinTools(listed.tools);
-    expect(proxiedTools.map((tool) => tool.name).sort()).toEqual([
-      "get-profile",
-      "get-status",
-      "list-todos",
-    ]);
+    expect(proxiedTools.map((tool) => tool.name).sort()).toEqual(["get-profile", "get-status", "list-todos"]);
 
-    const objectTool = proxiedTools.find(
-      (tool) => tool.name === "get-profile",
-    )!;
+    const objectTool = proxiedTools.find((tool) => tool.name === "get-profile")!;
     const arrayTool = proxiedTools.find((tool) => tool.name === "list-todos")!;
     const unionTool = proxiedTools.find((tool) => tool.name === "get-status")!;
     expect(objectTool.outputSchema).toEqual({
@@ -448,10 +386,7 @@ describe("mcp: tools/list and tools/call", () => {
     expect(arrayTool.outputSchema).toBeUndefined();
     expect(unionTool.outputSchema).toBeUndefined();
 
-    const profile = await client.callTool({
-      name: "get-profile",
-      arguments: {},
-    });
+    const profile = await client.callTool({ name: "get-profile", arguments: {} });
     expect(profile.isError).not.toBe(true);
     expect(profile.structuredContent).toEqual({ name: "Ada" });
 
@@ -460,9 +395,7 @@ describe("mcp: tools/list and tools/call", () => {
     const todos = await client.callTool({ name: "list-todos", arguments: {} });
     expect(todos.isError).not.toBe(true);
     expect(todos.structuredContent).toBeUndefined();
-    expect(todos.content).toEqual([
-      { type: "text", text: JSON.stringify(["write tests", "ship it"]) },
-    ]);
+    expect(todos.content).toEqual([{ type: "text", text: JSON.stringify(["write tests", "ship it"]) }]);
 
     // A dropped schema never turns a good result into an error: the union tool's result *is* an
     // object, so it still travels as `structuredContent` — the client just has no schema to
@@ -470,9 +403,7 @@ describe("mcp: tools/list and tools/call", () => {
     const status = await client.callTool({ name: "get-status", arguments: {} });
     expect(status.isError).not.toBe(true);
     expect(status.structuredContent).toEqual({ ok: true });
-    expect(status.content).toEqual([
-      { type: "text", text: JSON.stringify({ ok: true }) },
-    ]);
+    expect(status.content).toEqual([{ type: "text", text: JSON.stringify({ ok: true }) }]);
 
     app.socket.close();
   });
@@ -481,11 +412,7 @@ describe("mcp: tools/list and tools/call", () => {
     const { daemon, stateDir, port } = await startTestDaemon();
     const app = await claimApp(daemon, port);
     await snapshotTools(daemon, app, [
-      {
-        name: "lies",
-        description: "Claims an object, returns a number.",
-        output_schema: { type: "object" },
-      },
+      { name: "lies", description: "Claims an object, returns a number.", output_schema: { type: "object" } },
     ]);
 
     const handle = await createMcpHandle(stateDir);
@@ -496,12 +423,7 @@ describe("mcp: tools/list and tools/call", () => {
 
       if (msg.type === "tool_call") {
         app.socket.send(
-          JSON.stringify({
-            type: "tool_result",
-            session_id: app.sessionId,
-            id: msg.id,
-            result: 42,
-          }),
+          JSON.stringify({ type: "tool_result", session_id: app.sessionId, id: msg.id, result: 42 }),
         );
       }
     });
@@ -514,12 +436,8 @@ describe("mcp: tools/list and tools/call", () => {
 
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toBeUndefined();
-    expect((result.content as Array<{ text: string }>)[0]!.text).toContain(
-      "tool_output_validation_error",
-    );
-    expect((result.content as Array<{ text: string }>)[0]!.text).toContain(
-      "a number",
-    );
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("tool_output_validation_error");
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("a number");
 
     app.socket.close();
   });
@@ -529,11 +447,7 @@ describe("mcp: tools/list and tools/call", () => {
     const { daemon, stateDir, port } = await startTestDaemon();
     const app = await claimApp(daemon, port);
     await snapshotTools(daemon, app, [
-      {
-        name: "nullish",
-        description: "Claims an object, returns null.",
-        output_schema: { type: "object" },
-      },
+      { name: "nullish", description: "Claims an object, returns null.", output_schema: { type: "object" } },
     ]);
 
     const handle = await createMcpHandle(stateDir);
@@ -544,12 +458,7 @@ describe("mcp: tools/list and tools/call", () => {
 
       if (msg.type === "tool_call") {
         app.socket.send(
-          JSON.stringify({
-            type: "tool_result",
-            session_id: app.sessionId,
-            id: msg.id,
-            result: null,
-          }),
+          JSON.stringify({ type: "tool_result", session_id: app.sessionId, id: msg.id, result: null }),
         );
       }
     });
@@ -633,22 +542,11 @@ describe("mcp: tools/list and tools/call", () => {
 
       if (msg.type === "tool_call") {
         app.socket.send(
-          JSON.stringify({
-            type: "tool_call_progress",
-            session_id: app.sessionId,
-            id: msg.id,
-            progress: 0.5,
-            message: "halfway",
-          }),
+          JSON.stringify({ type: "tool_call_progress", session_id: app.sessionId, id: msg.id, progress: 0.5, message: "halfway" }),
         );
         setTimeout(() => {
           app.socket.send(
-            JSON.stringify({
-              type: "tool_result",
-              session_id: app.sessionId,
-              id: msg.id,
-              result: "done",
-            }),
+            JSON.stringify({ type: "tool_result", session_id: app.sessionId, id: msg.id, result: "done" }),
           );
         }, 50);
       }
@@ -664,10 +562,7 @@ describe("mcp: tools/list and tools/call", () => {
       CallToolResultSchema,
       {
         onprogress: (progress) => {
-          progressUpdates.push({
-            progress: progress.progress,
-            message: progress.message,
-          });
+          progressUpdates.push({ progress: progress.progress, message: progress.message });
         },
       },
     );
@@ -686,10 +581,7 @@ describe("mcp: tools/list and tools/call", () => {
     const receivedByApp: Record<string, unknown>[] = [];
     const gotToolCancel = new Promise<Record<string, unknown>>((resolve) => {
       app.socket.on("message", (data) => {
-        const msg = JSON.parse(data.toString("utf8")) as Record<
-          string,
-          unknown
-        >;
+        const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
         receivedByApp.push(msg);
         // Deliberately never reply to tool_call — the point is that cancellation reaches the app
         // while the call is still pending.
@@ -729,15 +621,9 @@ describe("mcp: tools/list and tools/call", () => {
     controller.abort("user cancelled");
 
     const cancelMessage = await gotToolCancel;
-    expect(cancelMessage).toMatchObject({
-      type: "tool_cancel",
-      session_id: app.sessionId,
-      reason: "mcp_client_cancelled",
-    });
+    expect(cancelMessage).toMatchObject({ type: "tool_cancel", session_id: app.sessionId, reason: "mcp_client_cancelled" });
 
-    const toolCallMessage = receivedByApp.find(
-      (msg) => msg.type === "tool_call",
-    );
+    const toolCallMessage = receivedByApp.find((msg) => msg.type === "tool_call");
     expect(cancelMessage.id).toBe(toolCallMessage?.id);
 
     await callPromise;
@@ -751,20 +637,14 @@ describe("mcp: tools/list and tools/call", () => {
       {
         name: "echo",
         description: "Echoes its input.",
-        input_schema: {
-          type: "object",
-          properties: { text: { type: "string" } },
-        },
+        input_schema: { type: "object", properties: { text: { type: "string" } } },
       },
     ]);
 
     const handle = await createMcpHandle(stateDir);
     const client = await connectInMemoryClient(handle);
 
-    const listed = await client.request(
-      { method: "tools/list", params: {} },
-      ListToolsResultSchema,
-    );
+    const listed = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
     // Names only, sorted: full descriptors (incl. built-ins' free-text descriptions) would make this
     // snapshot brittle against unrelated wording tweaks; the shape/schema mapping is what's locked.
     const shapes = listed.tools
@@ -789,15 +669,9 @@ describe("mcp: tools/list and tools/call", () => {
     const handle = await createMcpHandle(stateDir);
     const client = await connectInMemoryClient(handle);
 
-    const listed = await client.request(
-      { method: "tools/list", params: {} },
-      ListToolsResultSchema,
-    );
+    const listed = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
     const proxiedTools = withoutBuiltinTools(listed.tools);
-    expect(proxiedTools[0]!.inputSchema).toEqual({
-      type: "object",
-      additionalProperties: true,
-    });
+    expect(proxiedTools[0]!.inputSchema).toEqual({ type: "object", additionalProperties: true });
 
     app.socket.close();
   });
@@ -823,16 +697,10 @@ describe("mcp: tools/list and tools/call", () => {
 
     const handle = await createMcpHandle(stateDir);
     const client = await connectInMemoryClient(handle);
-    const listed = await client.request(
-      { method: "tools/list", params: {} },
-      ListToolsResultSchema,
-    );
+    const listed = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
     const proxiedTools = withoutBuiltinTools(listed.tools);
 
-    expect(proxiedTools[0]!.annotations).toEqual({
-      destructiveHint: true,
-      readOnlyHint: false,
-    });
+    expect(proxiedTools[0]!.annotations).toEqual({ destructiveHint: true, readOnlyHint: false });
 
     app.socket.close();
   });
@@ -879,17 +747,12 @@ describe("mcp: tools/list and tools/call", () => {
     const client = await connectInMemoryClient(handle);
 
     const result = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "does-not-exist", arguments: {} },
-      },
+      { method: "tools/call", params: { name: "does-not-exist", arguments: {} } },
       CallToolResultSchema,
     );
 
     expect(result.isError).toBe(true);
-    expect((result.content[0] as { text: string }).text).toContain(
-      "tool_not_found",
-    );
+    expect((result.content[0] as { text: string }).text).toContain("tool_not_found");
   });
 });
 
@@ -902,13 +765,8 @@ describe("mcp: namespacing and list_changed", () => {
     const handle = await createMcpHandle(stateDir);
     const client = await connectInMemoryClient(handle);
 
-    const singleSessionListing = await client.request(
-      { method: "tools/list", params: {} },
-      ListToolsResultSchema,
-    );
-    expect(
-      withoutBuiltinTools(singleSessionListing.tools).map((tool) => tool.name),
-    ).toEqual(["echo"]);
+    const singleSessionListing = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
+    expect(withoutBuiltinTools(singleSessionListing.tools).map((tool) => tool.name)).toEqual(["echo"]);
 
     let listChangedCount = 0;
     client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
@@ -924,16 +782,11 @@ describe("mcp: namespacing and list_changed", () => {
 
     expect(listChangedCount).toBeGreaterThan(0);
 
-    const multiSessionListing = await client.request(
-      { method: "tools/list", params: {} },
-      ListToolsResultSchema,
-    );
+    const multiSessionListing = await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
     const names = withoutBuiltinTools(multiSessionListing.tools)
       .map((tool) => tool.name)
       .sort();
-    expect(names).toEqual(
-      [`${appA.alias}__echo`, `${appB.alias}__echo`].sort(),
-    );
+    expect(names).toEqual([`${appA.alias}__echo`, `${appB.alias}__echo`].sort());
 
     appA.socket.close();
     appB.socket.close();
@@ -947,10 +800,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     const client = await connectInMemoryClient(handle);
 
     const result = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "cordierite_connect", arguments: {} },
-      },
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: {} } },
       CallToolResultSchema,
     );
 
@@ -966,9 +816,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     expect(data.sessionId).toBeTruthy();
     expect(data.qr.length).toBeGreaterThan(0);
     expect(data.delivered).toBeUndefined();
-    expect(data.note).toMatch(
-      /no booted iOS simulator or attached Android device/iu,
-    );
+    expect(data.note).toMatch(/no booted iOS simulator or attached Android device/iu);
     // The agent has to be told to render the QR and ask, or it goes straight to a silent wait.
     expect(data.instructions).toMatch(/show the user the "qr" field/iu);
     expect(data.instructions).toMatch(/cordierite_wait_for_session/u);
@@ -989,11 +837,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
       if (command === "xcrun" && args.includes("--json")) {
         return {
           stdout: JSON.stringify({
-            devices: {
-              "iOS 17.0": [
-                { state: "Booted", udid: "SIM-1", name: "iPhone 15" },
-              ],
-            },
+            devices: { "iOS 17.0": [{ state: "Booted", udid: "SIM-1", name: "iPhone 15" }] },
           }),
           stderr: "",
         };
@@ -1006,10 +850,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     const client = await connectInMemoryClient(handle);
 
     const result = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "cordierite_connect", arguments: {} },
-      },
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: {} } },
       CallToolResultSchema,
     );
 
@@ -1031,11 +872,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     expect(data.qr).toBeUndefined();
     expect(data.note).toMatch(/iPhone 15 \(SIM-1\)/u);
 
-    expect(
-      calls.some(
-        (call) => call.args.includes("openurl") && call.args.includes("SIM-1"),
-      ),
-    ).toBe(true);
+    expect(calls.some((call) => call.args.includes("openurl") && call.args.includes("SIM-1"))).toBe(true);
   });
 
   test('target "none" forces the QR path even with a device booted', async () => {
@@ -1046,9 +883,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
       calls.push(`${command} ${args.join(" ")}`);
       return {
         stdout: JSON.stringify({
-          devices: {
-            "iOS 17.0": [{ state: "Booted", udid: "SIM-1", name: "iPhone 15" }],
-          },
+          devices: { "iOS 17.0": [{ state: "Booted", udid: "SIM-1", name: "iPhone 15" }] },
         }),
         stderr: "",
       };
@@ -1058,18 +893,11 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     const client = await connectInMemoryClient(handle);
 
     const result = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "cordierite_connect", arguments: { target: "none" } },
-      },
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { target: "none" } } },
       CallToolResultSchema,
     );
 
-    const data = result.structuredContent as {
-      qr?: string;
-      delivered?: true;
-      note?: string;
-    };
+    const data = result.structuredContent as { qr?: string; delivered?: true; note?: string };
     expect(data.delivered).toBeUndefined();
     expect(data.qr!.length).toBeGreaterThan(0);
     expect(data.note).toMatch(/target: "none"/u);
@@ -1102,18 +930,11 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     const client = await connectInMemoryClient(handle);
 
     const result = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "cordierite_connect", arguments: {} },
-      },
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: {} } },
       CallToolResultSchema,
     );
 
-    const data = result.structuredContent as {
-      qr?: string;
-      delivered?: true;
-      note?: string;
-    };
+    const data = result.structuredContent as { qr?: string; delivered?: true; note?: string };
     expect(data.delivered).toBeUndefined();
     expect(data.qr!.length).toBeGreaterThan(0);
     expect(data.note).toMatch(/SIM-1/u);
@@ -1126,17 +947,12 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     const client = await connectInMemoryClient(handle);
 
     const result = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "cordierite_connect", arguments: { device: "SIM-1" } },
-      },
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { device: "SIM-1" } } },
       CallToolResultSchema,
     );
 
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toMatch(
-      /device.{0,4} requires an explicit/u,
-    );
+    expect(JSON.stringify(result.content)).toMatch(/device.{0,4} requires an explicit/u);
   });
 
   test("cordierite_wait_for_session resolves once a fake client claims the minted session", async () => {
@@ -1145,28 +961,16 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     const client = await connectInMemoryClient(handle);
 
     const connectResult = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "cordierite_connect", arguments: {} },
-      },
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: {} } },
       CallToolResultSchema,
     );
-    const { sessionId, deepLink } = connectResult.structuredContent as {
-      sessionId: string;
-      deepLink: string;
-    };
+    const { sessionId, deepLink } = connectResult.structuredContent as { sessionId: string; deepLink: string };
 
     const payload = deepLink.split("cordierite=")[1]!;
     const decoded = decodeBootstrap(payload)!;
 
     const waitPromise = client.request(
-      {
-        method: "tools/call",
-        params: {
-          name: "cordierite_wait_for_session",
-          arguments: { sessionId, timeoutMs: 5000 },
-        },
-      },
+      { method: "tools/call", params: { name: "cordierite_wait_for_session", arguments: { sessionId, timeoutMs: 5000 } } },
       CallToolResultSchema,
     );
 
@@ -1186,11 +990,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
 
     const waitResult = await waitPromise;
     expect(waitResult.isError).not.toBe(true);
-    const data = waitResult.structuredContent as {
-      sessionId: string;
-      claimed: true;
-      alias: string;
-    };
+    const data = waitResult.structuredContent as { sessionId: string; claimed: true; alias: string };
     expect(data.sessionId).toBe(sessionId);
     expect(data.claimed).toBe(true);
     expect(data.alias.length).toBeGreaterThan(0);
@@ -1207,20 +1007,14 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
       if (command === "xcrun" && args.includes("--json")) {
         return {
           stdout: JSON.stringify({
-            devices: {
-              "iOS 17.0": [
-                { state: "Booted", udid: "SIM-1", name: "iPhone 15" },
-              ],
-            },
+            devices: { "iOS 17.0": [{ state: "Booted", udid: "SIM-1", name: "iPhone 15" }] },
           }),
           stderr: "",
         };
       }
 
       if (args.includes("openurl")) {
-        throw Object.assign(new Error("Command failed"), {
-          stderr: "no matching URL scheme",
-        });
+        throw Object.assign(new Error("Command failed"), { stderr: "no matching URL scheme" });
       }
 
       return { stdout: "List of devices attached\n\n", stderr: "" };
@@ -1230,10 +1024,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     const client = await connectInMemoryClient(handle);
 
     const result = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "cordierite_connect", arguments: {} },
-      },
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: {} } },
       CallToolResultSchema,
     );
 
@@ -1254,9 +1045,7 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
 
     // The fallback link has to be a fresh mint: the first one was minted for 127.0.0.1 on the
     // assumption it was going to a local simulator, which is the wrong address for a scanner.
-    expect(
-      decodeBootstrap(data.deepLink.split("cordierite=")[1]!),
-    ).not.toBeNull();
+    expect(decodeBootstrap(data.deepLink.split("cordierite=")[1]!)).not.toBeNull();
   });
 
   test("cordierite_wait_for_session returns immediately for a session claimed before it was called", async () => {
@@ -1271,20 +1060,13 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     const result = await client.request(
       {
         method: "tools/call",
-        params: {
-          name: "cordierite_wait_for_session",
-          arguments: { sessionId: app.sessionId, timeoutMs: 5000 },
-        },
+        params: { name: "cordierite_wait_for_session", arguments: { sessionId: app.sessionId, timeoutMs: 5000 } },
       },
       CallToolResultSchema,
     );
 
     expect(result.isError).not.toBe(true);
-    const data = result.structuredContent as {
-      sessionId: string;
-      claimed: true;
-      alias: string;
-    };
+    const data = result.structuredContent as { sessionId: string; claimed: true; alias: string };
     expect(data.sessionId).toBe(app.sessionId);
     expect(data.claimed).toBe(true);
     expect(data.alias).toBe(app.alias);
@@ -1298,25 +1080,17 @@ describe("mcp: cordierite_connect / cordierite_wait_for_session", () => {
     const client = await connectInMemoryClient(handle);
 
     const connectResult = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "cordierite_connect", arguments: { target: "none" } },
-      },
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { target: "none" } } },
       CallToolResultSchema,
     );
-    const { sessionId } = connectResult.structuredContent as {
-      sessionId: string;
-    };
+    const { sessionId } = connectResult.structuredContent as { sessionId: string };
 
     // A generous timeout: the point is that the call comes back on the connection dropping, not on
     // the clock. Without an onClose handler this sits silently for the full 30s.
     const waitPromise = client.request(
       {
         method: "tools/call",
-        params: {
-          name: "cordierite_wait_for_session",
-          arguments: { sessionId, timeoutMs: 30_000 },
-        },
+        params: { name: "cordierite_wait_for_session", arguments: { sessionId, timeoutMs: 30_000 } },
       },
       CallToolResultSchema,
     );
@@ -1352,46 +1126,22 @@ describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
     const app = await claimApp(daemon, port);
 
     const emitted = waitForEvent(daemon, "app_event");
-    app.socket.send(
-      JSON.stringify({
-        type: "event",
-        session_id: app.sessionId,
-        name: "greeting",
-        payload: { hi: true },
-        ts: Date.now(),
-      }),
-    );
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "greeting", payload: { hi: true }, ts: Date.now() }));
     await emitted;
 
     const handle = await createMcpHandle(stateDir);
     const client = await connectInMemoryClient(handle);
 
     const first = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "cordierite_events", arguments: {} },
-      },
+      { method: "tools/call", params: { name: "cordierite_events", arguments: {} } },
       CallToolResultSchema,
     );
     expect(first.isError).not.toBe(true);
-    const firstData = first.structuredContent as {
-      events: Array<{ kind: string; data: { name: string } }>;
-      cursor: number;
-    };
-    expect(
-      firstData.events.some(
-        (event) => event.kind === "app_event" && event.data.name === "greeting",
-      ),
-    ).toBe(true);
+    const firstData = first.structuredContent as { events: Array<{ kind: string; data: { name: string } }>; cursor: number };
+    expect(firstData.events.some((event) => event.kind === "app_event" && event.data.name === "greeting")).toBe(true);
 
     const second = await client.request(
-      {
-        method: "tools/call",
-        params: {
-          name: "cordierite_events",
-          arguments: { since: firstData.cursor },
-        },
-      },
+      { method: "tools/call", params: { name: "cordierite_events", arguments: { since: firstData.cursor } } },
       CallToolResultSchema,
     );
     const secondData = second.structuredContent as { events: unknown[] };
@@ -1406,13 +1156,7 @@ describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
 
     const emitted = waitForEvent(daemon, "app_event");
     app.socket.send(
-      JSON.stringify({
-        type: "event",
-        session_id: app.sessionId,
-        name: "already-happened",
-        payload: { n: 1 },
-        ts: Date.now(),
-      }),
+      JSON.stringify({ type: "event", session_id: app.sessionId, name: "already-happened", payload: { n: 1 }, ts: Date.now() }),
     );
     await emitted;
 
@@ -1422,19 +1166,13 @@ describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
     const result = await client.request(
       {
         method: "tools/call",
-        params: {
-          name: "cordierite_wait_for_event",
-          arguments: { name: "already-happened", timeoutMs: 2000 },
-        },
+        params: { name: "cordierite_wait_for_event", arguments: { name: "already-happened", timeoutMs: 2000 } },
       },
       CallToolResultSchema,
     );
 
     expect(result.isError).not.toBe(true);
-    const data = result.structuredContent as {
-      name: string;
-      payload: { n: number };
-    };
+    const data = result.structuredContent as { name: string; payload: { n: number } };
     expect(data.name).toBe("already-happened");
     expect(data.payload).toEqual({ n: 1 });
 
@@ -1451,43 +1189,22 @@ describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
     const waitPromise = client.request(
       {
         method: "tools/call",
-        params: {
-          name: "cordierite_wait_for_event",
-          arguments: { name: "target", timeoutMs: 5000 },
-        },
+        params: { name: "cordierite_wait_for_event", arguments: { name: "target", timeoutMs: 5000 } },
       },
       CallToolResultSchema,
     );
 
     const otherEmitted = waitForEvent(daemon, "app_event");
-    app.socket.send(
-      JSON.stringify({
-        type: "event",
-        session_id: app.sessionId,
-        name: "not-it",
-        ts: Date.now(),
-      }),
-    );
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "not-it", ts: Date.now() }));
     await otherEmitted;
 
     const targetEmitted = waitForEvent(daemon, "app_event");
-    app.socket.send(
-      JSON.stringify({
-        type: "event",
-        session_id: app.sessionId,
-        name: "target",
-        payload: { ok: true },
-        ts: Date.now(),
-      }),
-    );
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "target", payload: { ok: true }, ts: Date.now() }));
     await targetEmitted;
 
     const result = await waitPromise;
     expect(result.isError).not.toBe(true);
-    const data = result.structuredContent as {
-      name: string;
-      payload: { ok: boolean };
-    };
+    const data = result.structuredContent as { name: string; payload: { ok: boolean } };
     expect(data.name).toBe("target");
     expect(data.payload).toEqual({ ok: true });
 
@@ -1504,22 +1221,13 @@ describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
     const result = await client.request(
       {
         method: "tools/call",
-        params: {
-          name: "cordierite_wait_for_event",
-          arguments: {
-            selector: app.alias,
-            name: "never-arrives",
-            timeoutMs: 300,
-          },
-        },
+        params: { name: "cordierite_wait_for_event", arguments: { selector: app.alias, name: "never-arrives", timeoutMs: 300 } },
       },
       CallToolResultSchema,
     );
 
     expect(result.isError).toBe(true);
-    expect((result.content as Array<{ text: string }>)[0]!.text).toContain(
-      "tool_timeout",
-    );
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("tool_timeout");
 
     app.socket.close();
   }, 10_000);
@@ -1534,47 +1242,26 @@ describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
     const waitPromise = client.request(
       {
         method: "tools/call",
-        params: {
-          name: "cordierite_wait_for_event",
-          arguments: {
-            name: "screen_changed",
-            match: { screen: "Checkout" },
-            timeoutMs: 5000,
-          },
-        },
+        params: { name: "cordierite_wait_for_event", arguments: { name: "screen_changed", match: { screen: "Checkout" }, timeoutMs: 5000 } },
       },
       CallToolResultSchema,
     );
 
     const nonMatching = waitForEvent(daemon, "app_event");
     app.socket.send(
-      JSON.stringify({
-        type: "event",
-        session_id: app.sessionId,
-        name: "screen_changed",
-        payload: { screen: "Home" },
-        ts: Date.now(),
-      }),
+      JSON.stringify({ type: "event", session_id: app.sessionId, name: "screen_changed", payload: { screen: "Home" }, ts: Date.now() }),
     );
     await nonMatching;
 
     const matching = waitForEvent(daemon, "app_event");
     app.socket.send(
-      JSON.stringify({
-        type: "event",
-        session_id: app.sessionId,
-        name: "screen_changed",
-        payload: { screen: "Checkout", total: 42 },
-        ts: Date.now(),
-      }),
+      JSON.stringify({ type: "event", session_id: app.sessionId, name: "screen_changed", payload: { screen: "Checkout", total: 42 }, ts: Date.now() }),
     );
     await matching;
 
     const result = await waitPromise;
     expect(result.isError).not.toBe(true);
-    const data = result.structuredContent as {
-      payload: { screen: string; total: number };
-    };
+    const data = result.structuredContent as { payload: { screen: string; total: number } };
     expect(data.payload).toEqual({ screen: "Checkout", total: 42 });
 
     app.socket.close();
@@ -1590,18 +1277,13 @@ describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
     const result = await client.request(
       {
         method: "tools/call",
-        params: {
-          name: "cordierite_wait_for_event",
-          arguments: { name: "x", match: { nested: { a: 1 } } },
-        },
+        params: { name: "cordierite_wait_for_event", arguments: { name: "x", match: { nested: { a: 1 } } } },
       },
       CallToolResultSchema,
     );
 
     expect(result.isError).toBe(true);
-    expect((result.content as Array<{ text: string }>)[0]!.text).toContain(
-      "invalid_request",
-    );
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("invalid_request");
 
     app.socket.close();
   });
@@ -1611,28 +1293,14 @@ describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
     const app = await claimApp(daemon, port);
 
     const first = waitForEvent(daemon, "app_event");
-    app.socket.send(
-      JSON.stringify({
-        type: "event",
-        session_id: app.sessionId,
-        name: "ping",
-        payload: { n: 1 },
-        ts: Date.now(),
-      }),
-    );
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "ping", payload: { n: 1 }, ts: Date.now() }));
     await first;
 
     const handle = await createMcpHandle(stateDir);
     const client = await connectInMemoryClient(handle);
 
     const drained = await client.request(
-      {
-        method: "tools/call",
-        params: {
-          name: "cordierite_events",
-          arguments: { selector: app.alias },
-        },
-      },
+      { method: "tools/call", params: { name: "cordierite_events", arguments: { selector: app.alias } } },
       CallToolResultSchema,
     );
     const cursor = (drained.structuredContent as { cursor: number }).cursor;
@@ -1640,10 +1308,7 @@ describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
     const waitPromise = client.request(
       {
         method: "tools/call",
-        params: {
-          name: "cordierite_wait_for_event",
-          arguments: { name: "ping", since: cursor, timeoutMs: 5000 },
-        },
+        params: { name: "cordierite_wait_for_event", arguments: { name: "ping", since: cursor, timeoutMs: 5000 } },
       },
       CallToolResultSchema,
     );
@@ -1653,15 +1318,7 @@ describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const second = waitForEvent(daemon, "app_event");
-    app.socket.send(
-      JSON.stringify({
-        type: "event",
-        session_id: app.sessionId,
-        name: "ping",
-        payload: { n: 2 },
-        ts: Date.now(),
-      }),
-    );
+    app.socket.send(JSON.stringify({ type: "event", session_id: app.sessionId, name: "ping", payload: { n: 2 }, ts: Date.now() }));
     await second;
 
     const result = await waitPromise;
@@ -1678,34 +1335,20 @@ describe("mcp: cordierite_events / cordierite_wait_for_event", () => {
     const client = await connectInMemoryClient(handle);
 
     const nonIntegerSince = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "cordierite_events", arguments: { since: 1.5 } },
-      },
+      { method: "tools/call", params: { name: "cordierite_events", arguments: { since: 1.5 } } },
       CallToolResultSchema,
     );
     expect(nonIntegerSince.isError).toBe(true);
-    expect(
-      (nonIntegerSince.content as Array<{ text: string }>)[0]!.text,
-    ).toContain("invalid_request");
+    expect((nonIntegerSince.content as Array<{ text: string }>)[0]!.text).toContain("invalid_request");
 
     const zeroLimit = await client.request(
-      {
-        method: "tools/call",
-        params: { name: "cordierite_events", arguments: { limit: 0 } },
-      },
+      { method: "tools/call", params: { name: "cordierite_events", arguments: { limit: 0 } } },
       CallToolResultSchema,
     );
     expect(zeroLimit.isError).toBe(true);
 
     const unknownKind = await client.request(
-      {
-        method: "tools/call",
-        params: {
-          name: "cordierite_events",
-          arguments: { kinds: ["not_a_real_kind"] },
-        },
-      },
+      { method: "tools/call", params: { name: "cordierite_events", arguments: { kinds: ["not_a_real_kind"] } } },
       CallToolResultSchema,
     );
     expect(unknownKind.isError).toBe(true);
@@ -1720,13 +1363,8 @@ describe("mcp: cordierite://sessions resource", () => {
     const handle = await createMcpHandle(stateDir);
     const client = await connectInMemoryClient(handle);
 
-    const listed = await client.request(
-      { method: "resources/list", params: {} },
-      ListResourcesResultSchema,
-    );
-    expect(listed.resources.map((resource) => resource.uri)).toContain(
-      "cordierite://sessions",
-    );
+    const listed = await client.request({ method: "resources/list", params: {} }, ListResourcesResultSchema);
+    expect(listed.resources.map((resource) => resource.uri)).toContain("cordierite://sessions");
 
     const read = await client.request(
       { method: "resources/read", params: { uri: "cordierite://sessions" } },
@@ -1755,9 +1393,7 @@ describe("mcp: stdout purity", () => {
       capturedChunks.push(chunk.toString("utf8"));
     });
 
-    await handle.connect(
-      new StdioServerTransport(clientToServer, serverToClient),
-    );
+    await handle.connect(new StdioServerTransport(clientToServer, serverToClient));
 
     // A minimal hand-rolled client-side transport speaking the same newline-delimited JSON framing
     // as StdioServerTransport (see `@modelcontextprotocol/sdk/shared/stdio.js`), driving the SDK
@@ -1799,10 +1435,7 @@ describe("mcp: stdout purity", () => {
     const client = new Client({ name: "test-stdio-client", version: "0.0.0" });
     await client.connect(clientTransport as never);
 
-    await client.request(
-      { method: "tools/list", params: {} },
-      ListToolsResultSchema,
-    );
+    await client.request({ method: "tools/list", params: {} }, ListToolsResultSchema);
 
     expect(capturedChunks.length).toBeGreaterThan(0);
 
