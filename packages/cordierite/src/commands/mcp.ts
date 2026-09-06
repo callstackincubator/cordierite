@@ -20,12 +20,14 @@ import { loadConfig } from "../daemon/config.js";
 import { getStateDirPaths } from "../daemon/state-dir.js";
 import type { ExecFn } from "../cli/open-target.js";
 import { createMcpServer, type McpServerHandle } from "../mcp/server.js";
-import type { SpawnFn } from "../rpc/client.js";
+import type { SpawnFn, VersionCheckOptions } from "../rpc/client.js";
 import { resolveScheme } from "../scheme.js";
 
 export type McpCommandContext = {
   stateDir: string;
   spawn?: SpawnFn;
+  /** Daemon/CLI version check for the startup stream (issue #30); omitted = no check. */
+  checkVersion?: VersionCheckOptions;
   /** `--scheme`, the highest-precedence source in `scheme.ts`'s order. */
   scheme?: string;
   /** Where scheme discovery starts; defaults to `process.cwd()`. */
@@ -100,6 +102,7 @@ export const handleMcpCommand = async (context: McpCommandContext): Promise<McpH
   const handle = await createMcpServer({
     stateDir: context.stateDir,
     spawn: context.spawn,
+    checkVersion: context.checkVersion,
     scheme,
     schemeTried: tried,
     exec: context.exec,

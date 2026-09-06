@@ -2,12 +2,13 @@ import type { ToolDescriptor } from "@cordierite/shared";
 
 import type {
   CordieriteRegisteredTool,
+  CordieriteRuntimeSchema,
   CordieriteToolHandler,
   CordieriteToolRegistration,
 } from "../Cordierite.types";
 import { CORDIERITE_DEFAULT_TOOL_TIMEOUT_MS } from "../Cordierite.types";
 import { logger } from "../logger";
-import { requireOptionalStandardSchema, toToolDescriptor } from "../schema";
+import { normalizeOptionalToolSchema, toToolDescriptor } from "../schema";
 
 export type RegistryDelta =
   | {
@@ -22,12 +23,8 @@ export type RegistryDelta =
 export type ToolRegistry = {
   entries: Map<string, CordieriteRegisteredTool>;
   registerTool<
-    TInputSchema extends
-      | import("@cordierite/shared").StandardSchemaV1
-      | undefined,
-    TOutputSchema extends
-      | import("@cordierite/shared").StandardSchemaV1
-      | undefined
+    TInputSchema extends CordieriteRuntimeSchema | undefined,
+    TOutputSchema extends CordieriteRuntimeSchema | undefined
   >(
     registration: CordieriteToolRegistration<TInputSchema, TOutputSchema>
   ): { remove(): void };
@@ -51,11 +48,11 @@ export const createToolRegistry = (deps: ToolRegistryDeps): ToolRegistry => {
   const registerTool = (
     registration: CordieriteToolRegistration<any, any>
   ): { remove(): void } => {
-    const inputSchema = requireOptionalStandardSchema(
+    const inputSchema = normalizeOptionalToolSchema(
       registration.inputSchema,
       `Tool "${registration.name}" inputSchema`
     );
-    const outputSchema = requireOptionalStandardSchema(
+    const outputSchema = normalizeOptionalToolSchema(
       registration.outputSchema,
       `Tool "${registration.name}" outputSchema`
     );
@@ -66,6 +63,7 @@ export const createToolRegistry = (deps: ToolRegistryDeps): ToolRegistry => {
       inputSchema,
       outputSchema,
       annotations: registration.annotations,
+      timeoutMs: registration.timeoutMs,
     });
 
     if (entries.has(registration.name)) {
@@ -82,7 +80,11 @@ export const createToolRegistry = (deps: ToolRegistryDeps): ToolRegistry => {
       inputSchema,
       outputSchema,
       handler: registration.handler as CordieriteToolHandler,
-      timeoutMs: registration.timeoutMs ?? deps.defaultTimeoutMs,
+      // Read back off the descriptor, not off `registration`, so this abort timer is the exact
+      // number the daemon's call timer will use (issue #25): `toToolDescriptor` has already
+      // clamped it to the shared bounds, or dropped a value the daemon could not accept — in
+      // which case both sides fall back to their own default rather than disagreeing.
+      timeoutMs: descriptor.timeout_ms ?? deps.defaultTimeoutMs,
     });
 
     logger.debug("registerTool", registration.name);

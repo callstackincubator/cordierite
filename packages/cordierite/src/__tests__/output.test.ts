@@ -32,6 +32,26 @@ describe("output rendering", () => {
     expect(rendered.stdout).toMatchSnapshot();
   });
 
+  test("tools detail shows a declared timeout_ms, and no timeout line when the tool declares none", () => {
+    const renderDetail = (timeoutMs?: number): string | undefined =>
+      renderResult(
+        {
+          ok: true,
+          data: {
+            name: "login",
+            description: "Signs a test user in.",
+            ...(timeoutMs !== undefined ? { timeout_ms: timeoutMs } : {}),
+          },
+          meta: { command: "tools", timestamp: FIXED_NOW.toISOString(), duration_ms: 4 },
+        },
+        { command: "tools", json: false, color: false },
+      ).stdout;
+
+    expect(renderDetail(60_000)).toContain("Timeout (ms)  60000");
+    // A tool on the daemon's default must not render a number it never declared.
+    expect(renderDetail()).not.toContain("Timeout (ms)");
+  });
+
   test("tools detail output renders full schema/annotations", () => {
     const rendered = renderResult(
       {

@@ -1,8 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
+import { z as z3 } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 
 import type { CordieriteRegisteredTool } from "../Cordierite.types";
 import type { ClientTimerHandle, ClientTimers } from "../client/timers";
 import { createToolMessageHandler } from "../client/tool-invocation";
+import { normalizeToolSchema, toToolDescriptor } from "../schema";
 
 /** Real timers, but exposed through the `ClientTimers` DI seam the module under test expects. */
 const realTimers: ClientTimers = {
@@ -237,6 +240,145 @@ describe("createToolMessageHandler: cancellation", () => {
         session_id: SESSION_ID,
         id: "call-3",
         error: { type: "tool_timeout", message: expect.any(String) },
+      },
+    ]);
+  });
+});
+
+describe("createToolMessageHandler: paired and raw tool schemas (issue #27)", () => {
+  test("a zod 3 + zod-to-json-schema pair validates args and results end to end", async () => {
+    const { registry, sent, handleMessage } = createHarness();
+
+    const input = z3.object({ a: z3.number(), b: z3.number() });
+    const output = z3.object({ total: z3.number() });
+    const inputPair = normalizeToolSchema(
+      { schema: input, jsonSchema: zodToJsonSchema(input) },
+      "l",
+    );
+    const outputPair = normalizeToolSchema(
+      { schema: output, jsonSchema: zodToJsonSchema(output) },
+      "l",
+    );
+
+    registry.set("sum", {
+      id: Symbol("sum"),
+      descriptor: toToolDescriptor({
+        name: "sum",
+        description: "Add two numbers.",
+        inputSchema: inputPair,
+        outputSchema: outputPair,
+      }),
+      inputSchema: inputPair,
+      outputSchema: outputPair,
+      handler: (args) => {
+        const { a, b } = args as { a: number; b: number };
+        return { total: a + b };
+      },
+      timeoutMs: 1000,
+    });
+
+    // The descriptor the daemon would receive carries a real shape, not an empty object.
+    expect(registry.get("sum")?.descriptor.input_schema).toMatchObject({
+      type: "object",
+      properties: { a: { type: "number" }, b: { type: "number" } },
+    });
+
+    await handleMessage(toolCallMessage("call-p1", "sum", { a: 2, b: 3 }));
+
+    expect(sent).toEqual([
+      {
+        type: "tool_result",
+        session_id: SESSION_ID,
+        id: "call-p1",
+        result: { total: 5 },
+      },
+    ]);
+  });
+
+  test("a paired schema still rejects bad input with tool_input_validation_error", async () => {
+    const { registry, sent, handleMessage } = createHarness();
+
+    const input = z3.object({ a: z3.number() });
+    registry.set("strict", {
+      id: Symbol("strict"),
+      descriptor: { name: "strict", description: "d" },
+      inputSchema: normalizeToolSchema(
+        { schema: input, jsonSchema: zodToJsonSchema(input) },
+        "l",
+      ),
+      handler: () => undefined,
+      timeoutMs: 1000,
+    });
+
+    await handleMessage(toolCallMessage("call-p2", "strict", { a: "nope" }));
+
+    expect(sent[0]).toMatchObject({
+      type: "tool_error",
+      id: "call-p2",
+      error: { type: "tool_input_validation_error" },
+    });
+  });
+
+  test("a raw JSON Schema tool passes args straight through, unvalidated", async () => {
+    const { registry, sent, handleMessage } = createHarness();
+
+    const seen: unknown[] = [];
+    registry.set("raw", {
+      id: Symbol("raw"),
+      descriptor: { name: "raw", description: "d" },
+      inputSchema: normalizeToolSchema(
+        {
+          type: "object",
+          properties: { city: { type: "string" } },
+          required: ["city"],
+        },
+        "l",
+      ),
+      outputSchema: normalizeToolSchema({ type: "object" }, "l"),
+      handler: (args) => {
+        seen.push(args);
+        return { ok: true };
+      },
+      timeoutMs: 1000,
+    });
+
+    // `city` is required by the schema and absent, and `extra` is not declared at all: with no
+    // app-side JSON Schema validator both reach the handler verbatim.
+    await handleMessage(toolCallMessage("call-r1", "raw", { extra: 1 }));
+
+    expect(seen).toEqual([{ extra: 1 }]);
+    expect(sent).toEqual([
+      {
+        type: "tool_result",
+        session_id: SESSION_ID,
+        id: "call-r1",
+        result: { ok: true },
+      },
+    ]);
+  });
+
+  test("a raw output schema does not reject a non-matching result", async () => {
+    const { registry, sent, handleMessage } = createHarness();
+
+    registry.set("raw-out", {
+      id: Symbol("raw-out"),
+      descriptor: { name: "raw-out", description: "d" },
+      outputSchema: normalizeToolSchema(
+        { type: "object", required: ["total"] },
+        "l",
+      ),
+      handler: () => "a string, not an object",
+      timeoutMs: 1000,
+    });
+
+    await handleMessage(toolCallMessage("call-r2", "raw-out"));
+
+    expect(sent).toEqual([
+      {
+        type: "tool_result",
+        session_id: SESSION_ID,
+        id: "call-r2",
+        result: "a string, not an object",
       },
     ]);
   });

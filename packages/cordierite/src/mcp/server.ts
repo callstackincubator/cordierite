@@ -10,10 +10,6 @@
  * `tool_call_started` event that reveals the call's `callId` is unambiguous.
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
@@ -27,7 +23,16 @@ import {
 import { RPC_METHODS, type EventKind, type EventNotification, type SessionsListResult, type ToolsCallResult } from "@cordierite/shared";
 
 import type { ExecFn } from "../cli/open-target.js";
-import { DaemonRpcError, openDaemonStream, type SpawnFn } from "../rpc/client.js";
+import { clampTimeout, deriveCallTransportTimeoutMs } from "../daemon/calls.js";
+import { getPackageVersion } from "../package-version.js";
+import {
+  DaemonRpcError,
+  DaemonVersionMismatchError,
+  openDaemonStream,
+  type DaemonStream,
+  type SpawnFn,
+  type VersionCheckOptions,
+} from "../rpc/client.js";
 import {
   CONNECT_TOOL_DESCRIPTOR,
   CONNECT_TOOL_NAME,
@@ -46,12 +51,10 @@ import {
   WAIT_FOR_EVENT_TOOL_DESCRIPTOR,
   WAIT_FOR_EVENT_TOOL_NAME,
 } from "./events-tool.js";
-import { toMcpTool } from "./tool-mapping.js";
+import { createMcpToolMapper, emitsMcpOutputSchema } from "./tool-mapping.js";
 import { findNamespacedTool, namespacedToolsSnapshotKey, type NamespacedTool } from "./tool-namespace.js";
 
-const packageVersion: string = JSON.parse(
-  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../package.json"), "utf8"),
-).version;
+const packageVersion = getPackageVersion();
 
 export const SESSIONS_RESOURCE_URI = "cordierite://sessions";
 
@@ -68,6 +71,27 @@ const LIST_CHANGE_EVENT_KINDS: readonly EventKind[] = [
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+};
+
+/** The *shape* of a rejected tool result, for the error message only — never the value itself,
+ * which may be large or carry app data that does not belong in an agent-visible error string. */
+const describeJsonValue = (value: unknown): string => {
+  if (value === null) {
+    return "null";
+  }
+
+  // Defensive: the daemon rejects a `tool_result` frame with no `result`, so nothing on today's
+  // wire path yields `undefined` here. Spelled out anyway so a future one reads as "returned no
+  // value" rather than the `typeof` wording, "returned a undefined".
+  if (value === undefined) {
+    return "no value";
+  }
+
+  if (Array.isArray(value)) {
+    return "an array";
+  }
+
+  return `a ${typeof value}`;
 };
 
 /** The minimum Claude Code version documented (ARCHITECTURE.md §12 / issue #14) to enforce
@@ -159,9 +183,43 @@ const toolErrorContentFromError = (error: unknown): CallToolResult => {
   return toolErrorContent("tool_execution_error", "An unexpected error occurred.");
 };
 
+/**
+ * The success path for a *proxied* device tool (issue #26). An MCP client requires
+ * `structuredContent` on every successful call to a tool whose `tools/list` entry carried an
+ * `outputSchema`, so this shares `emitsMcpOutputSchema` with the mapping layer: the two decisions
+ * are the same predicate and cannot drift. When a schema *was* advertised and the result is not an
+ * object anyway (reachable only when the schema's validator is looser than its declared shape,
+ * `tool-invocation.ts`), the call fails as `tool_output_validation_error` rather than as an opaque
+ * client-side protocol error. A tool whose schema was dropped, or that has none, keeps the
+ * opportunistic behaviour: text content always, plus `structuredContent` when the result happens
+ * to be an object — which is allowed, since the client has no schema to validate it against.
+ */
+const proxiedToolResultContent = (tool: NamespacedTool, result: unknown): CallToolResult => {
+  if (!emitsMcpOutputSchema(tool.descriptor.output_schema)) {
+    return toolSuccessContent(result);
+  }
+
+  if (!isPlainObject(result)) {
+    return toolErrorContent(
+      "tool_output_validation_error",
+      `Tool "${tool.mcpName}" declares an object output schema but returned ${describeJsonValue(result)}.`,
+    );
+  }
+
+  return toolSuccessContent(result);
+};
+
 export type CreateMcpServerOptions = {
   stateDir: string;
   spawn?: SpawnFn;
+  /**
+   * Daemon/CLI version check (issue #30), applied to the startup stream only — never to the
+   * short-lived progress streams below, which must never restart the daemon out from under a call
+   * that is already in flight. A mismatch that cannot be resolved therefore fails server startup,
+   * with the same message the CLI prints. Drift introduced *after* this server started is out of
+   * scope: nothing re-checks a connection that is already established.
+   */
+  checkVersion?: VersionCheckOptions;
   /** The scheme composing `cordierite_connect`'s deep link, already resolved by `commands/mcp.ts`
    * against the shared order in `scheme.ts` (`--scheme` > `CORDIERITE_SCHEME` > project
    * `.cordierite/config.json` > state `config.json` > `app.json`). May legitimately be undefined —
@@ -181,7 +239,24 @@ export type McpServerHandle = {
 };
 
 export const createMcpServer = async (options: CreateMcpServerOptions): Promise<McpServerHandle> => {
-  const stream = await openDaemonStream({ stateDir: options.stateDir, spawn: options.spawn });
+  let stream: DaemonStream;
+
+  try {
+    stream = await openDaemonStream({
+      stateDir: options.stateDir,
+      spawn: options.spawn,
+      checkVersion: options.checkVersion,
+    });
+  } catch (error) {
+    if (error instanceof DaemonVersionMismatchError) {
+      // An MCP client renders a startup failure as a bare "server failed to start" with no cause,
+      // and the operator never sees the thrown message. This stderr line — which the client's own
+      // logs keep — is the only place the actual diagnosis reaches a human (ARCHITECTURE.md §4).
+      console.error(`cordierite mcp: refusing to start. ${error.message}`);
+    }
+
+    throw error;
+  }
 
   const server = new Server(
     { name: "cordierite", version: packageVersion },
@@ -196,6 +271,10 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
   // MCP `Tool` the client actually listed with the flag set on *this* connection, not merely a
   // client that happens to qualify version-wise (ARCHITECTURE.md §12 / issue #14).
   const emittedRequiresUserInteraction = new Set<string>();
+
+  // One mapper per server: it owns the dedup for the "this schema had to be degraded" stderr
+  // notices, which would otherwise repeat on every `tools/list` and every list-changed refresh.
+  const mapToMcpTool = createMcpToolMapper();
 
   const callProxiedTool = async (
     tool: NamespacedTool,
@@ -218,14 +297,29 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
         ? "client"
         : undefined;
 
+    // The deadline this call runs under, resolved once from the `tools.list` snapshot it was
+    // matched against, and sent explicitly rather than left to the daemon's `?? tool.timeout_ms`
+    // fallback. `clampTimeout` folds in the 10 s default for a tool that declares nothing, so
+    // there is exactly one number here and the watchdog below can never be sized off a different
+    // read: the daemon consults its live registry, which a re-registration between that snapshot
+    // and this call could have moved, and a watchdog built for the older value would fire first
+    // and mask the daemon's real `tool_timeout` (issue #25).
+    const timeoutMs = clampTimeout(tool.descriptor.timeout_ms);
+    const transportTimeoutMs = deriveCallTransportTimeoutMs(timeoutMs);
+
     if (progressToken === undefined) {
-      const result = await stream.call<ToolsCallResult>(RPC_METHODS.toolsCall, {
-        selector: tool.selector,
-        name: tool.descriptor.name,
-        args,
-        caller: "mcp",
-        ...(consent ? { consent } : {}),
-      });
+      const result = await stream.call<ToolsCallResult>(
+        RPC_METHODS.toolsCall,
+        {
+          selector: tool.selector,
+          name: tool.descriptor.name,
+          args,
+          caller: "mcp",
+          timeoutMs,
+          ...(consent ? { consent } : {}),
+        },
+        transportTimeoutMs,
+      );
 
       return result.result;
     }
@@ -293,13 +387,18 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
       });
 
       try {
-        const result = await progressStream.call<ToolsCallResult>(RPC_METHODS.toolsCall, {
-          selector: tool.selector,
-          name: tool.descriptor.name,
-          args,
-          caller: "mcp",
-          ...(consent ? { consent } : {}),
-        });
+        const result = await progressStream.call<ToolsCallResult>(
+          RPC_METHODS.toolsCall,
+          {
+            selector: tool.selector,
+            name: tool.descriptor.name,
+            args,
+            caller: "mcp",
+            timeoutMs,
+            ...(consent ? { consent } : {}),
+          },
+          transportTimeoutMs,
+        );
 
         return result.result;
       } finally {
@@ -328,7 +427,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
         WAIT_FOR_SESSION_TOOL_DESCRIPTOR,
         EVENTS_TOOL_DESCRIPTOR,
         WAIT_FOR_EVENT_TOOL_DESCRIPTOR,
-        ...tools.map((tool) => toMcpTool(tool, clientHonors)),
+        ...tools.map((tool) => mapToMcpTool(tool, clientHonors)),
       ],
     };
   });
@@ -381,7 +480,8 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
         return toolErrorContent("tool_not_found", `Tool "${name}" is not registered.`);
       }
 
-      return toolSuccessContent(
+      return proxiedToolResultContent(
+        tool,
         await callProxiedTool(
           tool,
           args,

@@ -1,19 +1,18 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { cac } from "cac";
 
-const version: string = JSON.parse(
-  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../package.json"), "utf8"),
-).version;
+import { getPackageVersion } from "../package-version.js";
 
 export const createCli = () => {
+  const version = getPackageVersion();
   const cli = cac("cordierite");
 
   cli.option("--json", "Print machine-readable JSON (NDJSON for streaming commands).");
   cli.option("--no-color", "Disable terminal color in human-readable output.");
   cli.option("--state-dir <path>", "Override the Cordierite state directory (default: ~/.cordierite).");
+  cli.option(
+    "--daemon-restart",
+    "On a daemon/CLI version mismatch, restart the daemon even though that drops live sessions and unclaimed links.",
+  );
 
   cli
     .command("init", "Set up the current app directory: write .cordierite/config.json and print the MCP snippet.")
@@ -50,7 +49,11 @@ export const createCli = () => {
   cli
     .command("invoke [selector] [tool]", "Call a tool on a session.")
     .option("--input <json>", "Tool input arguments as a JSON object.")
-    .option("--timeout <ms>", "Call timeout in milliseconds (default: 10000).");
+    .option(
+      "--timeout <ms>",
+      "Call timeout in milliseconds. Shortens the deadline; it cannot extend one past the app's " +
+        "own timer, which is the tool's declared timeoutMs (else 10000).",
+    );
 
   cli
     .command("events [selector]", "Stream session/tool events until interrupted.")

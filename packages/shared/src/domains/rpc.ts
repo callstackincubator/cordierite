@@ -69,6 +69,13 @@ export type DaemonStatusResult = {
   wssPort: number;
   pinnedKeys: string[];
   sessions: SessionSummary[];
+  /**
+   * Outstanding pending links — minted by `link.create`, not yet claimed or expired. They are not
+   * sessions (they never enter the session map, ARCHITECTURE.md §6) but they are live state a
+   * daemon restart destroys, so a caller deciding whether restarting is safe has to see them
+   * (issue #30). Absent from daemons that predate this field.
+   */
+  pendingLinks?: number;
   /** Effective policy configuration (ARCHITECTURE.md §12). */
   policy: EffectivePolicyConfig;
   /** Audit log surfacing (ARCHITECTURE.md §12): where records land and how many writes failed. */

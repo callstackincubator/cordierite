@@ -49,6 +49,7 @@ export const buildNamespacedTools = (
         input_schema: entry.input_schema,
         output_schema: entry.output_schema,
         annotations: entry.annotations,
+        timeout_ms: entry.timeout_ms,
       };
 
       tools.push({
@@ -71,11 +72,24 @@ export const findNamespacedTool = (
 };
 
 /** A stable, order-independent key used to detect whether the effective tool list actually
- * changed (name, target session, and full descriptor) — used to decide whether to fire
- * `notifications/tools/list_changed` rather than on every qualifying daemon event. */
+ * changed (name, target session, and the descriptor fields a client can see) — used to decide
+ * whether to fire `notifications/tools/list_changed` rather than on every qualifying daemon event.
+ *
+ * `timeout_ms` is deliberately excluded: it never reaches the MCP `Tool` JSON (`tool-mapping.ts`),
+ * so an app re-registering a tool with only a different deadline changes nothing a client could
+ * observe, and telling it the list changed would just make it re-fetch an identical list. */
 export const namespacedToolsSnapshotKey = (tools: readonly NamespacedTool[]): string => {
   const sorted = tools
-    .map((tool) => ({ name: tool.mcpName, selector: tool.selector, descriptor: tool.descriptor, policy: tool.policy }))
+    .map((tool) => {
+      const { timeout_ms: _timeoutMs, ...clientVisibleDescriptor } = tool.descriptor;
+
+      return {
+        name: tool.mcpName,
+        selector: tool.selector,
+        descriptor: clientVisibleDescriptor,
+        policy: tool.policy,
+      };
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 
   return JSON.stringify(sorted);
