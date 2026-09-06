@@ -15,7 +15,7 @@
  * repo-relative paths so their anchors stay verified. Fenced and inline code spans are ignored so snippets can't
  * produce phantom links.
  *
- * Usage: node scripts/check-md-links.mjs [rootDir]
+ * Usage: node scripts/check-md-links.mjs   (always checks this repository)
  * Exit codes: 0 = every link resolves, 1 = at least one broken link.
  */
 
@@ -23,7 +23,17 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ROOT = resolve(process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), ".."));
+/**
+ * The repository this script belongs to, derived from its own location rather than from an
+ * argument: every path it reads is built from ROOT, so leaving the root under a caller's control
+ * would let the checker walk and read any tree on the machine. There is one repository to check.
+ */
+const ROOT = resolve(join(dirname(fileURLToPath(import.meta.url)), ".."));
+
+/** Whether `candidate` is ROOT itself or something beneath it. */
+function insideRoot(candidate) {
+  return candidate === ROOT || candidate.startsWith(ROOT + sep);
+}
 
 const IGNORED_DIRS = new Set([
   ".git",
@@ -242,6 +252,13 @@ for (const file of files) {
     let targetPath = anchorHome;
     if (pathPart) {
       targetPath = resolve(base, decodeURIComponent(pathPart));
+      // A relative link is allowed to point anywhere inside the repository and nowhere outside it.
+      // Without this, `](../../../../etc/passwd)` in any Markdown file would have the checker stat
+      // and — for a `.md` target — read a file that has nothing to do with this repository.
+      if (!insideRoot(targetPath)) {
+        problems.push(`${rel}:${line}  link escapes the repository: ${raw}`);
+        continue;
+      }
       let stats;
       try {
         stats = statSync(targetPath);
