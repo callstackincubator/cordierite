@@ -46,7 +46,7 @@ import {
   WAIT_FOR_EVENT_TOOL_DESCRIPTOR,
   WAIT_FOR_EVENT_TOOL_NAME,
 } from "./events-tool.js";
-import { toMcpTool } from "./tool-mapping.js";
+import { createMcpToolMapper, emitsMcpOutputSchema } from "./tool-mapping.js";
 import { findNamespacedTool, namespacedToolsSnapshotKey, type NamespacedTool } from "./tool-namespace.js";
 
 const packageVersion: string = JSON.parse(
@@ -68,6 +68,27 @@ const LIST_CHANGE_EVENT_KINDS: readonly EventKind[] = [
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+};
+
+/** The *shape* of a rejected tool result, for the error message only — never the value itself,
+ * which may be large or carry app data that does not belong in an agent-visible error string. */
+const describeJsonValue = (value: unknown): string => {
+  if (value === null) {
+    return "null";
+  }
+
+  // Defensive: the daemon rejects a `tool_result` frame with no `result`, so nothing on today's
+  // wire path yields `undefined` here. Spelled out anyway so a future one reads as "returned no
+  // value" rather than the `typeof` wording, "returned a undefined".
+  if (value === undefined) {
+    return "no value";
+  }
+
+  if (Array.isArray(value)) {
+    return "an array";
+  }
+
+  return `a ${typeof value}`;
 };
 
 /** The minimum Claude Code version documented (ARCHITECTURE.md §12 / issue #14) to enforce
@@ -159,6 +180,32 @@ const toolErrorContentFromError = (error: unknown): CallToolResult => {
   return toolErrorContent("tool_execution_error", "An unexpected error occurred.");
 };
 
+/**
+ * The success path for a *proxied* device tool (issue #26). An MCP client requires
+ * `structuredContent` on every successful call to a tool whose `tools/list` entry carried an
+ * `outputSchema`, so this shares `emitsMcpOutputSchema` with the mapping layer: the two decisions
+ * are the same predicate and cannot drift. When a schema *was* advertised and the result is not an
+ * object anyway (reachable only when the schema's validator is looser than its declared shape,
+ * `tool-invocation.ts`), the call fails as `tool_output_validation_error` rather than as an opaque
+ * client-side protocol error. A tool whose schema was dropped, or that has none, keeps the
+ * opportunistic behaviour: text content always, plus `structuredContent` when the result happens
+ * to be an object — which is allowed, since the client has no schema to validate it against.
+ */
+const proxiedToolResultContent = (tool: NamespacedTool, result: unknown): CallToolResult => {
+  if (!emitsMcpOutputSchema(tool.descriptor.output_schema)) {
+    return toolSuccessContent(result);
+  }
+
+  if (!isPlainObject(result)) {
+    return toolErrorContent(
+      "tool_output_validation_error",
+      `Tool "${tool.mcpName}" declares an object output schema but returned ${describeJsonValue(result)}.`,
+    );
+  }
+
+  return toolSuccessContent(result);
+};
+
 export type CreateMcpServerOptions = {
   stateDir: string;
   spawn?: SpawnFn;
@@ -191,6 +238,10 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
   // MCP `Tool` the client actually listed with the flag set on *this* connection, not merely a
   // client that happens to qualify version-wise (ARCHITECTURE.md §12 / issue #14).
   const emittedRequiresUserInteraction = new Set<string>();
+
+  // One mapper per server: it owns the dedup for the "this schema had to be degraded" stderr
+  // notices, which would otherwise repeat on every `tools/list` and every list-changed refresh.
+  const mapToMcpTool = createMcpToolMapper();
 
   const callProxiedTool = async (
     tool: NamespacedTool,
@@ -323,7 +374,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
         WAIT_FOR_SESSION_TOOL_DESCRIPTOR,
         EVENTS_TOOL_DESCRIPTOR,
         WAIT_FOR_EVENT_TOOL_DESCRIPTOR,
-        ...tools.map((tool) => toMcpTool(tool, clientHonors)),
+        ...tools.map((tool) => mapToMcpTool(tool, clientHonors)),
       ],
     };
   });
@@ -370,7 +421,8 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
         return toolErrorContent("tool_not_found", `Tool "${name}" is not registered.`);
       }
 
-      return toolSuccessContent(
+      return proxiedToolResultContent(
+        tool,
         await callProxiedTool(
           tool,
           args,

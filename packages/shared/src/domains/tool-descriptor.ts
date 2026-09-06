@@ -85,3 +85,22 @@ export const isToolDescriptor = (value: unknown): value is ToolDescriptor => {
 
   return true;
 };
+
+/**
+ * Whether an exported JSON Schema is rooted at the literal `type: "object"`.
+ *
+ * MCP's `Tool` wire shape (`@modelcontextprotocol/sdk`) declares both `inputSchema.type` and
+ * `outputSchema.type` as `z.literal("object")` and clients validate the whole `tools/list` result,
+ * so a single schema rooted at anything else (`z.array`, `z.string`, a `z.union`'s `anyOf`, a
+ * `z.discriminatedUnion`'s `oneOf` or a `z.intersection`'s `allOf` — the last two even when every
+ * branch is an object) makes the client reject the *entire* list.
+ *
+ * This is the *cheap* gate, for the app-side dev warning in `@cordierite/react-native`, which
+ * cannot depend on the MCP SDK: it catches every shape zod can actually export. MCP constrains
+ * more than the root type (`properties` must be a record of object subschemas, `required` must be
+ * an array), so the MCP server's own decision to emit or drop a schema is made by parsing the
+ * composed tool with the SDK's `ToolSchema` — see `mcp/tool-mapping.ts` — never by this predicate.
+ */
+export const isObjectRootedSchema = (schema: ToolSchemaDescriptor | undefined): boolean => {
+  return schema !== undefined && schema.type === "object";
+};

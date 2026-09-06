@@ -269,6 +269,32 @@ proxies daemon RPC (auto-spawning the daemon like any client):
   opens the dedicated connection that learns `callId` while the call is still in flight;
   a non-progress call has no `callId` to cancel by until it has already resolved, at
   which point cancelling it is moot).
+- **Schemas are gated on what MCP will actually accept** (issue #26). A client validates the
+  entire `tools/list` result against the SDK's `ToolSchema`, so one entry it rejects makes the
+  agent see *zero* tools from that app. `ToolSchema` requires `inputSchema.type` and
+  `outputSchema.type` to be the literal `"object"` — excluding `z.array`, `z.string`, a
+  `z.union`'s `anyOf`, and a `z.discriminatedUnion`'s `oneOf` or `z.intersection`'s `allOf` even
+  when every branch is an object — *and* constrains `properties` to a record of object
+  subschemas (the `properties: { a: true }` shorthand is rejected) and `required` to an array.
+  Rather than restate those rules, `mcp/tool-mapping.ts` parses the composed tool with the SDK's
+  own `ToolSchema`: a rejected `output_schema` is dropped, a rejected `input_schema` is replaced
+  with the permissive empty object schema, and each degradation is logged once on stderr
+  (deduped per session + tool + offending schema). The tool stays listed and callable either
+  way. Only the MCP surface degrades — the daemon registry, `cordierite invoke`/`--json`, the JS
+  client, and app-side result validation all keep the real schema.
+- A tool whose `output_schema` *was* emitted always answers with `structuredContent`, because a
+  client requires it for every tool it listed an `outputSchema` for; the emit decision and this
+  one are literally the same predicate, so they cannot drift. A handler returning a non-object
+  anyway (reachable only when the schema's validator is looser than its declared shape) fails as
+  `tool_output_validation_error` content rather than as an opaque client-side protocol error. A
+  tool whose schema was dropped, or that never had one, is unconstrained: its result is always
+  JSON text content, and additionally `structuredContent` when the result happens to be an
+  object — allowed, because the client has no schema to validate it against. One caveat is
+  inherent to MCP: a client caches output schemas from the `tools/list` it last read, so if a
+  tool's `output_schema` stops being emitted (the app re-registers it with a shape MCP rejects),
+  a client still holding the older listing keeps demanding `structuredContent` for it until it
+  re-lists. `notifications/tools/list_changed` fires on exactly that change, so the window is the
+  client's own refresh latency, not something the server can close.
 - Two built-in management tools, `cordierite_connect` and `cordierite_wait_for_session`,
   let an agent mint a bootstrap link, deliver it to an emulator/simulator, and wait for the
   claim — without shell access. This is what makes the agent path self-service.
@@ -542,3 +568,6 @@ named-pipe path `\\.\pipe\cordierite-<user>` behind the same client API.
   pin sets; the anchor-CA design is a future option).
 - Web/browser client (safe no-op stub only).
 - Multiple endpoint candidates in the bootstrap payload.
+- A tool whose `input_schema` is not object-rooted is listed but not usefully callable over MCP,
+  because MCP tool arguments are always an object (§9). Wrapping such arguments so the tool stays
+  callable is tracked in [issue #34](https://github.com/callstackincubator/cordierite/issues/34).

@@ -761,3 +761,146 @@ describe("jsonSchema<T>() helper", () => {
     });
   });
 });
+
+/** A Standard Schema whose JSON Schema exporter returns whatever shape the test needs — stands in
+ * for zod's `z.array` / `z.string` / `z.union` exports without pulling zod into this package. */
+const withExportedShape = (
+  input: Record<string, unknown>,
+  output: Record<string, unknown>,
+): StandardSchemaV1 => ({
+  "~standard": {
+    version: 1,
+    vendor: "test",
+    validate: (value: unknown) => success(value),
+    jsonSchema: {
+      input: () => input,
+      output: () => output,
+    },
+  } as unknown as StandardSchemaV1["~standard"],
+});
+
+const objectShape = { type: "object" } as const;
+
+const warningsMentioning = (warnings: string[][], needle: string): string[][] =>
+  warnings.filter((args) => args.some((arg) => arg.includes(needle)));
+
+describe("toToolDescriptor: schemas MCP cannot represent (issue #26)", () => {
+  test("warns once for a non-object-rooted output schema but still carries the real schema", () => {
+    const definition = {
+      name: "non-object-output",
+      description: "d",
+      outputSchema: normalizeToolSchema(
+        withExportedShape(objectShape, {
+          type: "array",
+          items: { type: "string" },
+        }),
+        "l",
+      ),
+    };
+
+    const warnings = withWarningsCaptured(() => {
+      const first = toToolDescriptor(definition);
+      const second = toToolDescriptor(definition);
+
+      // The descriptor is unchanged: the CLI, the JS client and app-side result validation all
+      // keep the real schema; only the MCP surface degrades.
+      expect(first.output_schema).toEqual({
+        type: "array",
+        items: { type: "string" },
+      });
+      expect(second.output_schema).toEqual({
+        type: "array",
+        items: { type: "string" },
+      });
+    });
+
+    const relevant = warningsMentioning(warnings, "non-object-output");
+    expect(relevant).toHaveLength(1);
+    expect(relevant[0]!.join(" ")).toContain("output");
+    expect(relevant[0]!.join(" ")).toContain("no schema describing it");
+  });
+
+  test("warns once for a non-object-rooted input schema", () => {
+    const warnings = withWarningsCaptured(() => {
+      const descriptor = toToolDescriptor({
+        name: "non-object-input",
+        description: "d",
+        inputSchema: normalizeToolSchema(
+          withExportedShape({ type: "string" }, objectShape),
+          "l",
+        ),
+      });
+
+      expect(descriptor.input_schema).toEqual({ type: "string" });
+    });
+
+    const relevant = warningsMentioning(warnings, "non-object-input");
+    expect(relevant).toHaveLength(1);
+    expect(relevant[0]!.join(" ")).toContain("input");
+  });
+
+  test.each([
+    ["union-output", "anyOf"],
+    ["discriminated-union-output", "oneOf"],
+    ["intersection-output", "allOf"],
+  ])(
+    "a %s export (%s, no root type) warns even though every branch is an object",
+    (toolName, keyword) => {
+      const warnings = withWarningsCaptured(() => {
+        toToolDescriptor({
+          name: toolName,
+          description: "d",
+          outputSchema: normalizeToolSchema(
+            withExportedShape(objectShape, {
+              [keyword]: [{ type: "object" }, { type: "object" }],
+            }),
+            "l",
+          ),
+        });
+      });
+
+      expect(warningsMentioning(warnings, toolName)).toHaveLength(1);
+    },
+  );
+
+  test("stays silent for object-rooted schemas on both sides", () => {
+    const warnings = withWarningsCaptured(() => {
+      toToolDescriptor({
+        name: "object-both-sides",
+        description: "d",
+        inputSchema: normalizeToolSchema(
+          withExportedShape(objectShape, objectShape),
+          "l",
+        ),
+        outputSchema: normalizeToolSchema(
+          withExportedShape(objectShape, {
+            type: "object",
+            properties: { echoed: { type: "string" } },
+          }),
+          "l",
+        ),
+      });
+    });
+
+    expect(warningsMentioning(warnings, "object-both-sides")).toEqual([]);
+  });
+
+  test("a shapeless schema (outside dev) warns only about the missing exporter, not about object-rootedness", () => {
+    const warnings = withWarningsCaptured(() => {
+      withDev(false, () =>
+        toToolDescriptor({
+          name: "shapeless-not-double-warned",
+          description: "d",
+          outputSchema: normalizeToolSchema(shapelessSchema, "l"),
+        }),
+      );
+    });
+
+    const relevant = warningsMentioning(
+      warnings,
+      "shapeless-not-double-warned",
+    );
+    expect(relevant).toHaveLength(1);
+    expect(relevant[0]!.join(" ")).toContain("shapeless");
+  });
+});

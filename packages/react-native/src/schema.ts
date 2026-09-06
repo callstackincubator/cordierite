@@ -1,8 +1,9 @@
-import type {
-  StandardSchemaV1,
-  StandardSchemaV1JsonSchema,
-  ToolDescriptor,
-  ToolSchemaDescriptor,
+import {
+  isObjectRootedSchema,
+  type StandardSchemaV1,
+  type StandardSchemaV1JsonSchema,
+  type ToolDescriptor,
+  type ToolSchemaDescriptor,
 } from "@cordierite/shared";
 
 import type {
@@ -66,6 +67,53 @@ const reportShapelessSchema = (
   }
 
   return undefined;
+};
+
+/** Dedupes the two dev warnings below across repeated registrations of the same tool name. */
+const nonObjectOutputWarningsSeen = new Set<string>();
+const nonObjectInputWarningsSeen = new Set<string>();
+
+/**
+ * Issue #26: MCP's `Tool` wire shape requires both `inputSchema.type` and `outputSchema.type` to be
+ * the literal `"object"`, so a schema exported as anything else (`z.array`, `z.string`, a
+ * `z.union`'s `anyOf`, a `z.discriminatedUnion`'s `oneOf` or a `z.intersection`'s `allOf` — the
+ * last two even when every branch is an object) cannot be put on the wire as-is. The tool is still
+ * registered and still callable, and the descriptor still carries the real schema for the CLI and
+ * the JS client; only the MCP surface degrades. Warn at registration time so an app author learns
+ * it here rather than from an agent.
+ *
+ * This is a best-effort dev-time hint, not the authority. The MCP server makes the real decision
+ * by parsing the composed tool with the SDK's own `ToolSchema` (`mcp/tool-mapping.ts`), which
+ * rejects a little more than the root-type check available here — this package cannot depend on
+ * the MCP SDK. Every shape zod itself can export is covered by the check below.
+ */
+const warnNonObjectRootedSchema = (
+  toolName: string,
+  mode: "input" | "output",
+  schema: ToolSchemaDescriptor,
+): void => {
+  const seen =
+    mode === "output"
+      ? nonObjectOutputWarningsSeen
+      : nonObjectInputWarningsSeen;
+
+  if (seen.has(toolName)) {
+    return;
+  }
+  seen.add(toolName);
+
+  const consequence =
+    mode === "output"
+      ? "MCP drops it from tools/list, so agents get the result with no schema describing it."
+      : "MCP replaces it with a permissive empty object schema, so agents cannot see the tool's " +
+        "real arguments.";
+
+  logger.devWarn(
+    `Tool "${toolName}" exports a JSON Schema for its ${mode} that is not rooted at ` +
+      `type "object" (got ${JSON.stringify(schema.type ?? null)}). ${consequence} ` +
+      `Wrap the ${mode} in an object schema (for example z.object({ result: ... })) to keep the ` +
+      "full shape over MCP.",
+  );
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -447,6 +495,14 @@ export const toToolDescriptor = (
     "output",
     definition.name,
   );
+
+  if (inputSchema !== undefined && !isObjectRootedSchema(inputSchema)) {
+    warnNonObjectRootedSchema(definition.name, "input", inputSchema);
+  }
+
+  if (outputSchema !== undefined && !isObjectRootedSchema(outputSchema)) {
+    warnNonObjectRootedSchema(definition.name, "output", outputSchema);
+  }
 
   return {
     name: definition.name,
