@@ -290,3 +290,36 @@ describe("unrelated mapping is unchanged", () => {
     expect(mapped.outputSchema).toBeUndefined();
   });
 });
+
+describe("the requiresUserInteraction flag", () => {
+  /**
+   * `mcp/server.ts` folds the elicitation-channel preference into the mapper's boolean before
+   * calling it (never emit the flag once elicitation is preferred, so a "prompt" tool cannot arm
+   * both consent channels for one call — ARCHITECTURE.md §12 / issues #10 & #14). This exercises
+   * the mapper's side of that contract, without a daemon or an MCP client.
+   */
+  const promptTool = (policy: NamespacedTool["policy"]): NamespacedTool => ({
+    mcpName: "deleteAll",
+    selector: "pixel-8",
+    descriptor: { name: "deleteAll", description: "Deletes everything." },
+    policy,
+  });
+
+  test('a "prompt" tool gets the flag when the caller says to emit it', () => {
+    expect(mapperWithNotices().map(promptTool("prompt"), true)._meta).toEqual({
+      "anthropic/requiresUserInteraction": true,
+    });
+  });
+
+  test('a "prompt" tool gets no flag when the caller says not to — e.g. elicitation was preferred for this connection (issue #10)', () => {
+    expect(mapperWithNotices().map(promptTool("prompt"), false)._meta).toBeUndefined();
+  });
+
+  test('an "allow" tool never gets the flag, even when the caller would otherwise emit it', () => {
+    expect(mapperWithNotices().map(promptTool("allow"), true)._meta).toBeUndefined();
+  });
+
+  test('a "deny" tool never gets the flag either', () => {
+    expect(mapperWithNotices().map(promptTool("deny"), true)._meta).toBeUndefined();
+  });
+});

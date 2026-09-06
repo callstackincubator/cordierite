@@ -14,10 +14,13 @@ export type PolicyDecision = "allow" | "deny" | "prompt";
  * `config.json`'s `policy` shape (ARCHITECTURE.md §12): `default` applies to tools whose
  * descriptor has no `annotations.destructiveHint`; `destructive` applies when it is `true`;
  * `tools["<alias>/<name>"]` overrides both for one specific tool on one specific session alias.
- * `"prompt"` means "a human gate is required; if one cannot be guaranteed, deny" — today the only
- * such gate is an MCP client that honors `_meta["anthropic/requiresUserInteraction"]`
- * (ARCHITECTURE.md §9/§12); every other caller (CLI, a non-compliant MCP client) gets
- * `policy_denied` with reason `no_consent_channel`.
+ * `"prompt"` means "a human gate is required; if one cannot be guaranteed, deny" — today there are
+ * two such gates, both MCP-only (ARCHITECTURE.md §9/§12): an MCP client that declares the
+ * `elicitation` capability at `initialize` (issue #10, preferred whenever available) and an MCP
+ * client that honors `_meta["anthropic/requiresUserInteraction"]` (issue #14, Claude Code ≥
+ * v2.1.199, used only as a fallback for a client that doesn't declare elicitation). Every other
+ * caller (CLI, an MCP client on neither channel) gets `policy_denied` with reason
+ * `no_consent_channel`.
  */
 export type CordieritePolicyConfig = {
   default: PolicyDecision;
@@ -58,6 +61,14 @@ export type CordieriteConfig = {
    * CLI-side setting an operator wants to set once rather than pass with every `link` invocation.
    */
   scheme?: string;
+  /**
+   * The app's iOS bundle id, used only by the experimental `--open ios-device` /
+   * `cordierite_connect` `target: "ios-device"` delivery path (issue #31): `xcrun devicectl device
+   * process launch` needs to be told which installed app to hand the URL to, and there is nothing
+   * in the deep link itself that says so. Overridable per invocation by `--bundle-id` (CLI) or
+   * `bundleId` (MCP). CLI-side like `scheme`, not a daemon setting.
+   */
+  iosBundleId?: string;
 };
 
 const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
@@ -72,6 +83,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
   "policy",
   "advertisedIp",
   "scheme",
+  "iosBundleId",
   "restartDaemonOnVersionMismatch",
 ]);
 
@@ -194,6 +206,15 @@ export const loadConfig = async (
 
   if (parsed.scheme !== undefined) {
     config.scheme = requireNonEmptyString(parsed.scheme, "scheme");
+  }
+
+  // Only a non-empty string here, like `scheme` — deliberately *not* the bundle-id charset check.
+  // This loader runs on every daemon start, and a typo in a CLI-side convenience key must not stop
+  // the daemon from starting. The charset is enforced where the value is actually used (`mintLink`,
+  // `handleConnectTool`, and `deliverToOpenTarget` itself), which is where it can be reported as a
+  // usage error against the command that needed it.
+  if (parsed.iosBundleId !== undefined) {
+    config.iosBundleId = requireNonEmptyString(parsed.iosBundleId, "iosBundleId");
   }
 
   if (parsed.graceSeconds !== undefined) {
