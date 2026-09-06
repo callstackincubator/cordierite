@@ -113,6 +113,21 @@ function maskCode(source, { inline = true } = {}) {
 }
 
 /**
+ * Drops inline HTML tags, repeating until the text stops changing. A single pass is not enough:
+ * `<<a>script>` would come back as `<script`, because removing the inner tag re-forms an outer one
+ * — the incomplete-sanitization shape a scanner rightly objects to, even in a checker whose output
+ * only ever becomes a heading slug. Every pass strictly shortens the string, so this terminates.
+ */
+function stripTags(text) {
+  let current = text;
+  for (let previous = ""; previous !== current; ) {
+    previous = current;
+    current = current.replace(/<[^>]+>/g, "");
+  }
+  return current;
+}
+
+/**
  * GitHub's heading-slug rules: strip markdown emphasis/links, drop everything that is not a
  * word character, space or hyphen, lowercase, spaces to hyphens, then `-1`, `-2`, … for
  * repeated slugs within one document.
@@ -130,8 +145,8 @@ function slugify(headingText) {
     .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
     .replace(/\*\*?([^*]+)\*\*?/g, "$1")
     .replace(/__?([^_]+)__?/g, "$1")
-    .replace(/~~([^~]+)~~/g, "$1")
-    .replace(/<[^>]+>/g, "")
+    .replace(/~~([^~]+)~~/g, "$1");
+  plain = stripTags(plain)
     .replace(/\u0000(\d+)\u0000/g, (_match, index) => codeSpans[Number(index)])
     .trim();
   return plain
