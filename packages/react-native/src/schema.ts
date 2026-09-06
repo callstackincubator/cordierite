@@ -8,6 +8,7 @@ import type {
 import type {
   CordieriteJsonSchemaConverter,
   CordieriteNormalizedToolSchema,
+  CordieriteRuntimeSchema,
   CordieriteToolDefinition,
 } from "./Cordierite.types";
 import { isDev, logger } from "./logger";
@@ -287,6 +288,38 @@ const exportFromConverter = (
       };
 };
 
+/** Export outcome for one normalized slot, with the reason when no JSON Schema can be produced. */
+const exportNormalizedSchema = (
+  schema: CordieriteNormalizedToolSchema,
+  mode: "input" | "output",
+): ConverterOutcome => {
+  if (schema.kind === "raw") {
+    return { ok: true, schema: schema.jsonSchema };
+  }
+
+  if (schema.kind === "paired") {
+    if (!isJsonSchemaConverter(schema.jsonSchema)) {
+      return { ok: true, schema: schema.jsonSchema };
+    }
+
+    return exportFromConverter(
+      schema.jsonSchema,
+      mode,
+      `"jsonSchema.${mode}" converter`,
+    );
+  }
+
+  if (!hasJsonSchemaExporter(schema.schema)) {
+    return { ok: false, reason: missingExporterReason };
+  }
+
+  return exportFromConverter(
+    schema.schema["~standard"].jsonSchema as CordieriteJsonSchemaConverter,
+    mode,
+    `"~standard.jsonSchema.${mode}" exporter`,
+  );
+};
+
 /**
  * JSON Schema to publish for one slot, or `undefined` when there is none (§7: `input_schema`/
  * `output_schema` are optional).
@@ -304,37 +337,32 @@ export const exportToolSchema = (
     return undefined;
   }
 
-  if (schema.kind === "raw") {
-    return schema.jsonSchema;
-  }
-
-  if (schema.kind === "paired") {
-    if (!isJsonSchemaConverter(schema.jsonSchema)) {
-      return schema.jsonSchema;
-    }
-
-    const outcome = exportFromConverter(
-      schema.jsonSchema,
-      mode,
-      `"jsonSchema.${mode}" converter`,
-    );
-    return outcome.ok
-      ? outcome.schema
-      : reportShapelessSchema(outcome.reason, mode, toolName);
-  }
-
-  if (!hasJsonSchemaExporter(schema.schema)) {
-    return reportShapelessSchema(missingExporterReason, mode, toolName);
-  }
-
-  const outcome = exportFromConverter(
-    schema.schema["~standard"].jsonSchema as CordieriteJsonSchemaConverter,
-    mode,
-    `"~standard.jsonSchema.${mode}" exporter`,
-  );
+  const outcome = exportNormalizedSchema(schema, mode);
   return outcome.ok
     ? outcome.schema
     : reportShapelessSchema(outcome.reason, mode, toolName);
+};
+
+/**
+ * Render-time exporter for `useCordieriteTool`'s derived registration key. Takes the raw
+ * `inputSchema`/`outputSchema` value as the caller passed it, and never throws or warns: an
+ * invalid value or a shapeless schema yields `undefined` here, and the registration path
+ * (`toToolDescriptor` via `registerTool`) is where it is reported. Keying is not the place to
+ * fail a render or to log.
+ */
+export const exportToolSchemaForKey = (
+  schema: CordieriteRuntimeSchema,
+  mode: "input" | "output",
+): ToolSchemaDescriptor | undefined => {
+  let normalized: CordieriteNormalizedToolSchema;
+  try {
+    normalized = normalizeToolSchema(schema, "schema");
+  } catch {
+    return undefined;
+  }
+
+  const outcome = exportNormalizedSchema(normalized, mode);
+  return outcome.ok ? outcome.schema : undefined;
 };
 
 export type NormalizedStandardSchemaIssue = {

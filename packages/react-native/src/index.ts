@@ -16,7 +16,7 @@ import {
 import { parseBootstrapPayload, parseBootstrapUrl } from "./bootstrap";
 import { cordieriteClient, noopIfNativeUnavailable } from "./default-client";
 import * as noop from "./noop";
-import { exportToolSchema } from "./schema";
+import { exportToolSchemaForKey } from "./schema";
 import { createUseCordieriteTool } from "./useCordieriteTool";
 
 export * from "./Cordierite.types";
@@ -149,9 +149,9 @@ export function getCordieriteBuildConfig(): CordieriteBuildConfig {
  * `true`) gates registration without breaking the rules of hooks — see the README's "Define tools
  * in app startup code" section.
  *
- * `exportToolSchema` is injected (rather than imported by the hook) so the inert `./noop` entry
+ * `exportToolSchemaForKey` is injected (rather than imported by the hook) so the inert `./noop` entry
  * below does not pull JSON Schema export into a bundle that registers nothing.
  */
 export const useCordieriteTool = createUseCordieriteTool(registerTool, {
-  exportSchema: exportToolSchema,
+  exportSchema: exportToolSchemaForKey,
 });
