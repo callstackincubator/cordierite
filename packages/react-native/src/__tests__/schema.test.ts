@@ -935,7 +935,7 @@ describe("toToolDescriptor: timeout_ms", () => {
   ])(
     "clamps a timeoutMs %s into the range the daemon enforces, with a dev warning",
     (_label, timeoutMs, expected) => {
-      const warnings = withDevWarnCaptured(() => {
+      const warnings = withWarningsCaptured(() => {
         const descriptor = toToolDescriptor({
           name: `clamped-${String(timeoutMs)}`,
           description: "d",
@@ -959,7 +959,7 @@ describe("toToolDescriptor: timeout_ms", () => {
   ])(
     "drops a timeoutMs that is %s, with a dev warning, rather than sending a descriptor the daemon rejects",
     (_label, timeoutMs) => {
-      const warnings = withDevWarnCaptured(() => {
+      const warnings = withWarningsCaptured(() => {
         const descriptor = toToolDescriptor({
           name: `unclampable-${String(timeoutMs)}`,
           description: "d",
@@ -978,7 +978,7 @@ describe("toToolDescriptor: timeout_ms", () => {
   );
 
   test("warns only once per tool name, like the shapeless-schema warning", () => {
-    const warnings = withDevWarnCaptured(() => {
+    const warnings = withWarningsCaptured(() => {
       toToolDescriptor({
         name: "noisy-timeout",
         description: "d",
