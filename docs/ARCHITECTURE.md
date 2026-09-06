@@ -93,7 +93,8 @@ The daemon refuses to load a key file that is group/world-readable.
   "daemonLogMaxBytes": 10485760,
   "policy": { "default": "allow", "destructive": "allow" },
   "advertisedIp": null,
-  "scheme": null
+  "scheme": null,
+  "restartDaemonOnVersionMismatch": false
 }
 ```
 
@@ -101,6 +102,8 @@ The daemon refuses to load a key file that is group/world-readable.
 payloads. `scheme` is the deep-link URI scheme composed into `cordierite link`'s output
 when `--scheme` is not passed (§10) — set it once here instead of on every invocation.
 `eventBufferSize` caps the per-session `events.since` retention buffer (§5).
+`restartDaemonOnVersionMismatch` makes version-drift restarts unconditional rather than
+only-when-no-sessions-are-live (§4, "Version drift").
 
 **Retention.** Nothing under the state dir is unbounded:
 
@@ -148,6 +151,67 @@ when `--scheme` is not passed (§10) — set it once here instead of on every in
   liveness with `process.kill(pid, 0)` and take over only if dead).
 - SIGINT/SIGTERM: close all device sockets with code 1001, remove `daemon.sock` and
   `daemon.pid`, flush audit, exit 0.
+- **Version drift:** the daemon outlives the CLI that spawned it, so `npm i -g cordierite@<newer>`
+  leaves the *old* daemon serving every later command — and a client that speaks a newer RPC
+  surface (0.6.0's `tools.cancel`/`events.since`, say) gets an opaque "method not found" instead of
+  a usable diagnosis. On its first connection, a CLI or MCP process therefore reads
+  `daemon.status`'s `version` once and compares it with its own package version. One extra
+  round-trip per process, not per request: the outcome is cached per daemon socket, and concurrent
+  callers share a single check.
+  - **Same version** — proceed, nothing else happens.
+  - **The daemon is newer** — proceed, after one notice (stderr in human mode; suppressed under
+    `--json`, which promises one machine-readable object and nothing else). A newer daemon already
+    serves everything an older client asks for, and replacing it would downgrade the daemon out
+    from under whichever newer install started it; two installs on one machine (a project-local
+    `node_modules/.bin/cordierite` next to a global one) would otherwise take turns killing each
+    other's daemon on every command. Versions are compared as semver, including §11's prerelease
+    precedence — numeric identifiers compare numerically and rank below alphanumeric ones, and a
+    prerelease ranks below its release, so `1.4.0-rc.1` does not restart `1.4.0` and `-rc.2` does
+    not consider itself newer than `-rc.10`. Versions that differ only in spelling (`1.2` vs
+    `1.2.0`, or `+build` metadata) are the same version: no restart and no notice. A version
+    neither side can order is treated like a newer daemon — warn, never restart on a guess.
+  - **The client is newer, and the daemon holds nothing** — the daemon is replaced transparently:
+    `daemon.shutdown`, poll until both the socket and the pidfile are released (the daemon answers
+    `shutdown` before tearing down, and releases the pidfile *after* the socket, so "socket gone"
+    alone would race the replacement's `O_EXCL` pidfile acquisition), then the normal auto-spawn
+    path. The whole sequence runs under the same exclusive spawn-lock as a cold start, and
+    re-reads the version and the live state while holding it, so racing upgraded clients produce
+    one replacement daemon.
+  - **The client is newer, but the daemon holds live state** — the command fails with a
+    `connection_error` naming both versions, what would be lost, and the remedies. "Live state" is
+    connected sessions *and* links that are still claimable — minted, unclaimed, and inside their
+    TTL (`pendingLinks`, §5; a link kept past its TTL only so a late claim can be told "expired"
+    does not count, or an expired QR would hold off the upgrade for a further grace window).
+    Restarting drops
+    every session — resume tokens are in-daemon memory (§3, §6), so an app's resume after a restart
+    fails closed with 1008 — and invalidates a deep link or QR code someone may be about to scan.
+    Force it with the global `--daemon-restart` flag, `CORDIERITE_DAEMON_RESTART=1`, or
+    `config.json`'s `restartDaemonOnVersionMismatch` (§3); `--no-daemon-restart` overrules the
+    latter two for one command.
+  - **At most one restart per process.** If the daemon now answering *still* reports a different
+    version, the check stops and reports what it observed — the old daemon never exited, or another
+    process spawned an older one — rather than retrying: each restart destroys whatever the daemon
+    was holding, and a retry loop would kill daemon after daemon while blaming a cause that was
+    never true. Losing the spawn-lock for the whole wait is reported as the lock it is, not as a
+    replacement that failed: nothing was replaced in that case.
+  - A daemon that is reachable but does not answer is **not** treated as gone: it is alive and
+    busy, and spawning a second daemon over it would be the worst possible response. The check
+    aborts with that diagnosis instead. The first `daemon.status` read uses the caller's ordinary
+    request timeout; the reads and the `daemon.shutdown` issued *while the spawn-lock is held* use
+    a 3 s one, so an unresponsive daemon cannot stretch the window in which no other process can
+    spawn. The spawn-lock is likewise reclaimed if it has been
+    held for more than 30 s, so a Ctrl-C mid-restart cannot poison the state dir permanently, and
+    the socket-wait timeout names the lock path when one is present.
+  - `daemon run` is the daemon; `daemon stop` is already the remedy; `daemon status` reports drift
+    as a `warning` and never restarts the daemon it was asked to describe. `keygen` and `doctor`
+    never open a daemon connection. The `cordierite/client` test SDK deliberately opts out, so a
+    spec can never have the daemon restarted out from under a live app session.
+  - Out of scope: drift introduced *after* a long-lived MCP server has started. Nothing re-checks
+    an established connection; the operator restarts the MCP server. Drift found *at* MCP startup
+    that cannot be resolved fails the whole server, so the agent loses every Cordierite tool rather
+    than some of them — an MCP client renders that as a bare "server failed to start", so the
+    server writes one stderr line naming both versions and the remedies before it exits. (Starting
+    degraded, with the built-in management tools still answering, is a possible follow-up.)
 
 ## 5. Control plane RPC (UDS)
 
@@ -168,7 +232,7 @@ Methods:
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `daemon.status` | — | `{ version, pid, startedAt, wssPort, pinnedKeys: [spkiPin], sessions: SessionSummary[] }` |
+| `daemon.status` | — | `{ version, pid, startedAt, wssPort, pinnedKeys: [spkiPin], sessions: SessionSummary[], pendingLinks }` — `pendingLinks` counts minted-but-unclaimed links (not sessions, §6, but live state a restart destroys; §4's version drift check reads it). Absent from daemons that predate this field. |
 | `daemon.shutdown` | — | `{ ok: true }` (then exits) |
 | `link.create` | `{ ttlSeconds?, addressOverride? }` | `{ sessionId, deepLinkPayload, endpoint: { family, address, port }, expiresAt }` — `deepLinkPayload` is the base64url bootstrap blob; callers compose `<scheme>:///?cordierite=<payload>`. `addressOverride` forces the advertised address (the emulator/simulator fast path uses it to force `127.0.0.1`). |
 | `sessions.list` | — | `SessionSummary[]` |
@@ -399,7 +463,7 @@ server can't drift in behavior: they are the same calls.
 
 The per-command reference lives in the [`cordierite` package README](../packages/cordierite/README.md),
 which is where it stays current. Global flags: `--json` (machine output, NDJSON for streams),
-`--no-color`, `--state-dir`. The `--scheme` used to compose a deep link comes from the flag,
+`--no-color`, `--state-dir`, `--daemon-restart` (force a version-drift restart, §4). The `--scheme` used to compose a deep link comes from the flag,
 else `config.json`, else a clear error.
 
 `cordierite invoke`: a SIGINT while the call is still pending cancels it (§5's

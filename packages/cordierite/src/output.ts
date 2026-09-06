@@ -287,6 +287,9 @@ const renderDaemonStatusData = (colors: ColorPalette, data: DaemonStatusCommandD
       ["Failed writes", data.audit.failed_writes],
       ["Failed prunes", data.audit.failed_prunes],
     ]),
+    // Version drift (issue #30) is the one thing here an operator has to act on, so it goes last
+    // — the line still on screen after the block scrolls — and in yellow, not a quiet field row.
+    ...(data.warning ? ["", colors.yellow(`Warning: ${data.warning}`)] : []),
   ];
 };
 

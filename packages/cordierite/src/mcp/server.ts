@@ -10,10 +10,6 @@
  * `tool_call_started` event that reveals the call's `callId` is unambiguous.
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
@@ -28,7 +24,15 @@ import { RPC_METHODS, type EventKind, type EventNotification, type SessionsListR
 
 import type { ExecFn } from "../cli/open-target.js";
 import { clampTimeout, deriveCallTransportTimeoutMs } from "../daemon/calls.js";
-import { DaemonRpcError, openDaemonStream, type SpawnFn } from "../rpc/client.js";
+import { getPackageVersion } from "../package-version.js";
+import {
+  DaemonRpcError,
+  DaemonVersionMismatchError,
+  openDaemonStream,
+  type DaemonStream,
+  type SpawnFn,
+  type VersionCheckOptions,
+} from "../rpc/client.js";
 import {
   CONNECT_TOOL_DESCRIPTOR,
   CONNECT_TOOL_NAME,
@@ -50,9 +54,7 @@ import {
 import { createMcpToolMapper, emitsMcpOutputSchema } from "./tool-mapping.js";
 import { findNamespacedTool, namespacedToolsSnapshotKey, type NamespacedTool } from "./tool-namespace.js";
 
-const packageVersion: string = JSON.parse(
-  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../package.json"), "utf8"),
-).version;
+const packageVersion = getPackageVersion();
 
 export const SESSIONS_RESOURCE_URI = "cordierite://sessions";
 
@@ -210,6 +212,14 @@ const proxiedToolResultContent = (tool: NamespacedTool, result: unknown): CallTo
 export type CreateMcpServerOptions = {
   stateDir: string;
   spawn?: SpawnFn;
+  /**
+   * Daemon/CLI version check (issue #30), applied to the startup stream only — never to the
+   * short-lived progress streams below, which must never restart the daemon out from under a call
+   * that is already in flight. A mismatch that cannot be resolved therefore fails server startup,
+   * with the same message the CLI prints. Drift introduced *after* this server started is out of
+   * scope: nothing re-checks a connection that is already established.
+   */
+  checkVersion?: VersionCheckOptions;
   /** The scheme composing `cordierite_connect`'s deep link; same source as `cli/link.ts`'s
    * `config.json`'s `scheme` (there is no per-call MCP flag equivalent). */
   scheme?: string;
@@ -224,7 +234,24 @@ export type McpServerHandle = {
 };
 
 export const createMcpServer = async (options: CreateMcpServerOptions): Promise<McpServerHandle> => {
-  const stream = await openDaemonStream({ stateDir: options.stateDir, spawn: options.spawn });
+  let stream: DaemonStream;
+
+  try {
+    stream = await openDaemonStream({
+      stateDir: options.stateDir,
+      spawn: options.spawn,
+      checkVersion: options.checkVersion,
+    });
+  } catch (error) {
+    if (error instanceof DaemonVersionMismatchError) {
+      // An MCP client renders a startup failure as a bare "server failed to start" with no cause,
+      // and the operator never sees the thrown message. This stderr line — which the client's own
+      // logs keep — is the only place the actual diagnosis reaches a human (ARCHITECTURE.md §4).
+      console.error(`cordierite mcp: refusing to start. ${error.message}`);
+    }
+
+    throw error;
+  }
 
   const server = new Server(
     { name: "cordierite", version: packageVersion },

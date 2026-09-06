@@ -169,6 +169,10 @@ export type SessionManager = {
   /** Dispatches an already-type-checked post-claim message; closes the socket on invalid content. */
   handlePostClaimMessage: (sessionId: string, socket: WebSocket, message: Record<string, unknown>) => void;
   list: () => SessionSummary[];
+  /** Links that are still claimable: minted, unclaimed, and inside their TTL. Not sessions (§6),
+   * but live state a daemon restart destroys, so `daemon.status` surfaces the count for issue
+   * #30's safety decision. */
+  pendingLinkCount: () => number;
   describe: (selector?: string) => SessionSummary;
   revoke: (selector?: string) => void;
   /** Resolves a selector for the `tools.*` RPC surface: same selector rules as
@@ -627,6 +631,7 @@ export const createSessionManager = (options: SessionManagerOptions): SessionMan
     handleResume,
     handlePostClaimMessage,
     list: () => Array.from(sessions.values(), toSummary),
+    pendingLinkCount: () => pendingLinks.claimableCount(),
     describe: (selector) => toSummary(resolveSession(selector)),
     revoke,
     resolveForTools,
