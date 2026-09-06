@@ -172,7 +172,7 @@ jobs:
           --assert-absent
 
   ios:
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 45
     env:
       # Deliberately NOT USE_CCACHE=1. That makes react_native_post_install override CC/CXX/LD with

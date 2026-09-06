@@ -19,7 +19,14 @@ export type PidfileHandle = {
   release: () => Promise<void>;
 };
 
-const isProcessAlive = (pid: number): boolean => {
+/**
+ * Liveness probe for a pid this process does not own (ARCHITECTURE.md §4's `process.kill(pid, 0)`
+ * check). Exported because every "is a daemon still there?" decision in the codebase must answer
+ * it the same way — pidfile takeover, the auto-spawn path's stale-socket unlink, and log rotation
+ * all hinge on it, and a second implementation that disagreed about `EPERM` would mean one of
+ * them quietly clobbering a live daemon's state.
+ */
+export const isProcessAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
     return true;

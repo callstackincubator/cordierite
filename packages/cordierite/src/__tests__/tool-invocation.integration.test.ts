@@ -14,8 +14,16 @@ import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import WebSocket from "ws";
 
-import { decodeBootstrap, TOOL_ERROR_TYPES, type EventKind, type EventNotification } from "@cordierite/shared";
+import {
+  decodeBootstrap,
+  TOOL_ERROR_TYPES,
+  type EventKind,
+  type EventNotification,
+  type ToolDescriptor,
+} from "@cordierite/shared";
 
+import { connect } from "../client/index.js";
+import { handleInvokeCommand } from "../commands/invoke.js";
 import { startDaemon, type RunningDaemon } from "../daemon/daemon.js";
 import { writeTestHostKey } from "./fixtures.js";
 
@@ -264,7 +272,7 @@ const claimApp = async (daemon: RunningDaemon, port: number, deviceModel = "Pixe
 const snapshotTools = async (
   daemon: RunningDaemon,
   app: ClaimedApp,
-  tools: Array<{ name: string; description?: string; input_schema?: Record<string, unknown> }>,
+  tools: Array<Partial<ToolDescriptor> & { name: string }>,
 ): Promise<void> => {
   const toolsChanged = waitForEvent(daemon, "tools_changed");
   app.socket.send(
@@ -415,6 +423,108 @@ describe("tools.call: timeout", () => {
 
     app.socket.close();
   }, 5000);
+
+  test("the tool's own declared timeoutMs is the default when the caller passes none (issue #25)", async () => {
+    const { daemon, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    // Declared well below DEFAULT_CALL_TIMEOUT_MS (10 s) so the assertion below distinguishes the
+    // two: if the descriptor's timeout were still being dropped on the wire, this call would sit
+    // there for 10 s and blow the 5 s test budget.
+    await snapshotTools(daemon, app, [{ name: "hangs", timeout_ms: 1000 }]);
+
+    const startedAt = Date.now();
+    await expect(
+      rpcCall(daemon.paths.socketPath, "tools.call", {
+        selector: app.alias,
+        name: "hangs",
+        args: {},
+      }),
+    ).rejects.toMatchObject({ data: { type: "tool_timeout" } });
+    expect(Date.now() - startedAt).toBeLessThan(5000);
+
+    app.socket.close();
+  }, 10_000);
+
+  test("an explicit caller timeoutMs still shortens a longer declared deadline (issue #25)", async () => {
+    const { daemon, port } = await startTestDaemon();
+    const app = await claimApp(daemon, port);
+    await snapshotTools(daemon, app, [{ name: "hangs", timeout_ms: 600_000 }]);
+
+    const startedAt = Date.now();
+    await expect(
+      rpcCall(daemon.paths.socketPath, "tools.call", {
+        selector: app.alias,
+        name: "hangs",
+        args: {},
+        timeoutMs: 1000,
+      }),
+    ).rejects.toMatchObject({ data: { type: "tool_timeout" } });
+    expect(Date.now() - startedAt).toBeLessThan(5000);
+
+    app.socket.close();
+  }, 10_000);
+});
+
+describe("caller transport timeouts over a slow tool", () => {
+  test(
+    "invoke (with and without --timeout) and cordierite/client all outlive the daemon's 10 s default (issue #25)",
+    async () => {
+      const { daemon, port } = await startTestDaemon();
+      const app = await claimApp(daemon, port);
+      await snapshotTools(daemon, app, [
+        { name: "slow-explicit" },
+        // Declares its own deadline, so a caller that passes none still gets 20 s daemon-side.
+        { name: "slow-declared", timeout_ms: 20_000 },
+      ]);
+
+      // 11 s clears the 10 s default these calls would otherwise be held to, and the declared 20 s
+      // leaves nine seconds of headroom above it, so a slow runner drifting a second or two turns
+      // this into neither a hard `tool_timeout` nor a false pass. The watchdog arithmetic itself is
+      // asserted exactly — and instantly — in call-timeouts.test.ts rather than by sleeping past
+      // each candidate timer here.
+      app.socket.on("message", (data) => {
+        const message = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+
+        if (message.type === "tool_call") {
+          setTimeout(() => {
+            app.socket.send(
+              JSON.stringify({
+                type: "tool_result",
+                session_id: app.sessionId,
+                id: message.id,
+                result: { loggedIn: true, tool: message.name },
+              }),
+            );
+          }, 11_000);
+        }
+      });
+
+      const client = await connect({ stateDir: daemon.paths.root, selector: app.sessionId });
+
+      try {
+        const [explicit, declared, viaClient] = await Promise.all([
+          handleInvokeCommand(
+            { selector: app.alias, tool: "slow-explicit", args: {}, timeoutMs: 30_000 },
+            { stateDir: daemon.paths.root },
+          ),
+          handleInvokeCommand(
+            { selector: app.alias, tool: "slow-declared", args: {} },
+            { stateDir: daemon.paths.root },
+          ),
+          client.call("slow-declared", {}),
+        ]);
+
+        expect(explicit).toEqual({ ok: true, data: { loggedIn: true, tool: "slow-explicit" } });
+        expect(declared).toEqual({ ok: true, data: { loggedIn: true, tool: "slow-declared" } });
+        expect(viaClient).toEqual({ loggedIn: true, tool: "slow-declared" });
+      } finally {
+        client.close();
+      }
+
+      app.socket.close();
+    },
+    25_000,
+  );
 });
 
 describe("tools.call: concurrency", () => {

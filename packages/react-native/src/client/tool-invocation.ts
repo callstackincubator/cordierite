@@ -6,7 +6,7 @@ import type {
   CordieriteUnifiedErrorEvent,
 } from "../Cordierite.types";
 import { logger } from "../logger";
-import { validateStandardSchema } from "../schema";
+import { validateToolSchema } from "../schema";
 import type { ClientTimers } from "./timers";
 
 export const normalizeThrownError = (error: unknown) => {
@@ -141,7 +141,7 @@ export const createToolMessageHandler = (
 
     try {
       const parsedArgs = tool.inputSchema
-        ? await validateStandardSchema(tool.inputSchema, rawMessage.args)
+        ? await validateToolSchema(tool.inputSchema, rawMessage.args)
         : Object.keys(rawMessage.args).length === 0
           ? {
               ok: true as const,
@@ -228,7 +228,7 @@ export const createToolMessageHandler = (
       }
 
       const parsedResult = tool.outputSchema
-        ? await validateStandardSchema(tool.outputSchema, result)
+        ? await validateToolSchema(tool.outputSchema, result)
         : result === undefined
           ? {
               ok: true as const,

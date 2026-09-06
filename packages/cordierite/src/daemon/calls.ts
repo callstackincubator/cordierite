@@ -15,21 +15,27 @@
 
 import { randomBytes } from "node:crypto";
 
-import type {
-  ToolCallMessage,
-  ToolCallProgressMessage,
-  ToolCancelMessage,
-  ToolErrorMessage,
-  ToolResultMessage,
+import {
+  clampToolTimeoutMs,
+  DEFAULT_TOOL_TIMEOUT_MS,
+  MAX_TOOL_TIMEOUT_MS,
+  MIN_TOOL_TIMEOUT_MS,
+  type ToolCallMessage,
+  type ToolCallProgressMessage,
+  type ToolCancelMessage,
+  type ToolErrorMessage,
+  type ToolResultMessage,
 } from "@cordierite/shared";
 
 import type { EventBus } from "./event-bus.js";
 import { RpcApplicationError } from "./rpc-server.js";
 import { systemTimers, type TimerFns, type TimerHandle } from "./timers.js";
 
-export const DEFAULT_CALL_TIMEOUT_MS = 10_000;
-export const MIN_CALL_TIMEOUT_MS = 1_000;
-export const MAX_CALL_TIMEOUT_MS = 600_000;
+/** Re-exported under this module's historical names; the values live in `@cordierite/shared` so the
+ * RN SDK's app-side abort timer and this timer cannot drift apart (issue #25). */
+export const DEFAULT_CALL_TIMEOUT_MS = DEFAULT_TOOL_TIMEOUT_MS;
+export const MIN_CALL_TIMEOUT_MS = MIN_TOOL_TIMEOUT_MS;
+export const MAX_CALL_TIMEOUT_MS = MAX_TOOL_TIMEOUT_MS;
 
 /** Identifies the session a call belongs to; carried through so progress/lifecycle events can be
  * tagged with the alias without this module needing to look sessions back up. */
@@ -96,12 +102,25 @@ type PendingCall = {
 
 const generateCallId = (): string => `call_${randomBytes(16).toString("base64url")}`;
 
-const clampTimeout = (timeoutMs: number | undefined): number => {
+/** Extra headroom added on top of the daemon-side deadline so a caller's transport timeout never
+ * beats the daemon's own `tool_timeout` — mirrored (deliberately duplicated) in
+ * `client/app-client.ts`, which must not import daemon-internal modules. */
+export const CALL_TRANSPORT_TIMEOUT_SLACK_MS = 5_000;
+
+/** The deadline the daemon will actually enforce for a `tools.call` with this `timeoutMs`. */
+export const clampTimeout = (timeoutMs: number | undefined): number => {
   if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) {
     return DEFAULT_CALL_TIMEOUT_MS;
   }
 
-  return Math.min(Math.max(Math.trunc(timeoutMs), MIN_CALL_TIMEOUT_MS), MAX_CALL_TIMEOUT_MS);
+  return clampToolTimeoutMs(timeoutMs);
+};
+
+/** Transport timeout a caller should use for a `tools.call` that will be given `timeoutMs`
+ * daemon-side. Always clamps first: adding slack to an unclamped value could overflow Node's
+ * 32-bit timer range (~24.8 days), which silently fires the timer immediately. */
+export const deriveCallTransportTimeoutMs = (timeoutMs: number | undefined): number => {
+  return clampTimeout(timeoutMs) + CALL_TRANSPORT_TIMEOUT_SLACK_MS;
 };
 
 /** Event kinds that terminate every pending call for a session (ARCHITECTURE.md §6/§5: "On

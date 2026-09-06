@@ -1,5 +1,61 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`daemon status rendering > omits the retention rows entirely for a daemon that predates them 1`] = `
+"Daemon Status
+Daemon
+  Version      0.7.0
+  PID          4242
+  Started at   2026-03-17T10:00:00.000Z
+  WSS port     8443
+  Pinned keys  1
+  Sessions     1
+
+Policy
+  Default      allow
+  Destructive  deny
+  Overrides    0
+
+Audit
+  Path           /tmp/state/audit
+  Failed writes  3
+
+Meta
+  Command: daemon status
+  Timestamp: 2026-03-17T10:00:00.000Z
+  Duration: 4 ms
+"
+`;
+
+exports[`daemon status rendering > renders the audit footprint with a human-readable size 1`] = `
+"Daemon Status
+Daemon
+  Version      0.7.0
+  PID          4242
+  Started at   2026-03-17T10:00:00.000Z
+  WSS port     8443
+  Pinned keys  1
+  Sessions     1
+
+Policy
+  Default      allow
+  Destructive  deny
+  Overrides    0
+
+Audit
+  Path           /tmp/state/audit
+  Retention      30 days
+  Files          12
+  Size           1.5 MiB
+  Failed writes  0
+  Failed prunes  2
+
+Meta
+  Command: daemon status
+  Timestamp: 2026-03-17T10:00:00.000Z
+  Duration: 4 ms
+"
+`;
+
 exports[`output rendering > human errors render on stderr 1`] = `
 "Command Failed
 Error

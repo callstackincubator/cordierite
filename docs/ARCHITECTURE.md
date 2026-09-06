@@ -72,6 +72,7 @@ override). Created lazily with mode `0700`. Layout:
 | `daemon.sock` | UDS control socket | `0600` |
 | `daemon.pid` | pidfile (single-instance lock) | `0600` |
 | `daemon.log` | daemon stdout/stderr when auto-spawned | `0600` |
+| `daemon.log.1` | previous `daemon.log`, kept by rotation (see below) | `0600` |
 | `key.pem` | default host private key (`cordierite keygen` default output) | `0600` |
 | `config.json` | daemon configuration (port, grace, policy) | `0600` |
 | `audit/<YYYY-MM-DD>.jsonl` | append-only audit log | `0600` |
@@ -88,9 +89,12 @@ The daemon refuses to load a key file that is group/world-readable.
   "linkTtlSeconds": 300,
   "keepaliveIntervalSeconds": 15,
   "eventBufferSize": 256,
+  "auditRetentionDays": 30,
+  "daemonLogMaxBytes": 10485760,
   "policy": { "default": "allow", "destructive": "allow" },
   "advertisedIp": null,
-  "scheme": null
+  "scheme": null,
+  "restartDaemonOnVersionMismatch": false
 }
 ```
 
@@ -98,13 +102,45 @@ The daemon refuses to load a key file that is group/world-readable.
 payloads. `scheme` is the deep-link URI scheme composed into `cordierite link`'s output
 when `--scheme` is not passed (§10) — set it once here instead of on every invocation.
 `eventBufferSize` caps the per-session `events.since` retention buffer (§5).
+`restartDaemonOnVersionMismatch` makes version-drift restarts unconditional rather than
+only-when-no-sessions-are-live (§4, "Version drift").
+
+**Retention.** Nothing under the state dir is unbounded:
+
+- `auditRetentionDays` (positive integer, default 30) bounds `audit/`. The daemon prunes
+  once at startup and every 24 h thereafter, deleting only files whose name matches
+  `<YYYY-MM-DD>.jsonl` and whose (UTC) date is more than `auditRetentionDays` days behind
+  today. The window is inclusive at both ends, so a fully-populated `audit/` holds up to
+  `auditRetentionDays + 1` files — today's plus each of the `auditRetentionDays` days
+  behind it — rather than exactly `auditRetentionDays`. Today's file is never touched,
+  and neither is anything else in the directory.
+  Pruning shares the audit write queue, so it cannot race an append; a failure is counted
+  and warned like a failed write, never thrown. `daemon status` reports the retained file
+  count, total size, and both failure counters — and reports the count and size as
+  *absent* rather than zero when the directory could not be read at all, since "empty" and
+  "we could not look" are different answers. A directory that does not exist yet is
+  genuinely empty (it is created lazily) and reports zero.
+- `daemonLogMaxBytes` (positive integer, default 10 MiB) bounds `daemon.log`. When a
+  daemon is spawned — auto-spawn, or `cordierite daemon start`, which spawns through the
+  same path (§4) — an over-cap `daemon.log` is renamed to `daemon.log.1` (mode `0600`,
+  single backup, previous backup replaced) before the new log is opened. A running daemon
+  never rotates its own log. An unreachable socket does not by itself prove the log is
+  unheld — a booting, wedged, or shutting-down daemon still owns its fd, and rotating
+  under one sends its output to a backup the next rotation then unlinks — so rotation
+  also declines when `daemon.pid` names a live process or when `daemon.sock` accepts a
+  connection, re-checked immediately before the rename. That narrows the window without
+  closing it: a daemon spawned microseconds ago has neither yet, and closing it properly
+  needs a lock held across spawn-and-ready rather than released at spawn. A rotation
+  failure never blocks the spawn, and neither does a `daemon.log` mode that the
+  filesystem refuses to set.
 
 ## 4. Daemon lifecycle
 
 - `cordierite daemon run` — run in the foreground (what auto-spawn executes, and what
   systemd/launchd would use).
 - `cordierite daemon start|stop|status` — explicit control. `start` spawns `daemon run`
-  detached with stdio redirected to `daemon.log`; `stop` sends `daemon.shutdown` over
+  detached with stdio redirected to `daemon.log` (rotating it first if it is over
+  `daemonLogMaxBytes` — §3); `stop` sends `daemon.shutdown` over
   RPC (SIGTERM fallback via pidfile); `status` renders `daemon.status`.
 - **Auto-spawn:** the shared RPC client library used by every CLI command attempts to
   connect to `daemon.sock`. On `ENOENT`/`ECONNREFUSED` it (1) takes an exclusive
@@ -115,6 +151,67 @@ when `--scheme` is not passed (§10) — set it once here instead of on every in
   liveness with `process.kill(pid, 0)` and take over only if dead).
 - SIGINT/SIGTERM: close all device sockets with code 1001, remove `daemon.sock` and
   `daemon.pid`, flush audit, exit 0.
+- **Version drift:** the daemon outlives the CLI that spawned it, so `npm i -g cordierite@<newer>`
+  leaves the *old* daemon serving every later command — and a client that speaks a newer RPC
+  surface (0.6.0's `tools.cancel`/`events.since`, say) gets an opaque "method not found" instead of
+  a usable diagnosis. On its first connection, a CLI or MCP process therefore reads
+  `daemon.status`'s `version` once and compares it with its own package version. One extra
+  round-trip per process, not per request: the outcome is cached per daemon socket, and concurrent
+  callers share a single check.
+  - **Same version** — proceed, nothing else happens.
+  - **The daemon is newer** — proceed, after one notice (stderr in human mode; suppressed under
+    `--json`, which promises one machine-readable object and nothing else). A newer daemon already
+    serves everything an older client asks for, and replacing it would downgrade the daemon out
+    from under whichever newer install started it; two installs on one machine (a project-local
+    `node_modules/.bin/cordierite` next to a global one) would otherwise take turns killing each
+    other's daemon on every command. Versions are compared as semver, including §11's prerelease
+    precedence — numeric identifiers compare numerically and rank below alphanumeric ones, and a
+    prerelease ranks below its release, so `1.4.0-rc.1` does not restart `1.4.0` and `-rc.2` does
+    not consider itself newer than `-rc.10`. Versions that differ only in spelling (`1.2` vs
+    `1.2.0`, or `+build` metadata) are the same version: no restart and no notice. A version
+    neither side can order is treated like a newer daemon — warn, never restart on a guess.
+  - **The client is newer, and the daemon holds nothing** — the daemon is replaced transparently:
+    `daemon.shutdown`, poll until both the socket and the pidfile are released (the daemon answers
+    `shutdown` before tearing down, and releases the pidfile *after* the socket, so "socket gone"
+    alone would race the replacement's `O_EXCL` pidfile acquisition), then the normal auto-spawn
+    path. The whole sequence runs under the same exclusive spawn-lock as a cold start, and
+    re-reads the version and the live state while holding it, so racing upgraded clients produce
+    one replacement daemon.
+  - **The client is newer, but the daemon holds live state** — the command fails with a
+    `connection_error` naming both versions, what would be lost, and the remedies. "Live state" is
+    connected sessions *and* links that are still claimable — minted, unclaimed, and inside their
+    TTL (`pendingLinks`, §5; a link kept past its TTL only so a late claim can be told "expired"
+    does not count, or an expired QR would hold off the upgrade for a further grace window).
+    Restarting drops
+    every session — resume tokens are in-daemon memory (§3, §6), so an app's resume after a restart
+    fails closed with 1008 — and invalidates a deep link or QR code someone may be about to scan.
+    Force it with the global `--daemon-restart` flag, `CORDIERITE_DAEMON_RESTART=1`, or
+    `config.json`'s `restartDaemonOnVersionMismatch` (§3); `--no-daemon-restart` overrules the
+    latter two for one command.
+  - **At most one restart per process.** If the daemon now answering *still* reports a different
+    version, the check stops and reports what it observed — the old daemon never exited, or another
+    process spawned an older one — rather than retrying: each restart destroys whatever the daemon
+    was holding, and a retry loop would kill daemon after daemon while blaming a cause that was
+    never true. Losing the spawn-lock for the whole wait is reported as the lock it is, not as a
+    replacement that failed: nothing was replaced in that case.
+  - A daemon that is reachable but does not answer is **not** treated as gone: it is alive and
+    busy, and spawning a second daemon over it would be the worst possible response. The check
+    aborts with that diagnosis instead. The first `daemon.status` read uses the caller's ordinary
+    request timeout; the reads and the `daemon.shutdown` issued *while the spawn-lock is held* use
+    a 3 s one, so an unresponsive daemon cannot stretch the window in which no other process can
+    spawn. The spawn-lock is likewise reclaimed if it has been
+    held for more than 30 s, so a Ctrl-C mid-restart cannot poison the state dir permanently, and
+    the socket-wait timeout names the lock path when one is present.
+  - `daemon run` is the daemon; `daemon stop` is already the remedy; `daemon status` reports drift
+    as a `warning` and never restarts the daemon it was asked to describe. `keygen` and `doctor`
+    never open a daemon connection. The `cordierite/client` test SDK deliberately opts out, so a
+    spec can never have the daemon restarted out from under a live app session.
+  - Out of scope: drift introduced *after* a long-lived MCP server has started. Nothing re-checks
+    an established connection; the operator restarts the MCP server. Drift found *at* MCP startup
+    that cannot be resolved fails the whole server, so the agent loses every Cordierite tool rather
+    than some of them — an MCP client renders that as a bare "server failed to start", so the
+    server writes one stderr line naming both versions and the remedies before it exits. (Starting
+    degraded, with the built-in management tools still answering, is a possible follow-up.)
 
 ## 5. Control plane RPC (UDS)
 
@@ -135,7 +232,7 @@ Methods:
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `daemon.status` | — | `{ version, pid, startedAt, wssPort, pinnedKeys: [spkiPin], sessions: SessionSummary[] }` |
+| `daemon.status` | — | `{ version, pid, startedAt, wssPort, pinnedKeys: [spkiPin], sessions: SessionSummary[], pendingLinks }` — `pendingLinks` counts minted-but-unclaimed links (not sessions, §6, but live state a restart destroys; §4's version drift check reads it). Absent from daemons that predate this field. |
 | `daemon.shutdown` | — | `{ ok: true }` (then exits) |
 | `link.create` | `{ ttlSeconds?, addressOverride? }` | `{ sessionId, deepLinkPayload, endpoint: { family, address, port }, expiresAt }` — `deepLinkPayload` is the base64url bootstrap blob; callers compose `<scheme>:///?cordierite=<payload>`. `addressOverride` forces the advertised address (the emulator/simulator fast path uses it to force `127.0.0.1`). |
 | `sessions.list` | — | `SessionSummary[]` |
@@ -150,8 +247,39 @@ Methods:
 `SessionSummary`: `{ sessionId, alias, state, device: { manufacturer?, model?, os? },
 createdAt, claimedAt?, suspendedAt?, toolCount }`.
 
+**`tools.call` deadline.** The daemon's per-call deadline is `timeoutMs ?? tool.timeout_ms`
+— an explicit caller `timeoutMs` first, then the tool's own declared `timeout_ms` from its
+descriptor (`docs/PROTOCOL.md` §5), then `DEFAULT_CALL_TIMEOUT_MS` (10 000 ms) for a tool
+that declares nothing. Whatever that resolves to is clamped to
+`[MIN_TOOL_TIMEOUT_MS, MAX_TOOL_TIMEOUT_MS]` = `[1 000, 600 000]` ms; overshooting it
+rejects with `tool_timeout`.
+
+**A caller can shorten the deadline but cannot extend it past the app's own timer.** The
+app runs an independent abort timer per call (§11), set from the tool's declared
+`timeoutMs` or the client-wide `defaultToolTimeoutMs`, and it aborts the handler and
+answers `tool_timeout` at that point no matter what the caller asked for. So a caller
+`timeoutMs` below the app's timer genuinely shortens the call, while one above it only
+moves the daemon's own giving-up point — the app still stops first. For a tool that
+declares nothing, that ceiling is the app's 10 s default: `--timeout 60000` against such a
+tool does not buy it sixty seconds. Extending a tool's budget is the app's decision, made
+by declaring `timeoutMs` on the registration.
+
+Callers that hold their own transport watchdog over a `tools.call` (the MCP server,
+`cordierite invoke`, `cordierite/client`) must size it from the same arithmetic —
+`deriveCallTransportTimeoutMs` (`daemon/calls.ts`) is that clamp plus 5 000 ms of slack —
+so the daemon's `tool_timeout` always arrives first and the real error type reaches the
+caller instead of a generic transport failure. A caller that knows the effective deadline
+sizes the watchdog from it (the MCP server reads the tool's `timeout_ms` straight off its
+`tools.list` entry); a caller that does not — `invoke` with no `--timeout`,
+`AppClient.call` with no `timeoutMs`, both of which leave the deadline to the tool's own
+undeclared-to-them value — sizes it from `MAX_TOOL_TIMEOUT_MS` instead. That
+backstop is only ever reached by a daemon that accepts a request and then answers nothing:
+a daemon that dies or drops the socket rejects every pending call at once
+(`rpc/client.ts`'s `close` handler), so nothing waits on the long timer in practice.
+
 `daemon.status`'s result also reports the effective policy config and audit surfacing:
-`{ ..., policy: { default, destructive, tools? }, audit: { path, failedWrites } }` (§12).
+`{ ..., policy: { default, destructive, tools? }, audit: { path, failedWrites, failedPrunes,
+retentionDays, files, bytes } }` (§12, and §3 for the retention fields).
 
 Event notification payload: `{ kind, sessionId?, alias?, ts, data, seq }` where `kind` is one
 of `daemon_started`, `link_created`, `link_expired`, `session_claimed`,
@@ -269,6 +397,49 @@ proxies daemon RPC (auto-spawning the daemon like any client):
   opens the dedicated connection that learns `callId` while the call is still in flight;
   a non-progress call has no `callId` to cancel by until it has already resolved, at
   which point cancelling it is moot).
+- **Schemas are gated on what MCP will actually accept** (issue #26). A client validates the
+  entire `tools/list` result against the SDK's `ToolSchema`, so one entry it rejects makes the
+  agent see *zero* tools from that app. `ToolSchema` requires `inputSchema.type` and
+  `outputSchema.type` to be the literal `"object"` — excluding `z.array`, `z.string`, a
+  `z.union`'s `anyOf`, and a `z.discriminatedUnion`'s `oneOf` or `z.intersection`'s `allOf` even
+  when every branch is an object — *and* constrains `properties` to a record of object
+  subschemas (the `properties: { a: true }` shorthand is rejected) and `required` to an array.
+  Rather than restate those rules, `mcp/tool-mapping.ts` parses the composed tool with the SDK's
+  own `ToolSchema`: a rejected `output_schema` is dropped, a rejected `input_schema` is replaced
+  with the permissive empty object schema, and each degradation is logged once on stderr
+  (deduped per session + tool + offending schema). The tool stays listed and callable either
+  way. Only the MCP surface degrades — the daemon registry, `cordierite invoke`/`--json`, the JS
+  client, and app-side result validation all keep the real schema.
+- A tool whose `output_schema` *was* emitted always answers with `structuredContent`, because a
+  client requires it for every tool it listed an `outputSchema` for; the emit decision and this
+  one are literally the same predicate, so they cannot drift. A handler returning a non-object
+  anyway (reachable only when the schema's validator is looser than its declared shape) fails as
+  `tool_output_validation_error` content rather than as an opaque client-side protocol error. A
+  tool whose schema was dropped, or that never had one, is unconstrained: its result is always
+  JSON text content, and additionally `structuredContent` when the result happens to be an
+  object — allowed, because the client has no schema to validate it against. One caveat is
+  inherent to MCP: a client caches output schemas from the `tools/list` it last read, so if a
+  tool's `output_schema` stops being emitted (the app re-registers it with a shape MCP rejects),
+  a client still holding the older listing keeps demanding `structuredContent` for it until it
+  re-lists. `notifications/tools/list_changed` fires on exactly that change, so the window is the
+  client's own refresh latency, not something the server can close.
+- A proxied `tools/call` sends the tool's own declared `timeout_ms` (clamped, §5) as the
+  call's `timeoutMs` param, and sizes its daemon connection's request timeout from that same
+  number via `deriveCallTransportTimeoutMs` (§5). It is sent explicitly rather than left to
+  the daemon's `?? tool.timeout_ms` fallback so both numbers come from one value: the MCP
+  server resolves the tool from a `tools/list` snapshot while the daemon reads its live
+  registry, and a re-registration in between would otherwise leave a watchdog sized for the
+  old deadline to fire first and mask the daemon's real `tool_timeout`. A tool that declares
+  nothing gets the same 10 s default folded in by that clamp, so there is one number rather
+  than a conditional. Without any of this the connection's own 10 s default would race the
+  daemon's timer, and a long tool would surface as a generic transport error rather than
+  being reachable at all.
+- None of that lifts the MCP **client's** own per-request timeout, which is a third ceiling
+  outside this daemon's control (the SDK's default is 60 s, and Claude Code allows a stdio
+  tool call far longer). A tool declaring more than the calling agent will wait for still
+  fails on the client side, so a genuinely long tool should report progress — a
+  `progressToken` call resets many clients' idle timer — rather than rely on the deadline
+  alone.
 - Two built-in management tools, `cordierite_connect` and `cordierite_wait_for_session`,
   let an agent mint a bootstrap link, deliver it to an emulator/simulator, and wait for the
   claim — without shell access. This is what makes the agent path self-service.
@@ -292,7 +463,7 @@ server can't drift in behavior: they are the same calls.
 
 The per-command reference lives in the [`cordierite` package README](../packages/cordierite/README.md),
 which is where it stays current. Global flags: `--json` (machine output, NDJSON for streams),
-`--no-color`, `--state-dir`. The `--scheme` used to compose a deep link comes from the flag,
+`--no-color`, `--state-dir`, `--daemon-restart` (force a version-drift restart, §4). The `--scheme` used to compose a deep link comes from the flag,
 else `config.json`, else a clear error.
 
 `cordierite invoke`: a SIGINT while the call is still pending cancels it (§5's
@@ -372,17 +543,91 @@ Client behavior:
   registration identity, not name). Duplicate name registration logs a dev warning and
   overwrites.
 - `useCordieriteTool(definition, deps?, { enabled? })` — `useEffect` wrapper around
-  `registerTool`/`remove`. `enabled` (default `true`) is the supported way to gate a tool by
-  build variant without breaking the rules of hooks; registration is the app-side allowlist,
-  and it is the only enforcement point inside the app's own trust boundary (§12).
+  `registerTool`/`remove`. It registers **once per mount**: the registered handler is a
+  stable wrapper forwarding to the latest render's `definition.handler`, so a handler
+  closing over component state is fresh on every call without re-registering. With `deps`
+  omitted (the documented default) the effect keys off a derived, fixed-length dependency
+  list of everything that changes the registry entry — `name`, `description`,
+  `timeoutMs` (app-side only, but part of the entry), stringified `annotations`, the
+  exported input/output JSON Schemas, and `enabled` — so a re-render never emits a
+  `tool_registry_delta` pair or an agent-side `notifications/tools/list_changed`. Schemas
+  are compared by identity first and re-exported only when the identity changed
+  (hoisted/memoized schemas never re-export; an inline `z.object({…})` re-exports once per
+  render and still matches by shape). A schema that exports no JSON Schema (zod 3, plain
+  valibot) has no shape to compare, so it falls back to identity — "exports nothing" must
+  not collapse into "no schema at all", which is what the entry's `outputSchema` presence
+  and §7's optional `input_schema`/`output_schema` are keyed on. A caller-supplied `deps`
+  is an explicit override with `useEffect`'s own semantics (`[...deps, enabled]`).
+  `enabled` (default `true`) is the supported way to gate a tool by build variant without
+  breaking the rules of hooks; registration is the app-side allowlist, and it is the only
+  enforcement point inside the app's own trust boundary (§12). The JSON Schema exporter is
+  injected into `createUseCordieriteTool` by the `.` entry and deliberately omitted by
+  `./noop`, whose registrar registers nothing: the inert entry keys the effect off
+  `enabled` alone and never imports schema export at all. `__tests__/noop-parity.test.ts`
+  pins the API shape and arity; the behavioral half — that the inert entry never exports,
+  and still honors `enabled` — is pinned by the "inert entry" cases in
+  `__tests__/use-cordierite-tool.test.ts`.
 - `postEvent(name, payload?)` — emits an `event` frame when active; silently drops (dev
   warning) otherwise.
 - Unified listener: `addCordieriteListener(kind, cb)` with kinds `stateChange`,
   `error` (covers bootstrap parse/connect and socket errors), `sessionChange`.
-- Schema handling: Standard Schema JSON exporter as in v1; when a schema lacks the
-  exporter, log a dev warning that agents will see a shapeless tool.
+- Schema handling: Standard Schema stays the only runtime-validation contract, but
+  `inputSchema`/`outputSchema` accept three forms, classified once at registration by
+  `normalizeToolSchema` (`schema.ts`) into `standard` / `paired` / `raw`:
+  - a **Standard Schema** — anything carrying `~standard.validate`, object or callable
+    (arktype's `Type` is a function) — validated with `~standard.validate`, published from
+    `~standard.jsonSchema` (the Standard JSON Schema companion spec; zod 4 and arktype
+    implement it, zod 3 and plain valibot do not).
+  - a **`{ schema, jsonSchema }` pair** — validated with `schema["~standard"].validate`,
+    published from the supplied JSON Schema object or `{ input, output }` converter. This
+    is the supported path for zod 3 (`zod-to-json-schema`) and valibot
+    (`@valibot/to-json-schema`).
+  - a **raw JSON Schema object** — no `~standard`, a *plain* object (prototype
+    `Object.prototype` or `null`), and an own `type`, if present, that is a JSON Schema type
+    name or an array of them — published verbatim and handed to the handler **unvalidated**.
+    `{}` qualifies: it is valid accept-anything JSON Schema. No JSON Schema validator is
+    bundled: `@cordierite/react-native` keeps zero third-party runtime dependencies (§13).
+    The optional `jsonSchema<T>()` helper is a pure type-level cast that gives such a handler
+    real argument/result types.
+
+  The raw test is structural rather than keyword-based on purpose. A keyword probe using `in`
+  walks the prototype chain, and validator instances from libraries predating Standard Schema
+  (yup, joi, superstruct, valibot 0.x) carry a prototype `type` — they would be taken as raw
+  JSON Schema and published as the tool's shape, having previously been rejected outright.
+  Many also hold circular references, so `JSON.stringify` on `tool_registry_snapshot` would
+  throw and lose the whole snapshot, not just that tool.
+
+  Everything else throws a `TypeError` at registration rather than being published as the
+  tool's shape: non-objects and arrays, a `~standard` that is not a Standard Schema, any
+  object mentioning `schema`/`jsonSchema` that is not a valid pair, and anything failing the
+  plain-object rule. The `jsonSchema` half of a pair and every converter result are held to
+  that same rule, so the forms cannot diverge in what they will publish.
+
+  Separately from all of this, an **input schema should be object-typed at its root** to be
+  usable over MCP — a root `enum`/`const`/`$ref`/`anyOf` is legal JSON Schema but leaves the
+  agent with no named arguments (issue #34). This is documented, not enforced.
+
+  Every way a slot can end up with no shape — a missing exporter, an exporter that throws or
+  returns a non-object, a paired converter that does either — takes the same route: throw in
+  `__DEV__`, warn once per tool name and register shapeless otherwise, so a shipped app is
+  not bricked by an upgrade. Nothing is swallowed silently.
+
+  Exported JSON Schema is not normalized or checked against a target dialect, and vendors
+  differ in what they emit (`default` handling, `additionalProperties`, draft version), so
+  two libraries describing the same shape may not produce byte-identical schemas. The wire
+  `ToolDescriptor` (§7) is unchanged by any of this — it already carries draft 2020-12
+  JSON Schema, so the whole contract is app-side.
 - App-side handler timeout: if a handler exceeds the call timeout hint, abort its
-  `AbortSignal`, reply `tool_timeout`, and ignore the late result.
+  `AbortSignal`, reply `tool_timeout`, and ignore the late result. The hint is the tool's
+  own `timeoutMs`, falling back to the client-wide `defaultToolTimeoutMs`. This timer is
+  the real ceiling on a call: a caller's `tools.call` `timeoutMs` can shorten the deadline
+  but never extend it past this point, because the app stops the handler here regardless.
+  Only the
+  *explicit* per-tool value travels on the descriptor (`docs/PROTOCOL.md` §5), where it
+  becomes the daemon's default deadline for that tool (§5) — so a tool that declares one
+  has the app timer and the daemon timer agree instead of the daemon giving up at 10 s
+  first. `defaultToolTimeoutMs` deliberately stays app-side: putting it on the wire would
+  silently retune the daemon's deadline for every tool in the app.
 - Cancellation: `tool.handler(args, context)`'s `context.signal` (`AbortSignal`) aborts on
   a `tool_cancel` frame (§7) or when the session's transport is lost (suspend) — the
   latter can't itself deliver `tool_cancel` (there is no socket left), so it aborts every
@@ -444,6 +689,8 @@ it.
   only when a `"prompt"` call proceeded on the MCP client-gate channel above — kept
   distinct from a plain `"ok"` since the daemon never observes the consent decision
   itself, only that the call arrived carrying this marker. Raw args are never logged.
+  Day files are pruned on the `auditRetentionDays` schedule described in §3, and
+  `daemon status` surfaces the directory's file count, size, and failure counters.
 
 ## 13. Package layout
 
@@ -459,7 +706,9 @@ packages/
     src/rpc/       RPC client library (connect-or-spawn), shared by cli/ and mcp/
     src/cli/       command definitions + renderers (keep DI/testability patterns)
     src/mcp/       stdio MCP server
-  react-native/    @cordierite/react-native (entries: ., /auto, /noop)
+  react-native/    @cordierite/react-native (entries: ., /auto, /noop). Depends only on
+                   @cordierite/shared — no third-party runtime deps, which is why no
+                   JSON Schema validator ships with it (§11's raw schema form).
 playground/        reference app (Expo dev build)
 ```
 
@@ -475,3 +724,6 @@ named-pipe path `\\.\pipe\cordierite-<user>` behind the same client API.
   pin sets; the anchor-CA design is a future option).
 - Web/browser client (safe no-op stub only).
 - Multiple endpoint candidates in the bootstrap payload.
+- A tool whose `input_schema` is not object-rooted is listed but not usefully callable over MCP,
+  because MCP tool arguments are always an object (§9). Wrapping such arguments so the tool stays
+  callable is tracked in [issue #34](https://github.com/callstackincubator/cordierite/issues/34).

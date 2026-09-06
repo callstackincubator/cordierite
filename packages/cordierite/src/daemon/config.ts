@@ -34,7 +34,20 @@ export type CordieriteConfig = {
   /** Max retained `app_event`/etc. events per session (ARCHITECTURE.md §5's `events.since`
    * retention buffer); default 256. */
   eventBufferSize: number;
+  /** Days of `audit/<YYYY-MM-DD>.jsonl` history to keep; files older than this are pruned on
+   * daemon start and once a day thereafter (ARCHITECTURE.md §3). Default 30. */
+  auditRetentionDays: number;
+  /** Size at which `daemon.log` is rotated to `daemon.log.1` before a daemon is spawned
+   * (ARCHITECTURE.md §3/§4). Default 10 MiB. */
+  daemonLogMaxBytes: number;
   policy: CordieritePolicyConfig;
+  /**
+   * When the CLI/MCP client finds the running daemon on a different Cordierite version, restart it
+   * even if that drops live sessions (issue #30, ARCHITECTURE.md §4's "Version drift"). Default
+   * `false`: with sessions connected the command fails with both versions and the remedy instead.
+   * The `--daemon-restart` flag and `CORDIERITE_DAEMON_RESTART=1` force the same thing per run.
+   */
+  restartDaemonOnVersionMismatch: boolean;
   /** Operator override for advertised-address detection (daemon/address.ts); undefined = auto-detect. */
   advertisedIp?: string;
   /**
@@ -54,14 +67,20 @@ const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
   "linkTtlSeconds",
   "keepaliveIntervalSeconds",
   "eventBufferSize",
+  "auditRetentionDays",
+  "daemonLogMaxBytes",
   "policy",
   "advertisedIp",
   "scheme",
+  "restartDaemonOnVersionMismatch",
 ]);
 
 const KNOWN_POLICY_KEYS = new Set<string>(["default", "destructive", "tools"]);
 
 const POLICY_DECISIONS = new Set<string>(["allow", "deny", "prompt"]);
+
+export const DEFAULT_AUDIT_RETENTION_DAYS = 30;
+export const DEFAULT_DAEMON_LOG_MAX_BYTES = 10 * 1024 * 1024;
 
 export class CordieriteConfigError extends Error {
   constructor(
@@ -93,6 +112,14 @@ const requireNonEmptyString = (value: unknown, key: string): string => {
   return value;
 };
 
+const requireBoolean = (value: unknown, key: string): boolean => {
+  if (typeof value !== "boolean") {
+    throw configError(key, "must be a boolean.");
+  }
+
+  return value;
+};
+
 const requirePolicyDecision = (value: unknown, key: string): PolicyDecision => {
   if (typeof value !== "string" || !POLICY_DECISIONS.has(value)) {
     throw configError(key, 'must be "allow", "deny", or "prompt".');
@@ -109,6 +136,9 @@ export const defaultConfig = (paths: StateDirPaths): CordieriteConfig => {
     linkTtlSeconds: 300,
     keepaliveIntervalSeconds: 15,
     eventBufferSize: 256,
+    auditRetentionDays: DEFAULT_AUDIT_RETENTION_DAYS,
+    daemonLogMaxBytes: DEFAULT_DAEMON_LOG_MAX_BYTES,
+    restartDaemonOnVersionMismatch: false,
     policy: {
       default: "allow",
       destructive: "allow",
@@ -183,6 +213,21 @@ export const loadConfig = async (
 
   if (parsed.eventBufferSize !== undefined) {
     config.eventBufferSize = requirePositiveInteger(parsed.eventBufferSize, "eventBufferSize");
+  }
+
+  if (parsed.auditRetentionDays !== undefined) {
+    config.auditRetentionDays = requirePositiveInteger(parsed.auditRetentionDays, "auditRetentionDays");
+  }
+
+  if (parsed.daemonLogMaxBytes !== undefined) {
+    config.daemonLogMaxBytes = requirePositiveInteger(parsed.daemonLogMaxBytes, "daemonLogMaxBytes");
+  }
+
+  if (parsed.restartDaemonOnVersionMismatch !== undefined) {
+    config.restartDaemonOnVersionMismatch = requireBoolean(
+      parsed.restartDaemonOnVersionMismatch,
+      "restartDaemonOnVersionMismatch",
+    );
   }
 
   if (parsed.policy !== undefined) {
