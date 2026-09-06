@@ -150,6 +150,12 @@ export type DaemonStatusCommandData = {
     pinned_keys: string[];
     session_count: number;
   };
+  /**
+   * Present only when the running daemon's version differs from this CLI's (issue #30). `daemon
+   * status` deliberately reports drift instead of acting on it — it is the command an operator
+   * reaches for to *diagnose* a daemon, so it must never restart the one they are inspecting.
+   */
+  warning?: string;
   /** Effective policy + audit surfacing (ARCHITECTURE.md §12). */
   policy: {
     default: EffectivePolicyDecision;

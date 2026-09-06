@@ -52,6 +52,12 @@ export type PendingLinkRegistry = {
   recordFailedAttempt: (sessionId: string) => number;
   /** Discards a link outright (TTL expiry, attempt-limit exceeded, or explicit revoke). */
   discard: (sessionId: string) => void;
+  /** How many links are still claimable right now: minted, unclaimed, and not past their TTL
+   * (`daemon.status`'s `pendingLinks`). Deliberately not `records.size` — a record outlives its
+   * TTL by a further grace window purely so a late claim can be told "expired" rather than
+   * "unknown", and an expired QR nobody will scan must not hold off a daemon upgrade for another
+   * whole TTL (issue #30). */
+  claimableCount: () => number;
   /** Clears every outstanding TTL timer (daemon shutdown). */
   disposeAll: () => void;
 };
@@ -170,6 +176,18 @@ export const createPendingLinkRegistry = (options: PendingLinkRegistryOptions): 
       return record.attempts;
     },
     discard,
+    claimableCount: () => {
+      const now = options.clock.now().getTime();
+      let count = 0;
+
+      for (const record of records.values()) {
+        if (record.link.expiresAt.getTime() > now) {
+          count += 1;
+        }
+      }
+
+      return count;
+    },
     disposeAll: () => {
       for (const sessionId of Array.from(records.keys())) {
         discard(sessionId);

@@ -139,8 +139,12 @@ export type CliJsonResult<T = unknown> = {
  * process's event loop for the subprocess's entire lifetime, deadlocking that round-trip (see
  * `cli-v2.integration.test.ts`).
  */
-export const runCliJson = async <T = unknown>(args: string[], stateDir: string): Promise<CliJsonResult<T>> => {
-  const proc = spawnCliBinary([...args, "--json"], { stateDir });
+export const runCliJson = async <T = unknown>(
+  args: string[],
+  stateDir: string,
+  extraEnv: Record<string, string> = {},
+): Promise<CliJsonResult<T>> => {
+  const proc = spawnCliBinary([...args, "--json"], { stateDir, extraEnv });
 
   const [stdout, stderr] = await Promise.all([
     text(proc.stdout),

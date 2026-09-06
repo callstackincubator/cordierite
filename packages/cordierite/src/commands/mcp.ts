@@ -16,11 +16,13 @@ import { loadConfig } from "../daemon/config.js";
 import { getStateDirPaths } from "../daemon/state-dir.js";
 import type { ExecFn } from "../cli/open-target.js";
 import { createMcpServer, type McpServerHandle } from "../mcp/server.js";
-import type { SpawnFn } from "../rpc/client.js";
+import type { SpawnFn, VersionCheckOptions } from "../rpc/client.js";
 
 export type McpCommandContext = {
   stateDir: string;
   spawn?: SpawnFn;
+  /** Daemon/CLI version check for the startup stream (issue #30); omitted = no check. */
+  checkVersion?: VersionCheckOptions;
   /** Overrides `config.json`'s `scheme` (there is no per-invocation flag for `mcp`, unlike `link`). */
   scheme?: string;
   exec?: ExecFn;
@@ -46,6 +48,7 @@ export const handleMcpCommand = async (context: McpCommandContext): Promise<McpH
   const handle = await createMcpServer({
     stateDir: context.stateDir,
     spawn: context.spawn,
+    checkVersion: context.checkVersion,
     scheme,
     exec: context.exec,
     env: context.env,
