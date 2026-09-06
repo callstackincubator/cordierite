@@ -285,4 +285,26 @@ describe("daemon lifecycle", () => {
 
     await rm(stateDir, { force: true, recursive: true });
   });
+
+  test("restartDaemonOnVersionMismatch defaults to false and must be a boolean", async () => {
+    const stateDir = await makeTempStateDir();
+    const paths = getStateDirPaths(stateDir);
+    const { mkdir } = await import("node:fs/promises");
+    const { loadConfig } = await import("../daemon/config.js");
+    await mkdir(stateDir, { recursive: true });
+
+    // Absent: the safe default — never drop an operator's live sessions without being asked.
+    await writeFile(paths.configPath, JSON.stringify({}));
+    expect((await loadConfig(paths)).restartDaemonOnVersionMismatch).toBe(false);
+
+    await writeFile(paths.configPath, JSON.stringify({ restartDaemonOnVersionMismatch: true }));
+    expect((await loadConfig(paths)).restartDaemonOnVersionMismatch).toBe(true);
+
+    // A string is the likely typo (`"true"`), and silently reading it as truthy would be the worst
+    // possible failure for a knob whose whole job is guarding session loss.
+    await writeFile(paths.configPath, JSON.stringify({ restartDaemonOnVersionMismatch: "true" }));
+    await expect(loadConfig(paths)).rejects.toThrow(/restartDaemonOnVersionMismatch/u);
+
+    await rm(stateDir, { force: true, recursive: true });
+  });
 });
