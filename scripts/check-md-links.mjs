@@ -136,9 +136,13 @@ function anchorsOf(source) {
   const anchors = new Set();
   const seen = new Map();
   for (const line of maskCode(source, { inline: false }).split("\n")) {
-    const heading = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     if (!heading) continue;
-    const base = slugify(heading[2]);
+    // The optional closing sequence (`## Title ##`) is stripped with plain string operations
+    // rather than a trailing `\s*#*\s*$` in the pattern above: two whitespace repetitions either
+    // side of a nullable one backtrack quadratically on a heading that is mostly spaces, and this
+    // runs over every line of every Markdown file in the repo.
+    const base = slugify(heading[2].trimEnd().replace(/#+$/, "").trimEnd());
     if (!base) continue;
     const count = seen.get(base) ?? 0;
     seen.set(base, count + 1);
@@ -189,8 +193,10 @@ for (const file of files) {
   const targets = [];
 
   // Inline links and images: [text](target) / ![alt](target). Nested parens in the label are
-  // tolerated; the destination itself may be wrapped in <>.
-  for (const match of masked.matchAll(/!?\[(?:[^\]\\]|\\.)*\]\(\s*(<[^>]*>|[^()\s]*)(?:\s+"[^"]*")?\s*\)/g)) {
+  // tolerated; the destination itself may be wrapped in <>. An optional title is matched as
+  // `"…"` followed by its own trailing whitespace — a leading `\s+` there would be ambiguous
+  // with the `\s*` before `)` and backtrack quadratically on a run of spaces that never closes.
+  for (const match of masked.matchAll(/!?\[(?:[^\]\\]|\\.)*\]\(\s*(<[^>]*>|[^()\s]*)\s*(?:"[^"]*"\s*)?\)/g)) {
     targets.push({ target: match[1].replace(/^<|>$/g, ""), index: match.index });
   }
 
