@@ -35,7 +35,7 @@ npm install -g cordierite
 
 **No key, no pins, and no config plugin are needed — in any build type.** The daemon auto-generates a key on first start, and `cordierite link` carries its `sha256/...` fingerprint on the deep link for the app to trust for that session.
 
-Wire your deep-link scheme so the OS can open the app with that link. To make a build trust only pins you embedded ahead of time, see [Configuring trust](https://github.com/callstackincubator/cordierite/blob/main/docs/SECURITY.md#configuring-trust).
+Wire your deep-link scheme so the OS can open the app with that link. For an Expo app that is all: `cordierite link` reads `expo.scheme` straight out of `app.json`. Otherwise (a dynamic `app.config.js`, which Cordierite never executes, or bare React Native) name it with `cordierite init --scheme <s>`, `--scheme`, or `CORDIERITE_SCHEME` — the [CLI README](https://github.com/callstackincubator/cordierite/blob/main/packages/cordierite/README.md#the-deep-link-scheme) has the full resolution order. To make a build trust only pins you embedded ahead of time, see [Configuring trust](https://github.com/callstackincubator/cordierite/blob/main/docs/SECURITY.md#configuring-trust).
 
 By default the native module ships in **debug** builds only: a Release build has none, so the API is inert and `connect()` rejects `cordierite_disabled` ([Build variants](https://github.com/callstackincubator/cordierite/blob/main/docs/BUILD-VARIANTS.md)).
 

@@ -35,6 +35,7 @@ import { loadConfig } from "./daemon/config.js";
 import { getStateDirPaths } from "./daemon/state-dir.js";
 import { usageError } from "./errors.js";
 import { callDaemon, type SpawnFn } from "./rpc/client.js";
+import { resolveSchemeOrThrow } from "./scheme.js";
 
 /** The emulator/simulator fast path forces `127.0.0.1`: the daemon's wss listener already binds
  * all interfaces, and both delivery mechanisms (adb reverse, the iOS simulator's shared host
@@ -71,10 +72,19 @@ export type MintLinkOptions = {
   /** `target: "ios-device"` only: terminate a running instance before launching
    * (`--terminate-existing`). Off by default. */
   relaunch?: boolean;
-  /** Overrides `config.json`'s `scheme`. */
+  /** Highest-precedence scheme source (`--scheme`); see `scheme.ts` for the full order. */
   scheme?: string;
+  /** Where scheme discovery starts (project `.cordierite/config.json` walk-up, then `app.json`).
+   * Defaults to `process.cwd()`. */
+  cwd?: string;
   exec?: ExecFn;
+  /** The environment handed to `adb`/`simctl` when delivering to a device. This is deliberately
+   * *not* where `CORDIERITE_SCHEME` is read from — callers narrow this env on purpose, and reading
+   * the scheme out of it would silently drop one the user really had exported. See {@link schemeEnv}. */
   env?: NodeJS.ProcessEnv;
+  /** The environment `CORDIERITE_SCHEME` is read from; defaults to `process.env`. Separate from
+   * {@link env} so a narrowed exec environment cannot change scheme resolution. */
+  schemeEnv?: NodeJS.ProcessEnv;
 };
 
 export type MintLinkResult = {
@@ -114,13 +124,14 @@ export const mintLink = async (options: MintLinkOptions): Promise<MintLinkResult
 
   const paths = getStateDirPaths(options.stateDir);
   const config = await loadConfig(paths);
-  const scheme = options.scheme ?? config.scheme;
-
-  if (!scheme) {
-    throw usageError(
-      'A deep-link scheme is required: pass a "scheme" option (`--scheme` on the CLI), or set "scheme" in config.json.',
-    );
-  }
+  const scheme = await resolveSchemeOrThrow({
+    flagScheme: options.scheme,
+    env: options.schemeEnv,
+    cwd: options.cwd,
+    configScheme: config.scheme,
+    stateConfigPath: paths.configPath,
+    stateDirRoot: paths.root,
+  });
 
   // `ios-device` needs a bundle id `devicectl` can launch; resolved (and required) *before* the
   // link is minted so a missing one is a plain usage error rather than a stranded pending session.

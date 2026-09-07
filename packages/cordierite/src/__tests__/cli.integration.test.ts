@@ -51,6 +51,7 @@ describe("CLI integration", () => {
     // `host`/`connect`/`session` commands must never resurface here.
     expect(new Set(commandNames)).toEqual(
       new Set([
+        "init",
         "keygen",
         "link",
         "ls",
@@ -82,6 +83,10 @@ describe("CLI integration", () => {
       expect(result.exitCode).toBe(0);
       return result.stdout;
     };
+
+    const initHelp = helpFor("init");
+    expect(initHelp).toContain("--scheme");
+    expect(initHelp).toContain("--force");
 
     const keygenHelp = helpFor("keygen");
     expect(keygenHelp).toContain("--out");
@@ -121,10 +126,16 @@ describe("CLI integration", () => {
     const eventsHelp = helpFor("events");
     expect(eventsHelp).toContain("--follow");
 
+    // Issue #29: an MCP config entry has to be able to carry its own scheme.
+    const mcpHelp = helpFor("mcp");
+    expect(mcpHelp).toContain("--scheme");
+
     const doctorHelp = helpFor("doctor");
     expect(doctorHelp).toContain("--assert-present");
     expect(doctorHelp).toContain("--assert-absent");
-  });
+    // Each `helpFor` spawns the real CLI binary, so this one test carries ~10 process starts and
+    // runs close to the 5s default on a loaded machine (issue #29 added two more commands to it).
+  }, 30_000);
 
   test("version is available from the binary entrypoint", () => {
     const command = runCliBinary(["--version"]);

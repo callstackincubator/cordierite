@@ -295,6 +295,58 @@ describe("output rendering", () => {
 
     expect(JSON.parse(rendered.stdout ?? "").error.type).toBe("tool_execution_error");
   });
+
+  /** `cordierite init`'s whole point is what it prints, so the human rendering is pinned. */
+  const initResult = (changed: boolean) =>
+    ({
+      ok: true as const,
+      data: {
+        path: "/apps/demo/.cordierite/config.json",
+        scheme: "myapp",
+        source: "app.json" as const,
+        created: changed,
+        changed,
+        mcpServerEntry: { command: "cordierite", args: ["mcp", "--scheme", "myapp"] },
+        nextSteps: ['Add `import "@cordierite/react-native/auto";` to your app entry.'],
+      },
+      meta: {
+        command: "init",
+        timestamp: FIXED_NOW.toISOString(),
+        duration_ms: 3,
+      },
+    });
+
+  test("init output shows the config, the pasteable MCP entry and the next steps", () => {
+    const rendered = renderResult(initResult(true), { command: "init", json: false, color: false });
+
+    expect(rendered.stdout).toMatchSnapshot();
+  });
+
+  test("init output distinguishes an idempotent re-run from a write", () => {
+    const rendered = renderResult(initResult(false), { command: "init", json: false, color: false });
+
+    expect(rendered.stdout).toContain("Project Already Initialized");
+    expect(rendered.stdout).toContain("unchanged");
+  });
+
+  test("init output surfaces the app.json divergence note when there is one", () => {
+    const base = initResult(false);
+    const rendered = renderResult(
+      { ...base, data: { ...base.data, note: 'app.json declares "renamed"' } },
+      { command: "init", json: false, color: false },
+    );
+
+    expect(rendered.stdout).toContain('Note: app.json declares "renamed"');
+  });
+
+  test("init --json exposes the MCP entry structurally rather than as a pre-rendered string", () => {
+    const rendered = renderResult(initResult(true), { command: "init", json: true, color: false });
+
+    expect(JSON.parse(rendered.stdout ?? "").data.mcpServerEntry).toEqual({
+      command: "cordierite",
+      args: ["mcp", "--scheme", "myapp"],
+    });
+  });
 });
 
 describe("renderEventLine", () => {
