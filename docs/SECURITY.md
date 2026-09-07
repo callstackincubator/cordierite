@@ -1,8 +1,14 @@
 # Security model
 
-One page: what pinning defends against, what it doesn't, how to handle keys, and what
-production deployments should turn on. See `docs/PROTOCOL.md` for wire-level detail and
-`docs/ARCHITECTURE.md` §12 for the policy/audit implementation.
+One page: what pinning defends against, what it doesn't, how to configure trust, how to
+handle keys, and what production deployments should turn on. See
+[`PROTOCOL.md`](PROTOCOL.md) for wire-level detail,
+[`ARCHITECTURE.md`](ARCHITECTURE.md#12-policy--audit) for the policy/audit implementation,
+and [`BUILD-VARIANTS.md`](BUILD-VARIANTS.md) for whether Cordierite's code ships in a given
+build at all.
+
+**In one line:** TLS is required for the Cordierite socket, and pins are SHA-256 over SPKI
+(`sha256/...`), so only *your* host keys match.
 
 ## Threat model
 
@@ -109,9 +115,163 @@ torn down, so a malformed or expired link costs the existing session nothing.
 configuration alone. Set `cliPins` (which makes `trust: "pin"` the default) on any build you
 don't want accepting a link-carried pin. Separately, if you don't want Cordierite's native
 code present in a build at all — regardless of trust mode — exclude it from autolinking (see
-"Compile out of a build you don't want carrying Cordierite at all" below); `cordierite doctor` (`docs/CI.md`) verifies that
-exclusion actually took effect in a built artifact, rather than trusting the config that was
-supposed to produce it.
+[Compiling Cordierite out of production
+builds](BUILD-VARIANTS.md#compiling-cordierite-out-of-production-builds)); `cordierite doctor`
+([`CI.md`](CI.md#release-gate-cordierite-doctor)) verifies that exclusion actually took
+effect in a built artifact, rather than trusting the config that was supposed to produce
+it.
+
+## Configuring trust
+
+Nothing here is required for a zero-config app: with no pins configured, `trust: "link"`
+is the default and the flow above just works — in any build type. Configure the values
+below when you want a build to trust only keys you embedded ahead of time.
+
+Generate the pin with `cordierite keygen`, which prints the exact `sha256/...` fingerprint
+value to use. After changing any of this, run your normal prebuild / rebuild flow so
+native config receives the values.
+
+### Expo
+
+Add the **`@cordierite/react-native`** config plugin to Expo config:
+
+```json
+{
+  "expo": {
+    "scheme": "myapp",
+    "plugins": [
+      [
+        "@cordierite/react-native",
+        {
+          "cliPins": ["sha256/REPLACE_WITH_KEYGEN_OUTPUT"],
+          "trust": "pin",
+          "allowPrivateLanOnly": true,
+          "deepLinkScheme": "myapp"
+        }
+      ]
+    ]
+  }
+}
+```
+
+| Option | Required? | Meaning |
+| --- | --- | --- |
+| `cliPins` | Optional in general; **required** — non-empty, each a `sha256/` + 44-character base64 SPKI pin — whenever `trust: "pin"` is set or implied by `cliPins` being non-empty. The plugin throws naming the offending value. | The pin set this build trusts |
+| `trust` | Optional | `"link"` \| `"pin"`, defaulted as described under [Trust modes](#trust-modes). Any other value is a config-time error |
+| `allowPrivateLanOnly` | Optional, defaults to `true` (fail-closed) | Bootstrap must target a local IPv4 address |
+| `deepLinkScheme` | Optional | Warns at prebuild time if it isn't declared in `expo.scheme` |
+
+Leave `cliPins`/`trust` unset entirely if you're fine with link-per-session trust — it's
+the default, and a plain zero-config setup can skip this whole plugin entry.
+
+### Bare React Native — native keys
+
+Autolink the module and set the equivalent native keys. Field names and semantics mirror
+the Expo plugin (see
+[`app.plugin.js`](../packages/react-native/app.plugin.js)).
+
+iOS `Info.plist`:
+
+| Key | Purpose |
+| --- | ------- |
+| `CordieriteCliPins` | String array of `sha256/...` SPKI pins |
+| `CordieriteTrust` | `"link"` \| `"pin"` — any other value is a hard error at connect time |
+| `CordieriteAllowPrivateLanOnly` | Boolean; if true, bootstrap host must be a local IPv4 address |
+
+Android `<application>` meta-data:
+
+| Name | Purpose |
+| --- | ------- |
+| `com.callstackincubator.cordierite.CLI_PINS` | JSON array string of pin values |
+| `com.callstackincubator.cordierite.TRUST` | `"link"` \| `"pin"` — any other value is a hard error at connect time |
+| `com.callstackincubator.cordierite.ALLOW_PRIVATE_LAN_ONLY` | Boolean meta-data value (a `"true"`/`"false"` String is also accepted); defaults to `true` (fail-closed) when absent |
+
+Wire **deep links** so the OS can open your app with the host's bootstrap URL, and make
+sure the app scheme matches the one `cordierite link` (or the `deepLinkScheme` plugin
+option, or `config.json`) uses to compose that link.
+
+### `allowPrivateLanOnly`
+
+When enabled, bootstrap must target a **local IPv4** address — RFC1918 private ranges or
+`127.0.0.1`. It is a **dev-hardening** switch, not a claim that Cordierite is LAN-only.
+
+There is nothing to configure for this in JS: which addresses a bootstrap link may point
+at is native build config, enforced by native `connect()` and read from the same place by
+the deep-link handler. JS can only ever narrow what native allows, never widen it.
+
+### `trust: "pin"` needs pins
+
+`trust: "pin"` requires non-empty `cliPins` (bare RN: `CordieriteTrust`/`TRUST` set to
+`"pin"` **and** `CordieriteCliPins`/`CLI_PINS` non-empty). A build that only ever trusts
+embedded pins but has none configured would have no way to trust anything, so the plugin
+refuses that combination at config time, and the native readers refuse it again if that
+check is ever bypassed by hand.
+
+### Reading the effective configuration at runtime
+
+**`getCordieriteBuildConfig()`** reports the effective trust configuration a running build
+actually has — `{ trust, hasEmbeddedPins, allowPrivateLanOnly }`. It is read via
+`getConstants()` from the exact same native manifest/plist parse `connect()`'s
+`resolveTrustedPins` uses, never a second parse path, so it can never disagree with what a
+real connect attempt would do.
+
+`trust` reports the *effective* bucket — `"pin"` whenever embedded pins are present, since
+they always win; `"link"` otherwise — not the raw config string. On `./noop` it reports the
+documented absent shape: `{ trust: "absent", hasEmbeddedPins: false, allowPrivateLanOnly: true }`.
+Pin fingerprints themselves are never exposed, only whether any are embedded.
+
+## What a build without the native module does
+
+With the native module absent — excluded via autolinking, Expo Go, or a
+debug-tooling-free JS-only environment — every exported function on the root
+`@cordierite/react-native` entry degrades to the exact `./noop` entry's behavior: one
+warning log the first time, no throws, `getCordieriteState()` reporting `"idle"`, and
+`connect()` always rejecting with `CordieriteDisabledError` (`code: "cordierite_disabled"`).
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md#11-react-native-sdk) §11 for the parity contract
+between the two entries, and [`BUILD-VARIANTS.md`](BUILD-VARIANTS.md) for how to produce
+such a build deliberately.
+
+## Gating a tool by build variant
+
+Registration is the app-side allowlist, and it is the only control that sits inside the
+app's own trust boundary. `useCordieriteTool` takes a third `options` argument,
+`{ enabled?: boolean }` (default `true`).
+
+`enabled: false` never registers the tool, and removing it (or a hook that was already
+mounted) leaves no registration behind. Toggling `enabled` at runtime registers and
+unregisters cleanly — so put the condition in the argument instead of wrapping the hook
+call in an `if`, which is a rules-of-hooks violation:
+
+```ts
+useCordieriteTool(
+  {
+    name: "wipe-local-db",
+    description: "Destructive: clears the local database",
+    handler: async () => wipeLocalDb(),
+  },
+  [],
+  { enabled: process.env.EXPO_PUBLIC_CORDIERITE_TOOLS === "full" }
+);
+```
+
+The recommended predicate is an app-owned build flag inlined by the bundler at build time
+(`EXPO_PUBLIC_*` env vars, a Babel define plugin, etc.) — something your release pipeline
+controls explicitly, like `process.env.EXPO_PUBLIC_CORDIERITE_TOOLS === "full"` above.
+
+**`__DEV__` is the wrong default here**, for the same reason a `debuggable` build-type
+check is the wrong native gate: `__DEV__` is `false` in *any* release-bundled JS, including
+the release-signed, internally-distributed "testing" variant agents actually drive in CI.
+Gating a destructive tool on `__DEV__` removes it exactly where it is needed.
+
+`__DEV__` is still fine for tools that are genuinely debug-only — a "dump internal state"
+tool with no purpose outside a local dev loop, say. It just should not be the example every
+app copies for hardening.
+
+**Consequence for agents and E2E flows:** because registration is the app-side allowlist,
+`tools/list` legitimately differs per build artifact. A CI testing build may expose a
+different tool set than a local dev build or a hardened production build. Automated flows
+should discover tools via `tools/list` rather than assume a fixed set is always present.
 
 ## Key handling rules
 
@@ -166,7 +326,7 @@ audited by its own audit log; policy/audit shape what a *legitimate* CLI/MCP cal
 to an *honest* daemon can do, they do not defend the app against the operator machine
 itself. The control that actually sits inside the app, on the app's side of the trust
 boundary, is **which tools the app registers at all** — `useCordieriteTool`'s `enabled`
-option (see the package README's "Gating a tool by build variant") lets an app conditionally
+option (see [Gating a tool by build variant](#gating-a-tool-by-build-variant)) lets an app conditionally
 withhold a destructive tool's registration based on its own release-pipeline-controlled
 build flag, independent of whatever the operator machine's daemon policy says. Treat policy
 and audit below as convenience for a trusted operator working across many tools/sessions,
@@ -209,64 +369,47 @@ not as the mechanism that keeps a destructive tool out of reach of a hostile one
   there's no flag to disable it. Check `daemon.status`'s `audit.failedWrites` if you
   need to confirm the log is actually landing on disk (e.g. under a read-only or full
   filesystem).
-- **Inclusion defaults to dev builds only — not a compiled-in build-type check.** On iOS,
-  `react-native.config.js` sets CocoaPods' `:configurations` so the `Debug` configuration
-  links Cordierite and `Release` doesn't, by default: a real per-variant linking decision.
-  Android can't use the equivalent `buildTypes` lever for a package with static Java
-  registration (`packageInstance`) — the Gradle plugin's generated `PackageList.java` is
-  shared, unfiltered, across every variant, so restricting *linking* by variant there is a
-  compile error, not an inert build. Android instead links this project into every variant
-  unconditionally and swaps which Kotlin source set `android/build.gradle` compiles for
-  `release`: the real implementation by default for `debug`, and either the same real files
-  or a no-op `CordieritePackage` for `release`, driven by the same `CORDIERITE_ENABLED`.
-  Either way there is still no `debuggable`/`#if DEBUG` gate anywhere in
-  `CordieritePackage.getModule` (Android) or `CordieriteTurboBridge.swift`/
-  `RCTNativeCordierite.mm` (iOS) — both register/compile in unconditionally whenever the real
-  implementation is linked/compiled into a given variant; whether it is is what the
-  CocoaPods/Gradle config above decides. A release pipeline that wants Cordierite anyway (an
-  agent-driven, release-signed internal build, for example) sets `CORDIERITE_ENABLED=1`; one
-  that wants it gone even from debug sets `CORDIERITE_ENABLED=0`. Either way this is something
-  you can verify against the built artifact (`cordierite doctor`, `docs/CI.md`) — on Android,
-  `doctor` deliberately trusts only its `CordieriteNativeMarker` keep-rule signal for this
-  reason, since the release-default no-op stub shares the real implementation's package name
-  and would otherwise look present to a naive scan. Not something that quietly depends on a
-  custom build-type/configuration name being spelled `debug`/`Debug`. When the module
-  genuinely isn't present (excluded, or no native support at all — e.g. Expo Go), the JS
-  public API degrades to the exact `./noop` entry's behavior (one warning, no throws) — see
-  `docs/ARCHITECTURE.md` §11.
+- **Inclusion defaults to dev builds only — not a compiled-in build-type check.** iOS
+  restricts CocoaPods linking to the `Debug` configuration; Android swaps in a no-op
+  `CordieritePackage` for `release`. Both are real per-variant decisions, not a
+  `debuggable`/`#if DEBUG` gate compiled into every variant, and neither quietly depends on
+  a custom build-type/configuration name being spelled `debug`/`Debug`.
+
+  A release pipeline that wants Cordierite anyway (an agent-driven, release-signed internal
+  build) sets `CORDIERITE_ENABLED=1`; one that wants it gone even from debug sets
+  `CORDIERITE_ENABLED=0`.
+  [`BUILD-VARIANTS.md`](BUILD-VARIANTS.md#inclusion-is-an-autolinking-decision) has the full
+  mechanism.
+
+  Verify the outcome against the built artifact (`cordierite doctor`,
+  [`CI.md`](CI.md#release-gate-cordierite-doctor)). On Android, `doctor` deliberately trusts
+  only its `CordieriteNativeMarker` keep-rule signal, since the release-default no-op stub
+  shares the real implementation's package name and would otherwise look present to a naive
+  scan. When the module genuinely isn't present, the JS public API degrades to the exact
+  `./noop` entry's behavior — see [What a build without the native module
+  does](#what-a-build-without-the-native-module-does).
 - **Compile out of a build you don't want carrying Cordierite at all.** Being present and
   trusting nothing (`trust: "pin"` with a `cliPins` set that has no matching daemon, or an
   app that simply never mints a bootstrap link for that build) still ships the native code
-  and JS bundle inside the binary. To strip it out entirely, combine two independent
-  steps — neither one alone removes native code:
-  1. **Native:** exclude `@cordierite/react-native` from autolinking. This is what
-     actually removes the compiled native pod/module from the app binary. Bare RN:
-     app-root `react-native.config.js`, `dependencies["@cordierite/react-native"].platforms
-     = { ios: null, android: null }`. Expo-managed equivalent: `expo.autolinking.ios.exclude`
-     / `expo.autolinking.android.exclude` — but this must live in **`package.json`**, not
-     `app.json` or `app.config.*`. `expo-modules-autolinking` reads this config from
-     `package.json` only; the same block anywhere else is a silent no-op that still ships
-     the native module. Note also that `expo-modules-autolinking`'s CocoaPods driver
-     resolves iOS with `--platform apple`, and an `expo.autolinking.apple` block, if
-     present, wins outright over `expo.autolinking.ios` rather than merging with it — put
-     the exclude under `apple` too if your app declares that key. Excluding on iOS also
-     stops that package's codegen from running, so an app that excludes it there but still
-     references the `Cordierite` pod by hand (a maintainer-only shape, e.g. attaching an
-     XCTest target) will fail to compile.
-  2. **JS:** swap the module at bundle time with a Metro `resolveRequest` override that
-     resolves `@cordierite/react-native` (and `/auto`) to `@cordierite/react-native/noop`
-     instead. This removes the deep-link listener and tool registry from the JS bundle.
+  and JS bundle inside the binary.
 
-  See the package README's "Compiling Cordierite out of production builds" section for
-  the exact snippets, and `docs/CI.md` for `cordierite doctor`, which verifies the
+  Stripping it takes two independent steps. Excluding the package from **autolinking** is
+  the only thing that removes the compiled native pod/module; swapping the **JS** entries
+  for `/noop` at bundle time is the only thing that removes the deep-link listener and tool
+  registry from the bundle.
+
+  Neither alone removes both. `CORDIERITE_ENABLED=0` drives both at once, but only once
+  the `withCordierite` Metro helper is wired into `metro.config.js` — without it the
+  variable removes the native half only.
+
+  The exact snippets, the `package.json`-only placement of `expo.autolinking`, the
+  `apple`-overrides-`ios` rule and the iOS codegen coupling live in
+  [`BUILD-VARIANTS.md`](BUILD-VARIANTS.md#compiling-cordierite-out-of-production-builds).
+  [`CI.md`](CI.md#release-gate-cordierite-doctor)'s `cordierite doctor` verifies the
   exclusion actually took effect in a built artifact rather than trusting the config that
   was supposed to produce it — this whole area was a config recipe that never worked once
-  before (see `docs/tasks/02-fix-autolinking-exclusion.md`), which is why it's now checked
-  by CI, not just documented. Either half alone still yields a working, inert-with-respect-
-  to-that-half app — the autolinking exclude alone leaves the real JS entry importable but
-  with no native module to find (so it degrades to `/noop`-equivalent behavior); the Metro
-  swap alone leaves the native pod compiled in but unused. Combine both when you want
-  neither surface present at all.
+  before (see [`tasks/02-fix-autolinking-exclusion.md`](tasks/02-fix-autolinking-exclusion.md)),
+  which is why it's now checked by CI, not just documented.
 - **App-store-review note.** An always-installed deep-link listener that can open a
   pinned socket and let an external process invoke code is a legitimate "remote control"
   surface from a reviewer's point of view, even though it can't be exercised without a

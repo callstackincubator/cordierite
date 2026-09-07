@@ -42,7 +42,19 @@ directory and it needs no configuration at all** — the deep-link scheme is rea
 cordierite link --json
 ```
 
-No key setup is needed either: the daemon generates its host key on first start.
+You do not need to create a key first: the daemon generates one on its first start, and
+`cordierite link` carries its fingerprint on the deep link for an app with no `cliPins`
+configured to trust for that session.
+
+To generate one explicitly — non-interactive and safe to run from an agent or script:
+
+```bash
+cordierite keygen --out ~/.cordierite/key.pem
+```
+
+Adding the printed `sha256/...` fingerprint to the app's `cliPins` is what switches a build
+to pinned trust (see **Setup** below if you are wiring Cordierite into an app for the first
+time — that step needs a native rebuild, so it isn't a fast in-session action).
 
 Pass `--scheme myapp` only when the scheme cannot be discovered — you are not in the app
 directory, or the project uses a dynamic `app.config.js` (which is never executed).
