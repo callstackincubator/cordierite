@@ -474,8 +474,49 @@ server can't drift in behavior: they are the same calls.
 
 The per-command reference lives in the [`cordierite` package README](../packages/cordierite/README.md),
 which is where it stays current. Global flags: `--json` (machine output, NDJSON for streams),
-`--no-color`, `--state-dir`, `--daemon-restart` (force a version-drift restart, §4). The `--scheme` used to compose a deep link comes from the flag,
-else `config.json`, else a clear error.
+`--no-color`, `--state-dir`, `--daemon-restart` (force a version-drift restart, §4).
+
+The deep-link scheme used to compose a link is resolved by `scheme.ts`, shared by `cordierite
+link`, `cordierite mcp`, `cordierite/client`'s `link()` and the MCP `cordierite_connect` tool so
+they cannot drift. First match wins:
+
+1. the `--scheme` flag (or the equivalent programmatic option)
+2. the `CORDIERITE_SCHEME` environment variable
+3. the nearest `.cordierite/config.json` that declares a `scheme`, walking up from the working
+   directory (one without that key does not stop the walk; the walk also skips `~/.cordierite` and
+   the state directory in use — those are *global* config, and matching them here would apply them
+   one tier above their own)
+4. `scheme` in the state directory's `config.json`
+5. `<cwd>/app.json`'s `expo.scheme` (a string, or the first entry of an array — the same
+   normalization `app.plugin.js` applies; no walk-up)
+6. otherwise an error naming every location above
+
+Only the *client-side* `scheme` is overridable per project. A project `.cordierite/config.json`
+is read for that key alone and never redirects daemon-side state (`wssPort`, `keyPath`, `policy`,
+the audit log): `--state-dir` / `CORDIERITE_STATE_DIR` remain the only way to move the state
+directory, so a file checked into a repo can never move another developer's private key.
+
+`app.config.js` / `app.config.ts` are deliberately **not** evaluated — running arbitrary project
+code to read one string is a far larger blast radius than this warrants. Dynamic-config projects
+use `--scheme`, `CORDIERITE_SCHEME`, or `cordierite init --scheme <s>`.
+
+`cordierite init`, run in an app root, writes that project `.cordierite/config.json` (scheme only)
+and prints the MCP server entry to paste plus the `import "@cordierite/react-native/auto"`
+reminder. It never generates keys (the daemon auto-generates `key.pem` — §3), and writes the file
+`0600` inside a `0700` directory, matching §3's conventions.
+
+Re-running it is always safe: it keeps the scheme already recorded and only *notes* it when
+`app.json` has come to declare a different one — a command documented as safe to re-run must not
+start failing because a scheme was renamed. `--scheme <different>` needs `--force` to replace a
+recorded value, `--force` alone re-adopts `app.json`'s, and `--force` merges rather than
+truncating. Note the inverse of the rule above: a project `.cordierite/` is committed, so
+`--state-dir` must never point at one — that directory would then hold `key.pem`.
+
+Unlike every other consumer, `cordierite mcp` does **not** fail when no scheme resolves: the
+server is still useful for proxying tools to a session paired some other way, so the failure is
+deferred to `cordierite_connect`, which reports `invalid_request` naming every location tried. A
+resolution *error* (an invalid `--scheme`, a malformed `app.json`) is additionally written to
+stderr at startup — never stdout, which carries MCP protocol frames only.
 
 `cordierite invoke`: a SIGINT while the call is still pending cancels it (§5's
 `tools.cancel`, via the RPC connection dropping) rather than leaving the app-side handler

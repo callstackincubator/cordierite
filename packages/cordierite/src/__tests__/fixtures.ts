@@ -20,6 +20,9 @@ export const binEntry = path.join(packageRoot, "bin.js");
 type CliProcessOptions = {
   stateDir?: string;
   extraEnv?: NodeJS.ProcessEnv;
+  /** Working directory for the spawned CLI; defaults to {@link packageRoot}. Scheme discovery and
+   * the project-config walk-up are cwd-relative, so tests for those must be able to move it. */
+  cwd?: string;
 };
 
 const cliEnvironment = ({ stateDir, extraEnv }: CliProcessOptions): NodeJS.ProcessEnv => ({
@@ -31,7 +34,7 @@ const cliEnvironment = ({ stateDir, extraEnv }: CliProcessOptions): NodeJS.Proce
 /** Runs the built Node CLI as a subprocess, mirroring the published executable. */
 export const runCliBinary = (args: string[], options: CliProcessOptions = {}) => {
   const result = spawnSync(process.execPath, [binEntry, ...args], {
-    cwd: packageRoot,
+    cwd: options.cwd ?? packageRoot,
     encoding: "utf8",
     env: cliEnvironment(options),
   });
@@ -49,7 +52,7 @@ export const spawnCliBinary = (
   options: CliProcessOptions = {},
 ): ChildProcessByStdio<null, Readable, Readable> => {
   return spawn(process.execPath, [binEntry, ...args], {
-    cwd: packageRoot,
+    cwd: options.cwd ?? packageRoot,
     env: cliEnvironment(options),
     stdio: ["ignore", "pipe", "pipe"],
   });

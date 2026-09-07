@@ -119,4 +119,58 @@ describe("e2e: mcp (real stdio subprocess)", () => {
     },
     20_000,
   );
+
+  /*
+   * Issue #29's second acceptance criterion, through the *real* argv path: `cordierite mcp
+   * --scheme myapp` with an empty state dir. The in-process tests in
+   * `mcp-command.integration.test.ts` call `handleMcpCommand({ scheme })` directly, which proves
+   * the command honours the option but not that `create-cli.ts` declares it or that `dispatch.ts`
+   * passes it through — the exact wiring an MCP config entry depends on.
+   */
+  test(
+    "`cordierite mcp --scheme` reaches cordierite_connect with no scheme configured anywhere",
+    async () => {
+      const { stateDir } = await makeTempStateDir({ scheme: undefined });
+      await ensureDaemon(stateDir);
+
+      // Built explicitly rather than spread-and-override: an exported CORDIERITE_SCHEME on the
+      // developer's machine would otherwise be able to satisfy this test without the flag working.
+      const env: Record<string, string> = {
+        ...(process.env as Record<string, string>),
+        CORDIERITE_STATE_DIR: stateDir,
+      };
+      delete env.CORDIERITE_SCHEME;
+
+      const transport = new StdioClientTransport({
+        command: process.execPath,
+        args: [binEntry, "mcp", "--scheme", "flag-scheme"],
+        // `packageRoot` has no `app.json`, so discovery cannot supply the scheme either.
+        cwd: packageRoot,
+        env,
+        stderr: "pipe",
+      });
+
+      const client = new Client({ name: "e2e-mcp-scheme-client", version: "0.0.0" });
+      trackCleanup(() => client.close());
+      await client.connect(transport);
+
+      // `target: "none"` keeps this about scheme resolution rather than whatever simulators the
+      // machine running the suite happens to have booted.
+      const connected = await client.request(
+        {
+          method: "tools/call",
+          params: { name: "cordierite_connect", arguments: { target: "none" } },
+        },
+        CallToolResultSchema,
+      );
+
+      expect(connected.isError).not.toBe(true);
+      expect((connected.structuredContent as { deepLink: string }).deepLink).toMatch(
+        /^flag-scheme:\/\/\/\?cordierite=/u,
+      );
+
+      await client.close();
+    },
+    20_000,
+  );
 });
