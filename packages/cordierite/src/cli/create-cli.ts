@@ -15,6 +15,16 @@ export const createCli = () => {
   );
 
   cli
+    .command("init", "Set up the current app directory: write .cordierite/config.json and print the MCP snippet.")
+    .option(
+      "--scheme <scheme>",
+      "Deep-link URI scheme to write. Only this flag and <cwd>/app.json are consulted — not " +
+        "CORDIERITE_SCHEME, and no walk-up: init decides what to write here, so it never bakes " +
+        "an ambient value into a committed file.",
+    )
+    .option("--force", "Replace the scheme already recorded in the project config.");
+
+  cli
     .command("keygen", "Generate a Cordierite host private key and print its app fingerprint.")
     .option("--out <path>", "Destination path (default: <state-dir>/key.pem).")
     .option("--force", "Overwrite an existing key at the destination path.");
@@ -23,7 +33,10 @@ export const createCli = () => {
     .command("link", "Mint a pending session and print its deep link.")
     .option("--ttl <seconds>", "Link time-to-live in seconds (default: from config.json).")
     .option("--qr", "Also render the deep link as a terminal QR code.")
-    .option("--scheme <scheme>", "Deep-link URI scheme (default: config.json's \"scheme\").")
+    .option(
+      "--scheme <scheme>",
+      "Deep-link URI scheme (also: CORDIERITE_SCHEME; default: app.json's \"expo.scheme\").",
+    )
     .option(
       "--open <target>",
       "Deliver the link automatically via adb/simctl/devicectl (android|ios-sim|ios-device; ios-device is experimental).",
@@ -60,7 +73,12 @@ export const createCli = () => {
 
   cli.command("revoke [selector]", "Revoke a session.");
 
-  cli.command("mcp", "Start a stdio MCP server that proxies connected apps' tools to MCP clients.");
+  cli
+    .command("mcp", "Start a stdio MCP server that proxies connected apps' tools to MCP clients.")
+    .option(
+      "--scheme <scheme>",
+      "Deep-link URI scheme for cordierite_connect (also: CORDIERITE_SCHEME).",
+    );
 
   cli
     .command("doctor <artifact>", "Report (or assert) whether a built .app/.ipa/.apk/.aab contains Cordierite.")

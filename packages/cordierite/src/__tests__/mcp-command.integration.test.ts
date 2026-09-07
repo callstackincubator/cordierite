@@ -77,6 +77,12 @@ const startTestDaemon = async (extraConfig: Record<string, unknown> = {}): Promi
  * subprocess involved. */
 const startMcpCommandWithClient = async (
   stateDir: string,
+  schemeOptions: {
+    scheme?: string;
+    cwd?: string;
+    schemeEnv?: NodeJS.ProcessEnv;
+    stderr?: Pick<NodeJS.WriteStream, "write">;
+  } = {},
 ): Promise<{ hosted: McpHostedResult; client: Client }> => {
   const clientToServer = new PassThrough();
   const serverToClient = new PassThrough();
@@ -86,6 +92,13 @@ const startMcpCommandWithClient = async (
     spawn: failIfCalled,
     stdin: clientToServer,
     stdout: serverToClient,
+    // Scheme resolution is cwd-relative, so every test pins it explicitly rather than inheriting
+    // whatever directory the suite happens to run from. `schemeEnv` (not `env`, which is the
+    // adb/simctl environment) is likewise pinned so an exported CORDIERITE_SCHEME cannot leak in.
+    cwd: schemeOptions.cwd ?? stateDir,
+    schemeEnv: schemeOptions.schemeEnv ?? {},
+    scheme: schemeOptions.scheme,
+    stderr: schemeOptions.stderr,
   });
   hostedResults.push(hosted);
 
@@ -150,6 +163,147 @@ describe("cordierite mcp command", () => {
     const payload = data.deepLink.split("cordierite=")[1]!.split("&")[0]!;
     expect(decodeBootstrap(payload)).not.toBeNull();
     expect(data.deepLink).toContain("&pin=");
+  });
+
+  // Issue #29 acceptance: `cordierite mcp --scheme myapp` works with an empty state dir, so an MCP
+  // config entry (`{"command":"cordierite","args":["mcp","--scheme","myapp"]}`) is self-contained.
+  test("--scheme reaches cordierite_connect with no scheme in config.json", async () => {
+    const { stateDir } = await startTestDaemon();
+    const { client } = await startMcpCommandWithClient(stateDir, { scheme: "from-flag" });
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { target: "none" } } },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect((result.structuredContent as { deepLink: string }).deepLink).toMatch(
+      /^from-flag:\/\/\/\?cordierite=/u,
+    );
+  });
+
+  test("CORDIERITE_SCHEME reaches cordierite_connect with no scheme in config.json", async () => {
+    const { stateDir } = await startTestDaemon();
+    const { client } = await startMcpCommandWithClient(stateDir, {
+      schemeEnv: { CORDIERITE_SCHEME: "from-env" },
+    });
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { target: "none" } } },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect((result.structuredContent as { deepLink: string }).deepLink).toMatch(
+      /^from-env:\/\/\/\?cordierite=/u,
+    );
+  });
+
+  test("--scheme wins over config.json's scheme", async () => {
+    const { stateDir } = await startTestDaemon({ scheme: "from-config" });
+    const { client } = await startMcpCommandWithClient(stateDir, { scheme: "from-flag" });
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { target: "none" } } },
+      CallToolResultSchema,
+    );
+
+    expect((result.structuredContent as { deepLink: string }).deepLink).toMatch(
+      /^from-flag:\/\/\/\?cordierite=/u,
+    );
+  });
+
+  test("an app.json in the working directory is enough — no config file at all", async () => {
+    const { stateDir } = await startTestDaemon();
+    const appRoot = await mkdtemp(path.join(tmpdir(), "cordierite-mcp-app-"));
+    stateDirs.push(appRoot);
+    await writeFile(
+      path.join(appRoot, "app.json"),
+      JSON.stringify({ expo: { name: "Demo", scheme: "from-app-json" } }),
+    );
+
+    const { client } = await startMcpCommandWithClient(stateDir, { cwd: appRoot });
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { target: "none" } } },
+      CallToolResultSchema,
+    );
+
+    expect((result.structuredContent as { deepLink: string }).deepLink).toMatch(
+      /^from-app-json:\/\/\/\?cordierite=/u,
+    );
+  });
+
+  // The server must still start without a scheme (it is useful for proxying a session paired by
+  // QR or `cordierite link`); only `cordierite_connect` fails, and it names where to put one.
+  test("starts without any scheme and fails cordierite_connect with the locations tried", async () => {
+    const { stateDir } = await startTestDaemon();
+    const { client } = await startMcpCommandWithClient(stateDir);
+
+    // The server started at all — this listing would have thrown if it had not.
+    await expect(client.listTools()).resolves.toBeDefined();
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { target: "none" } } },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = JSON.stringify(result.content);
+    expect(text).toContain("CORDIERITE_SCHEME");
+    expect(text).toContain("app.json");
+    expect(text).toContain("cordierite init");
+  });
+
+  // A broken `app.json` in the working directory must not stop an MCP client from starting its
+  // server — the failure is deferred to `cordierite_connect`, same as "no scheme at all".
+  test("starts even when app.json in the working directory is malformed", async () => {
+    const { stateDir } = await startTestDaemon();
+    const appRoot = await mkdtemp(path.join(tmpdir(), "cordierite-mcp-badapp-"));
+    stateDirs.push(appRoot);
+    await writeFile(path.join(appRoot, "app.json"), "{ this is not json");
+
+    // A resolution *error* (as opposed to simply finding nothing) is also reported on stderr at
+    // startup, so an operator hears about a typo immediately rather than only when some agent
+    // happens to call cordierite_connect. Never on stdout: that carries MCP frames only.
+    let stderrText = "";
+    const stderr = {
+      write(chunk: string | Uint8Array) {
+        stderrText += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+        return true;
+      },
+    } as unknown as Pick<NodeJS.WriteStream, "write">;
+
+    const { client } = await startMcpCommandWithClient(stateDir, { cwd: appRoot, stderr });
+
+    await expect(client.listTools()).resolves.toBeDefined();
+    expect(stderrText).toContain("could not resolve a deep-link scheme");
+    expect(stderrText).toContain("starting anyway");
+
+    const result = await client.request(
+      { method: "tools/call", params: { name: "cordierite_connect", arguments: { target: "none" } } },
+      CallToolResultSchema,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("scheme resolution failed");
+  });
+
+  test("an invalid --scheme is reported on stderr but still starts the server", async () => {
+    const { stateDir } = await startTestDaemon();
+
+    let stderrText = "";
+    const stderr = {
+      write(chunk: string | Uint8Array) {
+        stderrText += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+        return true;
+      },
+    } as unknown as Pick<NodeJS.WriteStream, "write">;
+
+    const { client } = await startMcpCommandWithClient(stateDir, { scheme: "myapp://", stderr });
+
+    await expect(client.listTools()).resolves.toBeDefined();
+    expect(stderrText).toContain("Invalid deep-link scheme");
   });
 
   test("stop() tears the server down and resolves completion", async () => {

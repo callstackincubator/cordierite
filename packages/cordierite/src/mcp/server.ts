@@ -345,9 +345,14 @@ export type CreateMcpServerOptions = {
    * scope: nothing re-checks a connection that is already established.
    */
   checkVersion?: VersionCheckOptions;
-  /** The scheme composing `cordierite_connect`'s deep link; same source as `cli/link.ts`'s
-   * `config.json`'s `scheme` (there is no per-call MCP flag equivalent). */
+  /** The scheme composing `cordierite_connect`'s deep link, already resolved by `commands/mcp.ts`
+   * against the shared order in `scheme.ts` (`--scheme` > `CORDIERITE_SCHEME` > project
+   * `.cordierite/config.json` > state `config.json` > `app.json`). May legitimately be undefined —
+   * the server starts either way and only `cordierite_connect` needs one. */
   scheme?: string;
+  /** Every location consulted while resolving {@link scheme}, so `cordierite_connect` can name
+   * them when it has to fail. Only meaningful when `scheme` is undefined. */
+  schemeTried?: string[];
   /** `config.json`'s `iosBundleId`; the default bundle id for `cordierite_connect`'s experimental
    * `ios-device` target (issue #31). */
   iosBundleId?: string;
@@ -617,6 +622,7 @@ export const createMcpServer = async (options: CreateMcpServerOptions): Promise<
           await handleConnectTool(args, {
             call: stream.call,
             scheme: options.scheme,
+            schemeTried: options.schemeTried,
             iosBundleId: options.iosBundleId,
             exec: options.exec,
             env: options.env,
